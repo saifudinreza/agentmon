@@ -1,0 +1,1 @@
+[{"event":"PreToolUse","tool_name":"Write","exitCode":2,"stderr":"DITOLAK-EXIT2: alasan lewat stderr."}, {"event":"PermissionRequest","stdout":{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}}]

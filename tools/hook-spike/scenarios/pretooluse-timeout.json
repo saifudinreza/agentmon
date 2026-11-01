@@ -1,0 +1,1 @@
+[{"event":"PreToolUse","tool_name":"Write","sleepMs":6000}, {"event":"PermissionRequest","stdout":{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}}]

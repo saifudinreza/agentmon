@@ -1,0 +1,6 @@
+[
+  {
+    "event": "PermissionRequest",
+    "stdout": { "hookSpecificOutput": { "hookEventName": "PermissionRequest", "decision": { "behavior": "allow" } } }
+  }
+]

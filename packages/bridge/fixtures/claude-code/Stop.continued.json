@@ -1,0 +1,15 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "C:\\Users\\<USER>\\.claude\\projects\\<PROJECT>\\<SESSION_ID>.jsonl",
+  "cwd": "C:\\work\\project",
+  "prompt_id": "00000000-0000-4000-8000-0000000000a1",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": true,
+  "last_assistant_message": "Saya sudah menambahkan `done.txt` dengan isi `ok` di folder yang sama dengan `notes.txt`. Berhenti di sini.",
+  "background_tasks": [],
+  "session_crons": []
+}
