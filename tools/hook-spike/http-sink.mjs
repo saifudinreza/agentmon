@@ -17,10 +17,13 @@ createServer((req, res) => {
     let input = null;
     try { input = JSON.parse(body); } catch { input = null; }
     const rule = rules.find((r) => r.event === input?.hook_event_name && (r.tool_name === undefined || r.tool_name === input?.tool_name));
-    appendFileSync(process.env.SPIKE_LOG, JSON.stringify({
-      t: new Date().toISOString(), event: input?.hook_event_name, phase: "http", method: req.method, url: req.url,
-      contentType: req.headers["content-type"], rule: rule ? 0 : -1, input,
-    }) + "\n");
+    // Tanpa SPIKE_LOG, pencatatan dilewati (sama seperti log-hook.mjs), bukan crash.
+    if (process.env.SPIKE_LOG) {
+      appendFileSync(process.env.SPIKE_LOG, JSON.stringify({
+        t: new Date().toISOString(), event: input?.hook_event_name, phase: "http", method: req.method, url: req.url,
+        contentType: req.headers["content-type"], rule: rule ? 0 : -1, input,
+      }) + "\n");
+    }
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(rule?.stdout ?? {}));
   });

@@ -21,7 +21,9 @@ fi
 node "$here/make-settings.mjs" "$hook" "${SPIKE_TIMEOUT:-600}" "${SPIKE_EVENTS:-}" > "$out/settings.json"
 
 # Bersihkan variabel CLAUDE* milik sesi induk supaya sesi percobaan berdiri sendiri.
-unset_args=$(env | grep -o '^CLAUDE[A-Z_]*' | sed 's/^/-u /' | tr '\n' ' ')
+# "|| true" karena grep keluar dengan kode 1 bila tidak ada variabel CLAUDE*
+# (misalnya dijalankan dari terminal biasa), dan set -e akan menghentikan skrip.
+unset_args=$(env | (grep -o '^CLAUDE[A-Z_]*' || true) | sed 's/^/-u /' | tr '\n' ' ')
 cd "$out/project"
 # shellcheck disable=SC2086
 env $unset_args claude -p "$prompt" \
