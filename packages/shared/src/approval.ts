@@ -73,6 +73,42 @@ export const HunkDecisionSchema = z.object({
 });
 export type HunkDecision = z.infer<typeof HunkDecisionSchema>;
 
+// Aturan "sebagian": harus ada minimal satu hunk yang diterima DAN satu yang ditolak.
+// Dipisah jadi fungsi sendiri karena dipakai di dua tempat: formulir keputusan dari HP
+// (di bawah) dan catatan hasil approval.resolved (di events.ts). Satu aturan, dua
+// pemakai, jadi keduanya tidak mungkin berbeda pendapat.
+//
+//   hunks = daftar keputusan per hunk (boleh kosong atau tidak ada)
+//   ctx   = "buku catatan" pemeriksa dari Zod, tempat menulis temuan masalah
+//   label = nama yang disebut di pesan error, misalnya "keputusan 'partial'"
+export function requireMixedHunks(
+  hunks: HunkDecision[] | undefined,
+  ctx: z.RefinementCtx,
+  label: string,
+): void {
+  // "??" = "kalau kosong, pakai ini". Memanggil .some() pada undefined akan membuat
+  // program error. Daftar kosong [] aman, dan otomatis gagal di pemeriksaan di bawah.
+  const list = hunks ?? [];
+  // .some(...) bertanya: "adakah MINIMAL SATU anggota daftar yang memenuhi syarat?"
+  // Seperti guru bertanya "ada yang sudah mengerjakan PR?", satu orang sudah cukup.
+  // "h" mewakili satu hunk saat daftar dicek satu per satu. Hasilnya true/false.
+  const hasApprove = list.some((h) => h.decision === "approve");
+  const hasReject = list.some((h) => h.decision === "reject");
+  // "!" = bukan, "||" = atau. Artinya: kalau tidak ada yang diterima ATAU tidak
+  // ada yang ditolak, datanya bermasalah.
+  if (!hasApprove || !hasReject) {
+    // Menulis temuan di buku catatan. Zod lalu menandai data ini sebagai tidak valid.
+    ctx.addIssue({
+      // "custom" = jenis masalah buatan kita sendiri (bukan masalah bawaan Zod).
+      code: "custom",
+      // Menunjuk KOLOM yang bermasalah, jadi pesan error diawali "hunks" dan pembaca
+      // langsung tahu di mana salahnya.
+      path: ["hunks"],
+      message: `${label} harus punya minimal satu hunk yang diterima dan satu yang ditolak`,
+    });
+  }
+}
+
 // Keputusan pengguna dari HP. "partial" berarti sebagian hunk diterima,
 // jadi wajib ada minimal satu hunk yang diterima dan satu yang ditolak.
 //
@@ -107,30 +143,9 @@ export const ApprovalDecisionSchema = z
     // dicek, langsung selesai. "!==" berarti "tidak sama dengan". Dengan begini sisa
     // kode hanya mengurus satu kasus, jadi lebih mudah dibaca.
     if (value.decision !== "partial") return;
-    // "??" = "kalau kosong, pakai ini". Kolom hunks boleh kosong (undefined), dan
-    // memanggil .some() pada undefined akan membuat program error. Daftar kosong []
-    // aman, dan otomatis gagal di pemeriksaan di bawah, sesuai yang kita mau.
-    const hunks = value.hunks ?? [];
-    // .some(...) bertanya: "adakah MINIMAL SATU anggota daftar yang memenuhi syarat?"
-    // Seperti guru bertanya "ada yang sudah mengerjakan PR?", satu orang sudah cukup.
-    // "h" mewakili satu hunk saat daftar dicek satu per satu. Hasilnya true/false.
-    const hasApprove = hunks.some((h) => h.decision === "approve");
-    const hasReject = hunks.some((h) => h.decision === "reject");
-    // "!" = bukan, "||" = atau. Artinya: kalau tidak ada yang diterima ATAU tidak
-    // ada yang ditolak, formulirnya bermasalah.
-    if (!hasApprove || !hasReject) {
-      // Menulis temuan di buku catatan. Zod lalu menandai data ini sebagai tidak valid.
-      ctx.addIssue({
-        // "custom" = jenis masalah buatan kita sendiri (bukan masalah bawaan Zod).
-        code: "custom",
-        // Menunjuk KOLOM mana yang bermasalah. Hasilnya pesan error diawali "hunks",
-        // jadi pembaca langsung tahu di mana salahnya.
-        path: ["hunks"],
-        // Kalimat penjelasan untuk manusia.
-        message:
-          "keputusan 'partial' harus punya minimal satu hunk yang diterima dan satu yang ditolak",
-      });
-    }
+    // Pemeriksaan hunk-nya ada di requireMixedHunks (di atas), supaya aturan yang
+    // sama bisa dipakai juga oleh catatan hasil approval.resolved.
+    requireMixedHunks(value.hunks, ctx, "keputusan 'partial'");
   });
 // Kenapa aturannya begitu: "partial" yang semuanya diterima itu sebenarnya "approve",
 // dan yang semuanya ditolak sebenarnya "deny". Kalau dibiarkan, riwayat dan laporan

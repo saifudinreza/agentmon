@@ -17,6 +17,7 @@ import {
   AutoApprovalStatusSchema,
   FinalApprovalStatusSchema,
   HunkDecisionSchema,
+  requireMixedHunks,
 } from "./approval";
 import { PolicyResultSchema, RiskSchema } from "./risk";
 
@@ -91,12 +92,21 @@ export const eventPayloads = {
     expiresAt: isoDate, // batas waktu menjawab
   }),
   // Izin sudah diputuskan (oleh kamu, atau waktu habis, atau dibatalkan).
-  "approval.resolved": z.object({
-    approvalId: nonEmpty,
-    status: FinalApprovalStatusSchema, // hanya status akhir yang sah
-    comment: z.string().optional(),
-    hunks: z.array(HunkDecisionSchema).optional(),
-  }),
+  "approval.resolved": z
+    .object({
+      approvalId: nonEmpty,
+      status: FinalApprovalStatusSchema, // hanya status akhir yang sah
+      comment: z.string().optional(),
+      hunks: z.array(HunkDecisionSchema).optional(),
+    })
+    // Catatan ini disimpan sebagai riwayat dan dibaca untuk rekap dan audit. Status
+    // "partially_approved" tanpa rincian hunk berarti catatannya tidak lengkap (tidak
+    // ketahuan bagian mana yang diterima). Aturannya sama dengan formulir keputusan
+    // dari HP (lihat approval.ts), jadi riwayat tidak bisa lebih longgar dari aslinya.
+    .superRefine((value, ctx) => {
+      if (value.status !== "partially_approved") return;
+      requireMixedHunks(value.hunks, ctx, "status 'partially_approved'");
+    }),
   // Izin diputuskan OTOMATIS oleh policy. Dicatat supaya kamu bisa mengauditnya.
   "approval.auto_resolved": z.object({
     approvalId: nonEmpty,

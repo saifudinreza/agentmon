@@ -33,7 +33,10 @@ const validPayloads: Record<EventType, unknown> = {
   "approval.resolved": {
     approvalId: "a1",
     status: "partially_approved",
-    hunks: [{ hunkId: "h1", decision: "approve" }],
+    hunks: [
+      { hunkId: "h1", decision: "approve" },
+      { hunkId: "h2", decision: "reject" },
+    ],
   },
   "approval.auto_resolved": {
     approvalId: "a2",
@@ -165,6 +168,30 @@ describe("parseEvent: payload tidak valid", () => {
     // approval.resolved tidak boleh membawanya.
     const result = parseEvent(envelope("approval.resolved", { approvalId: "a", status: "pending" }));
     expect(result.status).toBe("invalid");
+  });
+
+  // Catatan hasil approval tidak boleh lebih longgar daripada formulir keputusannya:
+  // status "diterima sebagian" wajib disertai rincian hunk yang diterima dan ditolak.
+  test.each([
+    ["tanpa hunks", undefined],
+    ["semua hunk diterima", [{ hunkId: "h1", decision: "approve" }]],
+    ["semua hunk ditolak", [{ hunkId: "h1", decision: "reject" }]],
+  ])("menolak approval.resolved partially_approved %s", (_name, hunks) => {
+    const result = parseEvent(
+      envelope("approval.resolved", { approvalId: "a", status: "partially_approved", hunks }),
+    );
+    expect(result.status).toBe("invalid");
+    if (result.status === "invalid") {
+      expect(result.reason).toBe("invalid_payload");
+      expect(result.message).toContain("payload.hunks");
+      expect(result.message).toContain("partially_approved");
+    }
+  });
+
+  test("status akhir lain tidak butuh hunks", () => {
+    for (const status of ["approved", "denied", "timed_out", "cancelled"]) {
+      expect(parseEvent(envelope("approval.resolved", { approvalId: "a", status })).status).toBe("ok");
+    }
   });
 
   test("menolak level risiko yang tidak dikenal", () => {
