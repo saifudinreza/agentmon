@@ -1,0 +1,1 @@
+[{"event":"PreToolUse","tool_name":"Write","stdout":{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"DITOLAK-PENGGUNA: jangan membuat file baru, ubah file yang sudah ada saja."}}}, {"event":"PermissionRequest","stdout":{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}}]

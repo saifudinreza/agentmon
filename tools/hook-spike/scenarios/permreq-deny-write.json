@@ -1,0 +1,1 @@
+[{"event":"PermissionRequest","tool_name":"Write","stdout":{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"DITOLAK-DARI-HP: file ini tidak boleh dibuat."}}}}]

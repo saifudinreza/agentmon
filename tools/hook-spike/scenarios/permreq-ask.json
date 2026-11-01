@@ -1,0 +1,3 @@
+[
+  { "event": "PermissionRequest", "tool_name": "Write", "stdout": { "hookSpecificOutput": { "hookEventName": "PermissionRequest", "decision": { "behavior": "ask" } } } }
+]

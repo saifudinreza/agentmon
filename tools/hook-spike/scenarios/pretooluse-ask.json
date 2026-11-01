@@ -1,0 +1,4 @@
+[
+  { "event": "PreToolUse", "tool_name": "Write", "stdout": { "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "ask", "permissionDecisionReason": "tanya-pengguna" } } },
+  { "event": "PermissionRequest", "stdout": { "hookSpecificOutput": { "hookEventName": "PermissionRequest", "decision": { "behavior": "allow" } } } }
+]

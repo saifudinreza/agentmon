@@ -1,0 +1,12 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "C:\\Users\\<USER>\\.claude\\projects\\<PROJECT>\\<SESSION_ID>.jsonl",
+  "cwd": "C:\\work\\project",
+  "prompt_id": "00000000-0000-4000-8000-0000000000a1",
+  "permission_mode": "default",
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "✓ Perintah dijalankan dengan output: \"selesai\"\n\n---\n\n**Semua tugas selesai:**\n1. ✓ Membaca hello.txt (berisi \"halo dunia\")\n2. ✓ Membuat notes.txt dengan isi \"catatan\"\n3. ✓ Mengubah \"Halo\" → \"Hai\" di app.ts\n4. ✓ Menjalankan echo selesai",
+  "background_tasks": [],
+  "session_crons": []
+}

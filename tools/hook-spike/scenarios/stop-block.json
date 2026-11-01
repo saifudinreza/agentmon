@@ -1,0 +1,1 @@
+[{"event":"Stop","when":{"stop_hook_active":false},"stdout":{"decision":"block","reason":"UMPAN-BALIK: tambahkan juga file done.txt berisi teks ok."}}, {"event":"PermissionRequest","stdout":{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}}]

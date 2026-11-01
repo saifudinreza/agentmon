@@ -1,0 +1,9 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "C:\\Users\\<USER>\\.claude\\projects\\<PROJECT>\\<SESSION_ID>.jsonl",
+  "cwd": "C:\\work\\project",
+  "prompt_id": "00000000-0000-4000-8000-0000000000a1",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Kerjakan berurutan: (1) baca file hello.txt, (2) buat file notes.txt berisi teks 'catatan', (3) di app.ts ubah kata Halo menjadi Hai, (4) jalankan perintah: echo selesai. Setelah itu berhenti."
+}

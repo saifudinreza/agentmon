@@ -318,20 +318,20 @@ Prioritas: **P0** wajib untuk beta publik, **P1** penting setelahnya, **P2** bac
 
 ## 11. Integrasi agent
 
-Sudah dicek dengan dokumentasi resmi pada 31 Oktober 2026. Perilaku nyata tetap dibuktikan lewat spike ([#003](docs/issues/003-spike-hook-logger-claude-code.md), [#048](docs/issues/048-spike-hooks-codex.md)).
+Sudah dicek dengan dokumentasi resmi pada 31 Oktober 2026. Kolom Claude Code sudah dibuktikan dengan Claude Code 2.1.314 pada 1 November 2026, lengkap dengan temuan dan batasannya di [docs/hooks-claude-code.md](docs/hooks-claude-code.md). Kolom Codex masih dari dokumentasi dan dibuktikan lewat spike [#048](docs/issues/048-spike-hooks-codex.md).
 
 | Kemampuan | Claude Code | Codex CLI |
 |---|---|---|
 | Menahan sebelum aksi | `PreToolUse` | `PreToolUse` |
 | Izinkan | `permissionDecision: "allow"` | `permissionDecision: "allow"` |
-| Tolak + alasan | `deny` + `permissionDecisionReason`, terlihat oleh Claude | `deny` didukung, tetapi **tidak terdokumentasi** apakah model melihat alasannya |
-| Kembali ke alur normal | Tanpa keputusan | Tanpa keputusan (perlu dibuktikan untuk `PreToolUse`) |
-| `ask` di `PreToolUse` | Didukung | **Tidak didukung. Hook dianggap gagal dan aksi dilanjutkan.** |
-| Mengubah input | `updatedInput`, mengganti seluruh input | `updatedInput` bersama `allow`. Bash dan `apply_patch` memakai string `command`. |
-| `PermissionRequest` | `behavior`: `allow`/`deny`, `updatedInput`, `message`, `interrupt` | `behavior`: `allow`/`deny`, `message`. `updatedInput` **tidak didukung**. |
-| Catatan tambahan ke agent | `additionalContext` | Perlu diuji |
-| Lanjut setelah selesai | `Stop` + `decision: "block"` + `reason` | Sama. `reason` menjadi prompt lanjutan. |
-| Timeout hook | Default 600 detik. `PreToolUse` yang timeout melanjutkan alur normal. | Perlu diuji |
+| Tolak + alasan | `deny` + `permissionDecisionReason`. **Terbukti:** Claude membaca alasannya, dengan awalan `PreToolUse:<Alat> hook error:`. | `deny` didukung, tetapi **tidak terdokumentasi** apakah model melihat alasannya |
+| Kembali ke alur normal | Tanpa keputusan. **Terbukti** di `PreToolUse`, `PermissionRequest`, saat timeout, dan saat hook keluar dengan kode 1. | Tanpa keputusan (perlu dibuktikan untuk `PreToolUse`) |
+| `ask` di `PreToolUse` | Diterima. **Di mode headless langsung menolak dengan alasannya**, perilaku interaktif belum teramati. | **Tidak didukung. Hook dianggap gagal dan aksi dilanjutkan.** |
+| Mengubah input | `updatedInput`, mengganti seluruh input. **Terbukti** di `PreToolUse` dan `PermissionRequest`, tetapi **Claude tidak diberi tahu** bahwa inputnya berubah. | `updatedInput` bersama `allow`. Bash dan `apply_patch` memakai string `command`. |
+| `PermissionRequest` | `behavior`: `allow`/`deny`, `updatedInput`, `message` terbukti. `ask` **diabaikan** seperti tanpa keputusan. `interrupt` belum diuji. | `behavior`: `allow`/`deny`, `message`. `updatedInput` **tidak didukung**. |
+| Catatan tambahan ke agent | `additionalContext`. **Terbukti** di `PreToolUse`, tampil ke Claude sebagai `PreToolUse:<Alat> hook additional context`. | Perlu diuji |
+| Lanjut setelah selesai | `Stop` + `decision: "block"` + `reason`. **Terbukti**, dan `stop_hook_active` bernilai `true` pada pemanggilan kedua. | Sama. `reason` menjadi prompt lanjutan. |
+| Timeout hook | Default 600 detik. **Terbukti:** hook yang timeout dihentikan, keluarannya dibuang, dan alur normal dilanjutkan, baik di `PreToolUse` maupun `PermissionRequest`. | Perlu diuji |
 | Konfigurasi | `settings.json` | `~/.codex/hooks.json`, trust lewat `/hooks` |
 
 Dampak ke desain:
@@ -341,7 +341,15 @@ Dampak ke desain:
 - **`permission_mode` tersedia di input hook.** Pada mode `bypassPermissions`, AgentMon hanya memantau dan tidak menahan aksi, kecuali diatur lain oleh pengguna.
 - **Trust Codex terikat ke hash hook.** Isi hook berubah berarti perlu trust ulang, jadi command hook harus stabil antarversi.
 - **Terima sebagian di Codex** harus menyusun ulang `apply_patch`, sehingga dibuktikan terpisah.
-- **Fallback** bila terima sebagian tidak bisa: tolak utuh + komentar per hunk.
+- **Fallback** bila terima sebagian tidak bisa: tolak utuh + komentar per hunk. Terima sebagian di Claude Code **terbukti bisa**, sehingga fallback ini hanya cadangan.
+
+Temuan dari uji nyata Claude Code (rincian di [docs/hooks-claude-code.md](docs/hooks-claude-code.md)):
+
+- **Claude tidak tahu bila inputnya diubah.** Setelah terima sebagian, Claude masih mengira usulan aslinya yang diterapkan. Keputusan sebagian wajib disertai `additionalContext` yang menyebut hunk apa yang ditolak.
+- **Nama alat shell berbeda per sistem.** Di Windows, Claude Code punya `Bash` dan `PowerShell`, dan model memilih `PowerShell` secara bawaan. Adapter dan penilai risiko harus menangani keduanya.
+- **`PermissionRequest` tidak muncul untuk semua aksi.** Ia hanya muncul bila ada prompt izin, jadi tidak untuk `Read`, `Glob`, atau perintah yang dianggap aman seperti `echo`. `PreToolUse` muncul untuk semua alat. Keputusan Edit dan Write sebaiknya diambil di `PreToolUse`, karena `allow` di sana melewati prompt dan `updatedInput` bisa dipakai di sana.
+- **Mode izin tidak menghentikan `PreToolUse`.** Pada `acceptEdits` dan `bypassPermissions`, `PreToolUse` tetap muncul dengan `permission_mode` yang sesuai, sehingga memantau saja tetap mungkin.
+- **Hook `command` yang memanggil `node` butuh sekitar 200 ms** di laptop pengembangan (Windows), sehingga target 150 ms di bagian 14 tidak tercapai dengan cara itu. Hook bertipe `http` terbukti berfungsi di Claude Code dan tidak menjalankan proses baru, serta gagal secara aman bila server mati. Pilihan ini ditentukan di issue daemon dan hook runner.
 
 Agent yang berjalan di terminal Antigravity atau editor lain tetap terpantau karena hooks melekat pada agent.
 
