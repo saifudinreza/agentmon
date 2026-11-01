@@ -1,2 +1,12 @@
 # Rincian issue disimpan lokal dan dikelola lewat GitHub Issues
 docs/issues/
+
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
