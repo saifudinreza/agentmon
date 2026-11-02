@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# Build lama di PR dibatalkan bila ada push baru, karena menit macOS dan Windows
+# ditagih lebih mahal daripada Linux. Build di main tidak dibatalkan supaya setiap
+# hasilnya tercatat.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     # Daemon dan hook berjalan di laptop pengguna, jadi diuji di ketiga sistem operasi.
