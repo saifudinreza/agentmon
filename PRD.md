@@ -349,7 +349,7 @@ Temuan dari uji nyata Claude Code (rincian di [docs/hooks-claude-code.md](docs/h
 - **Nama alat shell berbeda per sistem.** Di Windows, Claude Code punya `Bash` dan `PowerShell`, dan model memilih `PowerShell` secara bawaan. Adapter dan penilai risiko harus menangani keduanya.
 - **`PermissionRequest` tidak muncul untuk semua aksi.** Ia hanya muncul bila ada prompt izin, jadi tidak untuk `Read`, `Glob`, atau perintah yang dianggap aman seperti `echo`. `PreToolUse` muncul untuk semua alat. Keputusan Edit dan Write sebaiknya diambil di `PreToolUse`, karena `allow` di sana melewati prompt dan `updatedInput` bisa dipakai di sana.
 - **Mode izin tidak menghentikan `PreToolUse`.** Pada `acceptEdits` dan `bypassPermissions`, `PreToolUse` tetap muncul dengan `permission_mode` yang sesuai, sehingga memantau saja tetap mungkin.
-- **Hook `command` yang memanggil `node` butuh sekitar 200 ms** di laptop pengembangan (Windows), sehingga target 150 ms di bagian 14 tidak tercapai dengan cara itu. Hook bertipe `http` terbukti berfungsi di Claude Code dan tidak menjalankan proses baru, serta gagal secara aman bila server mati. Pilihan ini ditentukan di issue daemon dan hook runner.
+- **Hook `command` yang memanggil `node` butuh sekitar 200 ms** di laptop pengembangan (Windows), sehingga target 150 ms di bagian 14 tidak tercapai dengan cara itu. Hook bertipe `http` terbukti berfungsi di Claude Code dan tidak menjalankan proses baru, serta gagal secara aman bila server mati. **Diputuskan 1 November 2026:** Claude Code terhubung ke daemon lewat hook `http`. Autentikasi lewat header `Authorization` terbukti berfungsi ([docs/daemon.md](docs/daemon.md)). Jalur Codex diputuskan di issue Codex.
 
 Agent yang berjalan di terminal Antigravity atau editor lain tetap terpantau karena hooks melekat pada agent.
 
@@ -535,6 +535,7 @@ Metrik dihitung lokal lewat rekap. Telemetri ke server hanya bila pengguna menye
 2. **Ringkasan AI.** Beta memakai ringkasan deterministik. AI berjalan di laptop sebagai opt-in sesudahnya.
 3. **`git push`.** Termasuk risiko tinggi dan tidak bisa di-auto-approve.
 4. **Mode longgar.** Pada `bypassPermissions`, AgentMon hanya memantau, kecuali diatur lain oleh pengguna.
+5. **Jalur hook Claude Code (1 November 2026).** Memakai hook bertipe `http` ke daemon, bukan hook `command` dengan `node`. Alasan dan bukti ada di [docs/hooks-claude-code.md](docs/hooks-claude-code.md).
 
 ### Pertanyaan terbuka
 

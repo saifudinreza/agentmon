@@ -1,2 +1,7 @@
 packages:
   - packages/*
+
+# Skrip build dependensi dinonaktifkan secara eksplisit. esbuild (dipakai tsx) memakai
+# biner siap pakai per platform, jadi skripnya tidak diperlukan.
+allowBuilds:
+  esbuild: false
