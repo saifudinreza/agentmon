@@ -153,6 +153,24 @@ Dicocokkan dengan data nyata, **tidak ada yang perlu diubah**:
 | `agent.stopped` (`lastMessage?`) | `Stop` | Cocok dengan `last_assistant_message` |
 | `agent.notification` | `Notification` | Belum teramati |
 
+## 8a. Hook `http` dengan daemon sungguhan (issue daemon lokal)
+
+Diuji pada 1 November 2026 dengan daemon di `packages/bridge` (lihat [daemon.md](daemon.md)) dan Claude Code 2.1.314, tiap kali satu sesi `claude -p`.
+
+| # | Percobaan | Hasil |
+|---|---|---|
+| 22 | Header `Authorization: Bearer <token>` ditulis langsung di pengaturan | Diterima. `PreToolUse`, `PermissionRequest`, dan `Stop` sampai ke daemon |
+| 23 | Header `Bearer $AGENTMON_TOKEN` dengan `allowedEnvVars` | Diterima. Interpolasi variabel lingkungan berfungsi |
+| 24 | Tanpa header | Daemon menolak dengan 401. Alur Claude normal |
+| 25 | Token salah | Daemon menolak dengan 401. Alur Claude normal |
+| 26 | Daemon dimatikan | Port menolak koneksi seketika. Sesi selesai normal, tanpa jeda akibat hook |
+
+Temuan:
+- **Claude Code tidak mengirim `Origin` maupun `Sec-Fetch-*`**, dan `Host` berbentuk `127.0.0.1:<port>`. Aturan daemon yang menolak request dari browser tidak mengganggu Claude Code.
+- **Hook yang ditolak (401) tidak dapat dibedakan dari hook tanpa keputusan** dari sisi Claude: tidak ada pesan error hook yang sampai ke model, dan aksi mengikuti alur izin normal.
+- **Autentikasi dengan header terbukti**, jadi daemon tidak perlu rancangan token lain.
+- Pada macOS dan Linux belum diuji, hanya Windows.
+
 ## 8. Belum terbukti
 
 - Event `Notification` (tidak muncul di mode non-interaktif).
@@ -161,7 +179,7 @@ Dicocokkan dengan data nyata, **tidak ada yang perlu diubah**:
 - `interrupt` pada `deny`, dan `additionalContext` di event selain `PreToolUse`.
 - Interaksi `allow` dengan aturan deny atau ask milik pengguna, serta beberapa hook sekaligus pada satu event.
 - `updatedInput` dengan sebagian kolom saja.
-- Autentikasi hook `http` (header) dan pembatasan URL yang diizinkan.
+- Pembatasan URL hook `http` lewat pengaturan `allowedHttpHookUrls` (header sudah terbukti, lihat bagian 8a).
 - Alat selain `Read`, `Glob`, `Write`, `Edit`, `Bash`, `PowerShell`, misalnya `NotebookEdit` dan alat MCP.
 - Perilaku di macOS dan Linux.
 
