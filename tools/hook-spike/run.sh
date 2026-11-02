@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Menjalankan satu eksperimen hook dengan Claude Code sungguhan di folder sementara.
 # Pemakaian: run.sh <nama> <skenario.json|-> "<prompt>" [argumen tambahan untuk claude...]
-# Variabel: SPIKE_OUT (folder hasil), SPIKE_TIMEOUT (detik, bawaan 600), SPIKE_MODEL, SPIKE_TURNS
+# Variabel: SPIKE_OUT (folder hasil), SPIKE_TIMEOUT (detik, bawaan 600), SPIKE_MODEL, SPIKE_TURNS,
+#   SPIKE_SETTINGS (berkas pengaturan siap pakai, menggantikan make-settings.mjs),
+#   SPIKE_SEED (folder isi proyek percobaan, bawaan seed/)
 # Butuh Git Bash di Windows (untuk `pwd -W`).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -10,7 +12,7 @@ winpath() { (cd "$1" && (pwd -W 2>/dev/null || pwd)); }
 name="$1"; scenario="$2"; prompt="$3"; shift 3
 out="${SPIKE_OUT:-$here/out}/$name"
 rm -rf "$out"; mkdir -p "$out/project"
-cp -r "$here/seed/." "$out/project/"
+cp -r "${SPIKE_SEED:-$here/seed}/." "$out/project/"
 out="$(winpath "$out")"
 hook="$(winpath "$here")/log-hook.mjs"
 
@@ -18,7 +20,11 @@ export SPIKE_LOG="$out/events.jsonl"
 if [ "$scenario" != "-" ]; then
   export SPIKE_SCENARIO="$(winpath "$(dirname "$scenario")")/$(basename "$scenario")"
 fi
-node "$here/make-settings.mjs" "$hook" "${SPIKE_TIMEOUT:-600}" "${SPIKE_EVENTS:-}" > "$out/settings.json"
+if [ -n "${SPIKE_SETTINGS:-}" ]; then
+  cp "$SPIKE_SETTINGS" "$out/settings.json"
+else
+  node "$here/make-settings.mjs" "$hook" "${SPIKE_TIMEOUT:-600}" "${SPIKE_EVENTS:-}" > "$out/settings.json"
+fi
 
 # Bersihkan variabel CLAUDE* milik sesi induk supaya sesi percobaan berdiri sendiri.
 # "|| true" karena grep keluar dengan kode 1 bila tidak ada variabel CLAUDE*

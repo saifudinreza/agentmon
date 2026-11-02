@@ -273,6 +273,62 @@ describe("satu daemon saja", () => {
   });
 });
 
+describe("kegagalan tidak pernah menjadi persetujuan", () => {
+  const hookInput = JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Write" });
+  const postHook = (d: RunningDaemon, body = hookInput, headers: Record<string, string> = { ...auth(d), ...json }) =>
+    send(d.port, { method: "POST", path: "/hook", headers, body });
+
+  // Kata yang menandakan keputusan dari hook. Tidak boleh muncul di jawaban kegagalan mana pun.
+  const decisionWords = ["permissionDecision", "behavior", '"decision"', "allow", "updatedInput"];
+
+  const cases: {
+    name: string;
+    options?: Parameters<typeof startDaemon>[0];
+    call: (d: RunningDaemon) => Promise<Reply>;
+    status: number;
+  }[] = [
+    {
+      name: "penangan melempar error",
+      options: {
+        onHook: () => {
+          throw new Error("rusak");
+        },
+      },
+      call: (d) => postHook(d),
+      status: 200,
+    },
+    {
+      name: "penangan menolak (promise gagal)",
+      options: { onHook: () => Promise.reject(new Error("rusak")) },
+      call: (d) => postHook(d),
+      status: 200,
+    },
+    { name: "penangan tidak memberi jawaban", options: { onHook: () => undefined }, call: (d) => postHook(d), status: 200 },
+    { name: "JSON rusak", call: (d) => postHook(d, "{rusak"), status: 400 },
+    { name: "bukan input hook", call: (d) => postHook(d, JSON.stringify({ a: 1 })), status: 400 },
+    { name: "content-type salah", call: (d) => postHook(d, hookInput, { ...auth(d), "content-type": "text/plain" }), status: 415 },
+    {
+      name: "isi terlalu besar",
+      options: { maxBodyBytes: 512 },
+      call: (d) => postHook(d, JSON.stringify({ hook_event_name: "PostToolUse", pad: "x".repeat(3000) })),
+      status: 413,
+    },
+    { name: "tanpa token", call: (d) => postHook(d, hookInput, json), status: 401 },
+    { name: "token salah", call: (d) => postHook(d, hookInput, { authorization: `Bearer ${"0".repeat(64)}`, ...json }), status: 401 },
+    { name: "dari browser", call: (d) => postHook(d, hookInput, { ...auth(d), ...json, origin: "https://situs.example" }), status: 403 },
+    { name: "rute tidak dikenal", call: (d) => send(d.port, { method: "POST", path: "/lain", headers: { ...auth(d), ...json }, body: hookInput }), status: 404 },
+  ];
+
+  test.each(cases)("$name", async ({ options, call, status }) => {
+    const d = await start(options);
+    const res = await call(d);
+    expect(res.status).toBe(status);
+    // Kegagalan yang tetap dijawab 200 harus berupa "tanpa keputusan", yaitu {}.
+    if (status === 200) expect(res.body).toBe("{}");
+    for (const word of decisionWords) expect(res.body).not.toContain(word);
+  });
+});
+
 describe("token", () => {
   test("dibuat acak, disimpan, dan dipakai ulang", async () => {
     const first = await start();
