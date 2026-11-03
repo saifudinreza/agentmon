@@ -56,7 +56,11 @@ Tulis alamatnya sebagai `127.0.0.1`, **bukan** `localhost`. Daemon hanya mendeng
 
 Token juga bisa dibaca dari variabel lingkungan: `"Authorization": "Bearer $AGENTMON_TOKEN"` bersama `"allowedEnvVars": ["AGENTMON_TOKEN"]`. Variabel itu harus ada di lingkungan proses Claude Code, jadi pemasang otomatis (issue setup) lebih baik menuliskan tokennya langsung di pengaturan tingkat pengguna.
 
+**Konfigurasi ini memuat token.** Siapa pun yang bisa membaca berkas pengaturannya bisa memanggil daemon. Karena itu pemasang (issue setup) harus: mempertahankan izin berkas pengaturan yang sudah ada dan tidak membuatnya lebih longgar (di macOS dan Linux, berkas baru dibuat `0600`), tidak pernah menuliskan isi konfigurasi atau token ke log, dan tidak menaruhnya di dalam repo proyek. Pembuat konfigurasi sendiri tidak memasukkan token ke pesan error.
+
 Jawaban daemon selalu objek JSON. `{}` berarti tanpa keputusan, sehingga alur izin normal berjalan.
+
+Konfigurasi di atas dihasilkan oleh `buildClaudeHookSettings` (`packages/bridge/src/hook-config.ts`), bukan ditulis tangan, supaya persis sama dengan yang nanti dipasang oleh perintah setup. Fungsi itu mendaftarkan tujuh event (`SessionStart`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd`), memakai `127.0.0.1`, dan tidak pernah memuat `onFailure`. Batas tunggu hook dibedakan: 600 detik hanya untuk `PreToolUse` dan `PermissionRequest` (menunggu keputusan dari HP), 10 detik untuk lima event pengamatan, supaya daemon yang membeku tidak menahan agent lama pada event yang tidak menunggu siapa pun. `UserPromptSubmit` sengaja tidak didaftarkan karena isinya adalah teks perintah pengguna dan tidak dipakai kontrak pesan.
 
 ## Endpoint
 | Endpoint | Fungsi |
@@ -67,4 +71,6 @@ Jawaban daemon selalu objek JSON. `{}` berarti tanpa keputusan, sehingga alur iz
 Kode lain: `400` (JSON atau bentuk tidak valid), `404`, `405`, `413` (terlalu besar), `415` (bukan JSON).
 
 ## Perilaku saat gagal
-Penangan hook yang error tetap dijawab `200` dengan `{}` dan dicatat, bukan `500` dan bukan persetujuan. Daemon mati atau menolak request tidak menghentikan agent: Claude Code menganggapnya kesalahan tanpa pemblokiran dan meneruskan alur izin normal. Buktinya ada di [hooks-claude-code.md](hooks-claude-code.md).
+Penangan hook yang error tetap dijawab `200` dengan `{}` dan dicatat, bukan `500` dan bukan persetujuan. Daemon mati atau menolak request tidak menghentikan agent: Claude Code menganggapnya kesalahan tanpa pemblokiran dan meneruskan alur izin normal. Buktinya ada di [hooks-claude-code.md](hooks-claude-code.md), bagian 8b: jawaban teks biasa, JSON terpotong, nilai keputusan yang tidak dikenal, status 500, token salah, port salah, daemon mati, dan daemon yang terlalu lambat semuanya diperlakukan seperti tanpa keputusan.
+
+**Daemon tidak boleh memblokir event loop-nya.** Hook menunggu jawaban sampai batas waktunya (bawaan 600 detik), jadi daemon yang membeku sama dengan agent yang berhenti. Pekerjaan berat di dalam penangan hook, misalnya menghitung diff besar atau menjalankan git, harus asinkron.

@@ -113,11 +113,8 @@ Hook hanya melihat **satu aksi dalam satu waktu**. Edit berikutnya belum diketah
  Laptop                                     Cloud              HP
 ┌───────────────────────────────┐
 │ Claude Code / Codex           │
-│   │ stdin JSON      ▲ keputusan
-│   ▼                 │         │
-│ Hook (proses singkat)         │
-│   │ localhost       ▲         │
-│   ▼                 │         │      ┌───────────┐     ┌──────────┐
+│   │ hook http       ▲ keputusan
+│   ▼ 127.0.0.1       │         │      ┌───────────┐     ┌──────────┐
 │ Daemon AgentMon ──────────────┼─WSS─►│  Relay    │◄WSS►│   PWA    │
 │   ├ penilai risiko            │      │  (Hono)   │     │ (React)  │
 │   ├ policy engine             │      ├───────────┤     └──────────┘
@@ -133,7 +130,7 @@ Hook hanya melihat **satu aksi dalam satu waktu**. Edit berikutnya belum diketah
 
 | Komponen | Paket | Tanggung jawab |
 |---|---|---|
-| **Hook** | `bridge` | Proses singkat. Membaca JSON dari stdin, bicara ke daemon, mengembalikan keputusan. Tidak mengakses internet. |
+| **Hook** | `bridge` | Konfigurasi di agent yang memanggil daemon. Claude Code memakai hook `http` langsung ke daemon, tanpa menjalankan proses baru. Jalur Codex diputuskan di issue Codex. Hanya bicara ke `127.0.0.1`, tidak mengakses internet. |
 | **Daemon** | `bridge` | Risiko, aturan, approval, diff, ringkasan, checkpoint, koneksi ke relay. |
 | **CLI** | `bridge` | `setup`, `uninstall`, `pause`, `resume`, `status`, pairing. |
 | **Relay** | `server` | Meneruskan pesan, menyimpan riwayat terenkripsi, mengelola perangkat, mengirim push. |
@@ -145,7 +142,7 @@ Hook hanya melihat **satu aksi dalam satu waktu**. Edit berikutnya belum diketah
 
 | Kondisi | Perilaku wajib |
 |---|---|
-| Daemon mati atau tidak merespons | Hook keluar tanpa keputusan, sehingga agent berperilaku normal. |
+| Daemon mati atau tidak merespons | Hook gagal tanpa memblokir (koneksi ditolak atau timeout), sehingga agent berperilaku normal. |
 | Tidak ada perangkat yang bisa dihubungi **[Asumsi]** | Daemon langsung kembali ke alur izin normal, tanpa menunggu batas waktu. |
 | HP tidak menjawab sampai batas waktu | Kembali ke alur izin normal, prompt muncul di terminal. |
 | Relay putus | Daemon reconnect dan menyimpan event ke antrean. Keputusan tertahan mengikuti aturan batas waktu. |
@@ -437,7 +434,7 @@ Angka berikut adalah target awal **[Asumsi]**.
 | Aspek | Target |
 |---|---|
 | Instalasi | ≤ 2 menit, termasuk pairing. |
-| Overhead hook non-penahan | p95 < 150 ms. Hook tidak dipanggil lewat `npx`. |
+| Overhead hook non-penahan | p95 < 150 ms. Claude Code memakai hook `http` ke daemon, bukan program `node` yang butuh sekitar 200 ms per panggilan. |
 | Penilaian risiko dan policy | p95 < 20 ms di daemon. |
 | Latensi event ke HP | p95 < 2 detik saat relay aktif. |
 | Reconnect | < 5 detik setelah jaringan pulih, tanpa kehilangan event. |

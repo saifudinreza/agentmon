@@ -13,6 +13,11 @@ Alat untuk riset issue "Spike: hook logger Claude Code dan fixture". Bukan kode 
 | `make-fixtures.mjs` | Membuat fixture bersih di `packages/bridge/fixtures/claude-code` |
 | `scenarios/` | Aturan keputusan per eksperimen (tolak, izinkan, ubah input, timeout, dan lainnya) |
 | `seed/` | Isi folder proyek percobaan |
+| `verify-fail-open.sh` | Menjalankan 11 skenario kegagalan hook `http` dengan Claude Code sungguhan dan menilai hasilnya (sekitar 1 menit) |
+| `fake-daemon.mjs` | Daemon palsu yang menjawab salah (lambat, teks biasa, JSON rusak, status 500, `allow`) |
+| `judge.mjs` | Menilai satu eksperimen: sesi selesai, tidak ada aksi yang disetujui, alur izin normal teramati |
+| `print-config.ts` | Mencetak konfigurasi hook dari pembuat konfigurasi yang sebenarnya |
+| `measure-overhead.ts` | Mengukur waktu tambahan hook `http` dengan daemon sebenarnya (satu sesi, 15 pembacaan berkas) |
 
 ## Cara menjalankan
 Butuh Node.js, Claude Code, dan Git Bash (di Windows). Eksperimen memakai model `haiku` dan memakai sedikit kuota langgananmu.
@@ -24,5 +29,14 @@ SPIKE_OUT=/tmp/spike tools/hook-spike/run.sh 03-allow-pretooluse \
 ```
 
 Hook dipasang hanya lewat `--settings` untuk satu sesi percobaan, jadi pengaturan Claude Code globalmu tidak disentuh. Variabel lain: `SPIKE_TIMEOUT` (detik), `SPIKE_MODEL`, `SPIKE_TURNS`, `SPIKE_EVENTS` (daftar event, dipisah koma), dan `SPIKE_HTTP_URL` (memakai hook bertipe `http`).
+
+Pembuktian anti-macet dan pengukuran overhead memakai konfigurasi dari kode produk, bukan pengaturan tulisan tangan:
+
+```bash
+SPIKE_OUT=/tmp/spike tools/hook-spike/verify-fail-open.sh
+cd packages/bridge && SPIKE_OUT=/tmp/spike node --import tsx ../../tools/hook-spike/measure-overhead.ts
+```
+
+Keduanya membutuhkan `pnpm install` lebih dulu, karena memakai `tsx` dari paket `bridge`. Variabel tambahan untuk `run.sh`: `SPIKE_SETTINGS` (berkas pengaturan siap pakai) dan `SPIKE_SEED` (isi folder proyek).
 
 Hasil tiap eksperimen (`events.jsonl`, `stream.jsonl`) berisi path dan isi pengaturan laptopmu, jadi folder `out/` tidak ikut git. Gunakan `make-fixtures.mjs` untuk membuat data yang aman dibagikan.

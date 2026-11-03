@@ -11,6 +11,7 @@ Hasil riset issue "Spike: hook logger Claude Code dan fixture" (#5). Diuji denga
 5. **Dua asumsi PRD perlu disesuaikan:** nama alat shell berbeda per sistem (`Bash` dan `PowerShell`), dan `PermissionRequest` tidak muncul untuk semua aksi.
 6. **Hook `command` yang memanggil `node` butuh sekitar 200 ms**, lebih lambat dari target 150 ms. Hook bertipe `http` terbukti berfungsi sebagai alternatif.
 7. **Skema di paket `shared` (#3) tidak perlu diubah.**
+8. **Hook `http` aman terhadap semua kegagalan yang diuji**, dan overhead-nya jauh di bawah hook `node` (bagian 8b).
 
 ## 2. Cara riset dan batasannya
 
@@ -171,6 +172,47 @@ Temuan:
 - **Autentikasi dengan header terbukti**, jadi daemon tidak perlu rancangan token lain.
 - Pada macOS dan Linux belum diuji, hanya Windows.
 
+## 8b. Kondisi gagal dan overhead hook `http` (issue hook http ke daemon)
+
+Diuji pada 2 November 2026 dengan Claude Code 2.1.314 di Windows. Konfigurasi hook berasal dari pembuat konfigurasi yang sebenarnya (`buildClaudeHookSettings`), dipasang lewat `--settings` untuk satu sesi, jadi pengaturan Claude Code pengguna tidak disentuh (hash berkas pengaturannya sama sebelum dan sesudah). Skrip: `tools/hook-spike/verify-fail-open.sh` dan `measure-overhead.ts`.
+
+### Kondisi gagal
+Setiap skenario meminta Claude membuat sebuah berkas. Yang dinilai: sesi selesai, berkas **tidak** terbuat (tidak ada persetujuan), alur izin normal teramati, tidak ada pesan error hook yang sampai ke Claude, dan waktunya wajar.
+
+| # | Skenario | Hasil |
+|---|---|---|
+| 00 | Tanpa hook sama sekali (pembanding) | Ditolak lewat alur izin normal, sesi 9 sampai 10 detik |
+| 01 | Daemon sungguhan, token benar, tanpa keputusan | Sama seperti pembanding |
+| 02 | Daemon mati | Sama seperti pembanding, tanpa jeda yang konsisten |
+| 03 | Port salah | Sama seperti pembanding |
+| 04 | Token salah (ditolak 401 oleh daemon sungguhan) | Sama seperti pembanding |
+| 05 | Daemon terlalu lambat (menjawab setelah 15 detik, batas waktu hook 3 detik) | Hook dihentikan pada batas waktunya. Sesi 17 sampai 20 detik, bukan puluhan detik |
+| 06 | Jawaban 200 berupa teks biasa | Sama seperti pembanding |
+| 07 | Jawaban 200 berupa JSON terpotong | Sama seperti pembanding |
+| 08 | Jawaban 200 berupa JSON valid dengan nilai keputusan yang tidak dikenal | Sama seperti pembanding |
+| 09 | Jawaban status 500 | Sama seperti pembanding |
+| 10 | Kontrol positif: jawaban `allow` yang sah | Aksi **berjalan**, berkas terbuat |
+
+Dua putaran penuh: 11 dari 11 lolos pada keduanya. Kontrol positif (10) penting: ia membuktikan uji ini memang bisa mendeteksi aksi yang disetujui, sehingga "tidak ada yang disetujui" di skenario lain bermakna.
+
+Temuan:
+- **Tidak ada kegagalan yang menghasilkan persetujuan**, dan tidak ada yang mengirim pesan error hook ke Claude. Semuanya identik dengan tanpa hook.
+- **Daemon mati tidak menambah jeda yang konsisten.** Selisih durasi antara skenario 00 dan 02 berubah arah antar putaran (sekitar 2 detik ke dua arah) dan berasal dari pilihan alat oleh model, bukan dari hook.
+- **Batas waktu hook dipatuhi.** Dengan batas 3 detik, sesi yang daemon-nya diam 15 detik hanya bertambah sekitar 8 sampai 10 detik, bukan menunggu 15 detik per hook.
+- Dalam beberapa sesi Claude memilih `Bash` dengan pengalihan keluaran (`> notes.txt`), bukan `Write`. Penolakannya tetap alur izin normal ("needs approval").
+- **Daemon yang membeku membuat agent menunggu sampai batas waktu hook** (bawaan 600 detik). Ini sempat terjadi tanpa sengaja: skrip pengukuran memblokir proses yang sama dengan tempat daemon berjalan (`spawnSync`), dan Claude menunggu tanpa jawaban. Bagi Claude itu sama dengan skenario 05. Akibat untuk desain: **daemon tidak boleh memblokir event loop-nya**, misalnya dengan menghitung diff besar atau menjalankan git secara sinkron di dalam penangan hook.
+
+### Overhead
+Diukur dengan 15 pembacaan berkas berurutan per putaran, tiga putaran. Untuk tiap pembacaan: waktu antara `PreToolUse` dan `PostToolUse` di daemon dikurangi `duration_ms` dari Claude Code. Angkanya memuat dua panggilan sekaligus (Pre dan Post), jadi **satu hook pasti tidak lebih lambat dari angka ini**.
+
+| Putaran | Median | p95 | Target PRD §14 (< 150 ms) |
+|---|---|---|---|
+| 1 | 24,5 ms | 59,8 ms | Terpenuhi |
+| 2 | 28,2 ms | 122,7 ms | Terpenuhi |
+| 3 | 28,2 ms | 48,4 ms | Terpenuhi |
+
+Pembanding: hook `node` sekitar 200 ms per panggilan (bagian 4). Hanya 15 sampel per putaran, jadi p95 praktis sama dengan nilai tertinggi, dan putaran 2 memuat satu pencilan 122,7 ms yang masih di bawah target. Ukuran ini juga memuat sedikit kerja internal Claude Code di antara dua hook, jadi cenderung melebih-lebihkan.
+
 ## 8. Belum terbukti
 
 - Event `Notification` (tidak muncul di mode non-interaktif).
@@ -180,6 +222,8 @@ Temuan:
 - Interaksi `allow` dengan aturan deny atau ask milik pengguna, serta beberapa hook sekaligus pada satu event.
 - `updatedInput` dengan sebagian kolom saja.
 - Pembatasan URL hook `http` lewat pengaturan `allowedHttpHookUrls` (header sudah terbukti, lihat bagian 8a).
+- Kondisi gagal hook `http` di macOS dan Linux (bagian 8b hanya diuji di Windows).
+- Perilaku bila hook `http` lambat pada event yang menunggu keputusan di terminal interaktif. Mode non-interaktif tidak memunculkan prompt.
 - Alat selain `Read`, `Glob`, `Write`, `Edit`, `Bash`, `PowerShell`, misalnya `NotebookEdit` dan alat MCP.
 - Perilaku di macOS dan Linux.
 

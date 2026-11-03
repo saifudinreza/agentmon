@@ -19,6 +19,12 @@ export function paths(home: string) {
   };
 }
 
+// Bentuk token yang sah: 64 karakter heksadesimal. Satu definisi untuk semua pemakai
+// (pembaca berkas token dan pembuat konfigurasi hook), supaya tidak bisa menyimpang.
+export function isValidToken(token: string): boolean {
+  return /^[0-9a-f]{64}$/.test(token);
+}
+
 // Token dibuat sekali lalu dipakai ulang. Disimpan sebagai berkas biasa supaya hook
 // dan CLI di laptop yang sama bisa membacanya, sedangkan program dari luar tidak.
 export function loadOrCreateToken(home: string): string {
@@ -34,7 +40,7 @@ export function loadOrCreateToken(home: string): string {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
   const token = readFileSync(file, "utf8").trim();
-  if (!/^[0-9a-f]{64}$/.test(token)) {
+  if (!isValidToken(token)) {
     throw new Error(`Berkas token rusak: ${file}. Hapus berkas itu lalu jalankan ulang.`);
   }
   return token;
