@@ -63,7 +63,7 @@ Jawaban daemon selalu objek JSON. `{}` berarti tanpa keputusan, sehingga alur iz
 Konfigurasi di atas dihasilkan oleh `buildClaudeHookSettings` (`packages/bridge/src/hook-config.ts`), bukan ditulis tangan, supaya persis sama dengan yang nanti dipasang oleh perintah setup. Fungsi itu mendaftarkan enam event (`PreToolUse`, `PermissionRequest`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd`), memakai `127.0.0.1`, dan tidak pernah memuat `onFailure`. Batas tunggu hook dibedakan: 600 detik hanya untuk `PreToolUse` dan `PermissionRequest` (menunggu keputusan dari HP), 10 detik untuk empat event pengamatan, supaya daemon yang membeku tidak menahan agent lama pada event yang tidak menunggu siapa pun. `UserPromptSubmit` sengaja tidak didaftarkan karena isinya adalah teks perintah pengguna dan tidak dipakai kontrak pesan. `SessionStart` juga tidak didaftarkan: event itu hanya mendukung hook `command`, bukan `http`, sehingga event `session.started` tidak datang dari hook ini.
 
 ## Adapter Claude Code (pemetaan ke kontrak)
-Input hook mentah dari Claude Code diubah menjadi event baku (paket `shared`) oleh adapter di `packages/bridge/src/adapters/`. Inti daemon (`daemon.ts`, `server.ts`, dan lainnya) tidak mengenal istilah Claude Code; ada test yang menjaganya.
+Input hook mentah dari Claude Code diubah menjadi event baku (paket `shared`) oleh adapter di `packages/bridge/src/adapters/`. Inti daemon (`daemon.ts`, `server.ts`, dan lainnya) tidak mengenal nama event atau logika Claude Code; ada test yang menjaganya. Satu hal yang masih dipakai bersama: `HookInput` menuntut objek JSON dengan `hook_event_name`, dan `tool_name` dipakai untuk baris log. Itu amplop minimum yang diasumsikan umum, dan akan ditinjau lagi setelah riset Codex.
 
 | Input hook | Hasil |
 |---|---|
@@ -80,10 +80,11 @@ Input hook mentah dari Claude Code diubah menjadi event baku (paket `shared`) ol
 
 Setiap event diberi `id` unik, `machineId` (UUID acak di `~/.agentmon/machine-id`), waktu, dan `seq` yang naik per sesi mulai dari 0. Nomor urut hanya terpakai oleh event yang benar-benar dikirim, jadi tidak ada celah. Data yang tidak dikenal atau rusak hanya dicatat (nama event, tanpa isinya) dan agent tidak terganggu.
 
-Event dikirim ke penerima (`EventSink`) di belakang layar, sedangkan jawaban ke Claude Code langsung `{}`. Penerima yang lambat, macet, atau error tidak menahan agent. Sementara ini penerimanya hanya mencatat jenis event ke log. Relay dan timeline menggantikannya di issue berikutnya.
+Event dikirim ke penerima (`EventSink`) di belakang layar, sedangkan jawaban ke Claude Code langsung `{}`. Penerima yang lambat, macet, atau error tidak menahan agent. Sebaliknya penerima tidak mendapat jaminan: penyelesaiannya bisa tidak berurutan, event yang gagal dikirim tidak dicoba lagi, dan `seq` bisa punya celah. Penerima yang butuh kelengkapan (klien relay) harus punya antrean dan percobaan ulang sendiri. Sementara ini penerimanya hanya mencatat jenis event ke log. Relay dan timeline menggantikannya di issue berikutnya.
 
 **Keterbatasan yang perlu diingat:**
 - `SessionStart` hanya mendukung hook `command`, jadi daemon tidak menerima awal sesi. Penanda awal sesi harus diturunkan dari event pertama sebuah sesi. Ini perlu diputuskan sebelum daftar sesi dibuat.
+- Nomor urut diingat untuk paling banyak 1000 sesi; yang paling lama tidak dipakai disingkirkan (sesi yang berakhir mendadak tidak mengirim `SessionEnd`).
 - `seq` hanya hidup selama daemon berjalan. Bila daemon dimulai ulang di tengah sesi, urutan sesi itu mulai lagi dari 0; penerima menyaring duplikat lewat `id`.
 
 ## Endpoint

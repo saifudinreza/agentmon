@@ -48,6 +48,17 @@ export type ClaudeMapResult =
   // Event dikenal tetapi isinya tidak lengkap atau bentuknya salah.
   | { status: "invalid"; hookEvent: string; message: string };
 
+// Nama event yang dikenali adapter ini. Dibuat sekali di sini, bukan tiap panggilan.
+const KNOWN_EVENTS: ReadonlySet<string> = new Set([
+  "SessionStart",
+  "PreToolUse",
+  "PostToolUse",
+  "Notification",
+  "Stop",
+  "PermissionRequest",
+  "SessionEnd",
+]);
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -103,8 +114,9 @@ function buildEvent(name: string, input: HookInput): Built | undefined {
  * Memetakan satu input hook Claude Code.
  *
  * `stampFor` dipanggil HANYA bila hasilnya event, dan hanya setelah isinya terbukti sah.
- * Dengan begitu nomor urut sesi tidak terpakai sia-sia oleh data yang ditolak, dan relay
- * tidak mengira ada pesan yang hilang.
+ * Fungsi ini sendiri tidak menyimpan nomor urut: pemanggil menaikkan nomor urut sesi hanya
+ * setelah menerima hasil "event". Dengan begitu data yang ditolak (termasuk penolakan
+ * terakhir oleh `parseEvent`) tidak meninggalkan celah di nomor urut.
  *
  * Tidak pernah melempar error: data aneh dikembalikan sebagai "invalid".
  */
@@ -115,8 +127,7 @@ export function mapClaudeCodeHook(input: HookInput, stampFor: (sessionId: string
   // yang membutuhkannya (lihat hook-config.ts).
   if (hookEvent === "UserPromptSubmit") return { status: "ignored", hookEvent };
 
-  const known = ["SessionStart", "PreToolUse", "PostToolUse", "Notification", "Stop", "PermissionRequest", "SessionEnd"];
-  if (!known.includes(hookEvent)) return { status: "unknown", hookEvent };
+  if (!KNOWN_EVENTS.has(hookEvent)) return { status: "unknown", hookEvent };
 
   const sessionId = text(input.session_id);
   if (!sessionId) return { status: "invalid", hookEvent, message: "session_id kosong" };

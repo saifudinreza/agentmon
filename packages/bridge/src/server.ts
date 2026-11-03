@@ -14,9 +14,11 @@ import type { Logger } from "./logger";
 // Input hook bisa besar (misalnya hasil membaca berkas panjang), tetapi tidak tanpa batas.
 export const MAX_BODY_BYTES = 10 * 1024 * 1024;
 
-// Bentuk minimum input hook. Kolom lain ikut terbawa apa adanya, dan maknanya hanya
-// dipahami adapter per agent (folder adapters/). Untuk Claude Code, bentuk lengkapnya
-// ada di docs/hooks-claude-code.md.
+// Bentuk minimum input hook, yaitu amplop bersama yang diminta daemon dari agent mana pun:
+// objek JSON dengan nama event. `tool_name` hanya dipakai untuk baris log. Kolom lain ikut
+// terbawa apa adanya, dan maknanya hanya dipahami adapter per agent (folder adapters/).
+// Untuk Claude Code, bentuk lengkapnya ada di docs/hooks-claude-code.md. Apakah amplop ini
+// cukup umum untuk Codex baru diketahui setelah riset Codex (issue spike hooks Codex).
 export type HookInput = {
   hook_event_name: string;
   tool_name?: string;

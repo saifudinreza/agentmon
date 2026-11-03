@@ -1,11 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, existsSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { connect } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { DaemonAlreadyRunningError, startDaemon, type RunningDaemon } from "./daemon";
-import { paths } from "./home";
+import { loadOrCreateMachineId, paths } from "./home";
 
 let home: string;
 let daemon: RunningDaemon | undefined;
@@ -345,8 +345,26 @@ describe("token", () => {
   });
 
   test("berkas token yang rusak dilaporkan, bukan diganti diam-diam", async () => {
-    const { writeFileSync } = await import("node:fs");
     writeFileSync(paths(home).token, "bukan-token\n");
     await expect(startDaemon({ home, port: 0 })).rejects.toThrow(/Berkas token rusak/);
+  });
+});
+
+describe("machine-id", () => {
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+  test("dibuat acak berbentuk UUID, disimpan, dan dipakai ulang", () => {
+    const first = loadOrCreateMachineId(home);
+    expect(first).toMatch(UUID);
+    expect(loadOrCreateMachineId(home)).toBe(first);
+  });
+
+  test.each([
+    ["kosong", ""],
+    ["teks sembarang", "bukan-uuid"],
+    ["UUID terpotong", "5ccc8384-b91c-4e59-a5ee"],
+  ])("berkas yang rusak (%s) dilaporkan, bukan dipakai diam-diam", (_name, content) => {
+    writeFileSync(paths(home).machineId, content + "\n");
+    expect(() => loadOrCreateMachineId(home)).toThrow(/Berkas machine-id rusak/);
   });
 });
