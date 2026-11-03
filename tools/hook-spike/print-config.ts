@@ -8,6 +8,8 @@ const [port, token, timeout] = process.argv.slice(2);
 const settings = buildClaudeHookSettings({
   port: Number(port),
   token: token ?? "",
-  ...(timeout ? { timeoutSeconds: Number(timeout) } : {}),
+  // Batas yang diberikan dipakai untuk SEMUA event, supaya skenario "jawaban lambat"
+  // tidak menunggu 10 detik per event pengamatan.
+  ...(timeout ? { timeoutSeconds: Number(timeout), observeTimeoutSeconds: Number(timeout) } : {}),
 });
 process.stdout.write(JSON.stringify(settings, null, 2));

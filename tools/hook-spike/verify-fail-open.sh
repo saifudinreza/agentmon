@@ -26,9 +26,18 @@ LIMIT=90000
 
 pids=()
 cleanup() {
-  for p in "${pids[@]}"; do kill -f "$p" 2>/dev/null || kill "$p" 2>/dev/null; done
+  for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
 }
 trap cleanup EXIT
+
+# Port tetap dipakai skrip ini. Bila salah satunya sedang dipakai program lain, berhenti
+# dulu daripada menembak program itu atau menghasilkan hasil yang salah.
+for port in "$REAL_PORT" 47901 47902 47903 47904 47905 47906 47920; do
+  if curl -s -m 1 -o /dev/null "http://127.0.0.1:$port/"; then
+    echo "port $port sedang dipakai program lain; hentikan dulu lalu jalankan ulang"
+    exit 2
+  fi
+done
 
 settings() { # nama port token timeout -> berkas settings dari pembuat konfigurasi sebenarnya
   (cd "$root/packages/bridge" && node --import tsx ../../tools/hook-spike/print-config.ts "$2" "$3" "$4") > "$work/settings-$1.json"
