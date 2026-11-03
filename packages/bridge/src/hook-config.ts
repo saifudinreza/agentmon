@@ -12,13 +12,15 @@ import { DEFAULT_PORT } from "./daemon";
 import { isValidToken } from "./home";
 
 // Event yang dipakai kontrak pesan (paket shared):
-//   SessionStart -> session.started        PreToolUse + PostToolUse -> tool.requested/completed
+//   PreToolUse + PostToolUse -> tool.requested/completed
 //   PermissionRequest -> approval.*        Notification -> agent.notification
 //   Stop -> agent.stopped                  SessionEnd -> session.recap
+// SessionStart sengaja TIDAK didaftarkan: dokumentasi Claude Code menyebut event itu hanya
+// mendukung hook "command" (bukan "http"), dan percobaan dengan daemon sungguhan memang tidak
+// pernah mengirimnya. Menandai awal sesi diatasi di sisi daemon (lihat docs/daemon.md).
 // UserPromptSubmit sengaja TIDAK didaftarkan: tidak ada event kontrak yang memakainya,
 // dan isinya adalah teks perintah pengguna, jadi tidak perlu dikirim ke daemon.
 export const HOOK_EVENTS = [
-  "SessionStart",
   "PreToolUse",
   "PermissionRequest",
   "PostToolUse",

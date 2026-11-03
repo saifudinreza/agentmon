@@ -2,7 +2,7 @@
 //
 // Semua data daemon ada di satu folder (bawaan: ~/.agentmon). Folder itu bisa diganti
 // lewat AGENTMON_HOME, terutama supaya test tidak menyentuh data asli.
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,7 @@ export function paths(home: string) {
     token: join(home, "token"),
     state: join(home, "daemon.json"),
     log: join(home, "daemon.log"),
+    machineId: join(home, "machine-id"),
   };
 }
 
@@ -44,6 +45,29 @@ export function loadOrCreateToken(home: string): string {
     throw new Error(`Berkas token rusak: ${file}. Hapus berkas itu lalu jalankan ulang.`);
   }
   return token;
+}
+
+// Bentuk UUID standar (8-4-4-4-12 karakter heksadesimal).
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Identitas laptop ini untuk kolom `machineId` di setiap event. Dibuat sekali lalu tetap,
+// supaya relay dan HP bisa membedakan beberapa laptop milik satu pengguna. Berupa UUID
+// acak, bukan nama komputer, sehingga tidak membocorkan informasi pribadi.
+export function loadOrCreateMachineId(home: string): string {
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const file = paths(home).machineId;
+  try {
+    writeFileSync(file, `${randomUUID()}\n`, { flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  const id = readFileSync(file, "utf8").trim();
+  // Sama ketatnya dengan token: berkas yang rusak atau terpotong tidak boleh dipakai diam-diam
+  // sebagai identitas, karena relay akan menganggapnya laptop lain.
+  if (!UUID_PATTERN.test(id)) {
+    throw new Error(`Berkas machine-id rusak: ${file}. Hapus berkas itu lalu jalankan ulang.`);
+  }
+  return id;
 }
 
 // Perbandingan waktu-tetap: lama pemeriksaan tidak bergantung pada berapa karakter

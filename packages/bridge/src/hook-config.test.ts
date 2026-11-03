@@ -16,12 +16,13 @@ const TOKEN = "a".repeat(64);
 describe("buildClaudeHookSettings", () => {
   // Daftar ini sengaja ditulis eksplisit (bukan diambil dari HOOK_EVENTS): menambah atau
   // menghapus event adalah perubahan kontrak, dan test ini harus ikut diubah dengan sadar.
-  test("mendaftarkan persis tujuh event yang dipakai kontrak, dan tidak mendaftarkan UserPromptSubmit", () => {
+  test("mendaftarkan persis enam event, tanpa UserPromptSubmit dan SessionStart (hook http tidak mendukungnya)", () => {
     const { hooks } = buildClaudeHookSettings({ token: TOKEN });
     expect(Object.keys(hooks).sort()).toEqual(
-      ["Notification", "PermissionRequest", "PostToolUse", "PreToolUse", "SessionEnd", "SessionStart", "Stop"],
+      ["Notification", "PermissionRequest", "PostToolUse", "PreToolUse", "SessionEnd", "Stop"],
     );
     expect(Object.keys(hooks)).not.toContain("UserPromptSubmit");
+    expect(Object.keys(hooks)).not.toContain("SessionStart");
   });
 
   test("setiap hook bertipe http ke 127.0.0.1 dengan token dan batas waktu", () => {
@@ -47,7 +48,7 @@ describe("buildClaudeHookSettings", () => {
     const timeoutOf = (event: (typeof HOOK_EVENTS)[number]) => hooks[event][0]?.hooks[0]?.timeout;
     expect(timeoutOf("PreToolUse")).toBe(DEFAULT_HOOK_TIMEOUT_SECONDS);
     expect(timeoutOf("PermissionRequest")).toBe(DEFAULT_HOOK_TIMEOUT_SECONDS);
-    for (const event of ["SessionStart", "PostToolUse", "Notification", "Stop", "SessionEnd"] as const) {
+    for (const event of ["PostToolUse", "Notification", "Stop", "SessionEnd"] as const) {
       expect(timeoutOf(event)).toBe(DEFAULT_OBSERVE_TIMEOUT_SECONDS);
     }
     expect(DEFAULT_OBSERVE_TIMEOUT_SECONDS).toBeLessThan(DEFAULT_HOOK_TIMEOUT_SECONDS);

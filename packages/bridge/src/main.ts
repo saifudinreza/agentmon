@@ -1,5 +1,6 @@
 // Titik masuk untuk menjalankan daemon dari terminal: `pnpm --filter @agentmon/bridge daemon`.
 // Perintah `agentmon` yang rapi (setup, status, dan seterusnya) dibuat di issue berikutnya.
+import { createClaudeCodeHandler } from "./adapters/claude-code-handler";
 import { DaemonAlreadyRunningError, DEFAULT_PORT, startDaemon } from "./daemon";
 
 function portFromEnv(): number {
@@ -14,7 +15,14 @@ function portFromEnv(): number {
 
 async function main() {
   try {
-    const daemon = await startDaemon({ port: portFromEnv() });
+    const daemon = await startDaemon({
+      port: portFromEnv(),
+      onHook: createClaudeCodeHandler({
+        // Sementara event hanya dicatat (jenis dan urutannya, bukan isinya). Relay dan
+        // timeline menggantikan ini di issue berikutnya.
+        emit: (event, { logger }) => logger.info(`event ${event.type} seq=${event.seq}`),
+      }),
+    });
     console.log(`AgentMon daemon berjalan di http://127.0.0.1:${daemon.port}`);
     console.log(`Data dan log: ${daemon.home}`);
 

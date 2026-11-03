@@ -8,7 +8,7 @@ import { request } from "node:http";
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { agentmonHome, loadOrCreateToken, paths } from "./home";
+import { agentmonHome, loadOrCreateMachineId, loadOrCreateToken, paths } from "./home";
 import { createLogger } from "./logger";
 import { createDaemonServer, type HookHandler } from "./server";
 
@@ -97,6 +97,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
     token,
     logger,
     version: DAEMON_VERSION,
+    machineId: loadOrCreateMachineId(home),
     onHook: options.onHook,
     maxBodyBytes: options.maxBodyBytes,
   });
