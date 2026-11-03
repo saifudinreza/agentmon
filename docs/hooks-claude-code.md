@@ -148,7 +148,7 @@ Dicocokkan dengan data nyata, **tidak ada yang perlu diubah**:
 
 | Payload | Sumber | Status |
 |---|---|---|
-| `session.started` (`cwd`, `permissionMode?`) | `SessionStart` | Cocok. `permission_mode` tidak ada di event ini, dan sudah opsional |
+| `session.started` (`cwd`, `permissionMode?`) | `SessionStart` (hanya hook `command`, lihat 8a-2) | Cocok. `permission_mode` tidak ada di event ini, dan sudah opsional |
 | `tool.requested` (`toolName`, `toolInput`, `toolUseId?`) | `PreToolUse` | Cocok. `tool_input` selalu berupa objek pada semua alat yang diuji |
 | `tool.completed` (`toolName`, `toolUseId?`, `ok`) | `PostToolUse` | Cocok. Tidak ada kolom sukses eksplisit, jadi `ok` diturunkan oleh adapter. `duration_ms` bisa ditambahkan nanti |
 | `agent.stopped` (`lastMessage?`) | `Stop` | Cocok dengan `last_assistant_message` |
@@ -171,6 +171,11 @@ Temuan:
 - **Hook yang ditolak (401) tidak dapat dibedakan dari hook tanpa keputusan** dari sisi Claude: tidak ada pesan error hook yang sampai ke model, dan aksi mengikuti alur izin normal.
 - **Autentikasi dengan header terbukti**, jadi daemon tidak perlu rancangan token lain.
 - Pada macOS dan Linux belum diuji, hanya Windows.
+
+## 8a-2. `SessionStart` tidak mendukung hook `http`
+Ditemukan saat menguji adapter (issue pemetaan event) dengan daemon dan Claude Code sungguhan: sesi `claude -p` yang membaca satu berkas mengirim `PreToolUse`, `PostToolUse`, `Stop`, dan `SessionEnd` ke daemon, tetapi **tidak** `SessionStart`, padahal hook-nya terdaftar. Dokumentasi resmi Claude Code menyebut `SessionStart` hanya mendukung `type: "command"` dan `type: "mcp_tool"`. Tidak ada pesan error: hook itu diam-diam tidak pernah dipanggil. Fixture `SessionStart.json` berasal dari hook `command` di issue 003.
+
+Akibatnya event `session.started` tidak bisa bersumber dari hook `http`, dan `SessionStart` dikeluarkan dari daftar event di `hook-config.ts`.
 
 ## 8b. Kondisi gagal dan overhead hook `http` (issue hook http ke daemon)
 

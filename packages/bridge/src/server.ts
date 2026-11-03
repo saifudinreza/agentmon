@@ -14,8 +14,9 @@ import type { Logger } from "./logger";
 // Input hook bisa besar (misalnya hasil membaca berkas panjang), tetapi tidak tanpa batas.
 export const MAX_BODY_BYTES = 10 * 1024 * 1024;
 
-// Bentuk minimum input hook. Kolom lain (tool_input, tool_response, dan seterusnya)
-// ikut terbawa apa adanya. Bentuk lengkapnya ada di docs/hooks-claude-code.md.
+// Bentuk minimum input hook. Kolom lain ikut terbawa apa adanya, dan maknanya hanya
+// dipahami adapter per agent (folder adapters/). Untuk Claude Code, bentuk lengkapnya
+// ada di docs/hooks-claude-code.md.
 export type HookInput = {
   hook_event_name: string;
   tool_name?: string;
@@ -25,12 +26,15 @@ export type HookInput = {
 // Jawaban untuk Claude Code berupa objek keputusan (lihat docs/hooks-claude-code.md
 // bagian 6), atau undefined bila tidak ada keputusan.
 export type HookResponse = Record<string, unknown> | undefined;
-export type HookHandler = (input: HookInput) => Promise<HookResponse> | HookResponse;
+// Bekal yang diberikan daemon ke penangan hook: pencatat log dan identitas laptop ini.
+export type HookContext = { logger: Logger; machineId: string };
+export type HookHandler = (input: HookInput, context: HookContext) => Promise<HookResponse> | HookResponse;
 
 export type ServerOptions = {
   token: string;
   logger: Logger;
   version: string;
+  machineId: string;
   onHook?: HookHandler;
   maxBodyBytes?: number;
 };
@@ -79,7 +83,7 @@ function isHookInput(value: unknown): value is HookInput {
 }
 
 export function createDaemonServer(options: ServerOptions): Server {
-  const { token, logger, version } = options;
+  const { token, logger, version, machineId } = options;
   const limit = options.maxBodyBytes ?? MAX_BODY_BYTES;
   const startedAt = Date.now();
 
@@ -152,7 +156,7 @@ export function createDaemonServer(options: ServerOptions): Server {
     const started = performance.now();
     let response: HookResponse;
     try {
-      response = await options.onHook?.(input);
+      response = await options.onHook?.(input, { logger, machineId });
     } catch (error) {
       // Gagal berarti tanpa keputusan, bukan persetujuan.
       logger.error(`penangan hook gagal: ${error instanceof Error ? error.message : String(error)}`);
