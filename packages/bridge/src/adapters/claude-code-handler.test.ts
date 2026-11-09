@@ -5,10 +5,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentMonEvent } from "@agentmon/shared";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { createApprovalEngine } from "../approvals";
 import { startDaemon, type RunningDaemon } from "../daemon";
 import { paths } from "../home";
 import type { HookContext, HookInput } from "../server";
-import { createClaudeCodeHandler, MAX_TRACKED_SESSIONS, type EventSink } from "./claude-code-handler";
+import { createClaudeCodeHandler, type EventSink } from "./claude-code-handler";
 
 const FIXTURE_DIR = fileURLToPath(new URL("../../fixtures/claude-code/", import.meta.url));
 const load = (name: string): HookInput =>
@@ -19,6 +20,7 @@ function fakeContext() {
   const logs: string[] = [];
   const context: HookContext = {
     machineId: "laptop-1",
+    approvals: createApprovalEngine(),
     logger: { info: (m) => logs.push(`info: ${m}`), error: (m) => logs.push(`error: ${m}`) },
   };
   return { context, logs };
@@ -27,6 +29,8 @@ function fakeContext() {
 // Menunggu tugas yang dijadwalkan (pengiriman event berjalan di belakang layar sebagai
 // tugas mikro). setImmediate baru berjalan setelah semua tugas mikro selesai, jadi ini
 // pasti dan tidak bergantung pada kecepatan mesin (berbeda dengan menunggu sekian milidetik).
+// Batas jumlah sesi yang diingat di test pembatasan.
+const LIMIT = 5;
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe("penangan hook Claude Code", () => {
@@ -129,15 +133,16 @@ describe("penangan hook Claude Code", () => {
     expect(seen.map((e) => e.seq)).toEqual([0]); // bukan [1]
   });
 
-  test("hanya MAX_TRACKED_SESSIONS sesi yang diingat; yang paling lama tidak dipakai disingkirkan", async () => {
+  test("hanya sejumlah batas sesi yang diingat; yang paling lama tidak dipakai disingkirkan", async () => {
     const { context } = fakeContext();
     const seen: AgentMonEvent[] = [];
-    const handler = createClaudeCodeHandler({ emit: (event) => void seen.push(event) });
+    // Batas kecil supaya test cepat dan tidak bergantung pada kecepatan mesin.
+    const handler = createClaudeCodeHandler({ emit: (event) => void seen.push(event), maxTrackedSessions: LIMIT });
     const read = (sessionId: string) => inSession(load("PreToolUse.Read.json"), sessionId);
 
     await handler(read("pertama"), context); // seq 0
     await handler(read("pertama"), context); // seq 1
-    for (let i = 0; i < MAX_TRACKED_SESSIONS; i++) await handler(read(`s${i}`), context);
+    for (let i = 0; i < LIMIT; i++) await handler(read(`s${i}`), context);
     await handler(read("pertama"), context); // sudah disingkirkan: mulai lagi dari 0
     await settle();
 
@@ -148,18 +153,33 @@ describe("penangan hook Claude Code", () => {
   test("sesi yang masih aktif tidak disingkirkan walau sesi lain banyak", async () => {
     const { context } = fakeContext();
     const seen: AgentMonEvent[] = [];
-    const handler = createClaudeCodeHandler({ emit: (event) => void seen.push(event) });
+    const handler = createClaudeCodeHandler({ emit: (event) => void seen.push(event), maxTrackedSessions: LIMIT });
     const read = (sessionId: string) => inSession(load("PreToolUse.Read.json"), sessionId);
 
     await handler(read("aktif"), context);
-    for (let i = 0; i < MAX_TRACKED_SESSIONS + 5; i++) {
+    for (let i = 0; i < LIMIT * 5; i++) {
       await handler(read(`s${i}`), context);
-      if (i % 100 === 0) await handler(read("aktif"), context); // tetap dipakai
+      if (i % 2 === 0) await handler(read("aktif"), context); // tetap dipakai
     }
     await settle();
 
     const aktif = seen.filter((e) => e.sessionId === "aktif").map((e) => e.seq);
     expect(aktif).toEqual(aktif.map((_, i) => i)); // 0,1,2,... tanpa reset
+  });
+
+  test("sesi berakhir -> izin yang masih menunggu dari sesi itu dibatalkan, sesi lain tidak", async () => {
+    const { context, logs } = fakeContext();
+    const handler = createClaudeCodeHandler({ emit: () => undefined });
+    const mine = context.approvals.request({ sessionId: "A", toolName: "Write", toolInput: {} });
+    const other = context.approvals.request({ sessionId: "B", toolName: "Write", toolInput: {} });
+
+    await handler(inSession(load("SessionEnd.json"), "A"), context);
+
+    expect(await mine.outcome).toEqual({ status: "cancelled" });
+    expect(context.approvals.listPending().map((a) => a.sessionId)).toEqual(["B"]);
+    expect(logs.join("\n")).toContain("1 permintaan izin dibatalkan");
+    context.approvals.cancelAll(); // bersihkan: sesi B
+    expect(await other.outcome).toEqual({ status: "cancelled" });
   });
 
   test("id dan waktu bisa diganti (supaya test pasti)", async () => {
@@ -317,7 +337,7 @@ describe("batas antara inti daemon dan adapter", () => {
   // kolom khusus Claude. SENGAJA tidak mencakup `hook_event_name` dan `tool_name`: itu
   // amplop minimum bersama (HookInput di server.ts) yang diminta daemon dari agent mana pun,
   // dan akan ditinjau lagi setelah riset Codex.
-  const core = ["daemon.ts", "server.ts", "guard.ts", "home.ts", "logger.ts"];
+  const core = ["daemon.ts", "server.ts", "guard.ts", "home.ts", "logger.ts", "approvals.ts"];
   const claudeSpecific = /PreToolUse|PostToolUse|PermissionRequest|SessionStart|SessionEnd|UserPromptSubmit|tool_input|session_id/;
 
   test.each(core)("%s tidak mengimpor adapter dan tidak menyebut istilah event Claude Code", (name) => {

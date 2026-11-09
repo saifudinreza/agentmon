@@ -66,6 +66,8 @@ export type ClaudeCodeHandlerOptions = {
   emit: EventSink;
   now?: () => Date;
   newId?: () => string;
+  // Batas jumlah sesi yang diingat. Bawaan MAX_TRACKED_SESSIONS; test memakai angka kecil.
+  maxTrackedSessions?: number;
 };
 
 // Batas jumlah sesi yang nomor urutnya diingat sekaligus. Mencegah ingatan membengkak bila
@@ -83,6 +85,7 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
   // "??" = kalau yang kiri tidak diisi, pakai yang kanan.
   const now = options.now ?? (() => new Date());
   const newId = options.newId ?? randomUUID;
+  const maxTracked = options.maxTrackedSessions ?? MAX_TRACKED_SESSIONS;
 
   // BUKU NOMOR ANTREAN per sesi. Map = kamus: nama sesi -> nomor urut berikutnya.
   // Dimulai dari 0 dan dihapus saat sesi berakhir.
@@ -101,7 +104,7 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
   const remember = (sessionId: string, seq: number) => {
     nextSeq.delete(sessionId); // dihapus lalu dipasang lagi = pindah ke posisi "terbaru"
     nextSeq.set(sessionId, seq);
-    if (nextSeq.size > MAX_TRACKED_SESSIONS) {
+    if (nextSeq.size > maxTracked) {
       // keys() = daftar nama sesi sesuai urutan masuk; .next().value = yang paling depan.
       const oldest = nextSeq.keys().next().value;
       if (oldest !== undefined) nextSeq.delete(oldest);
@@ -158,10 +161,15 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
             });
           break; // keluar dari switch, jangan lanjut ke cabang berikutnya
         }
-        // Sesi selesai -> lupakan nomor antrean sesi itu supaya ingatan tidak menumpuk.
-        case "session_ended":
+        // Sesi selesai -> (1) lupakan nomor antrean sesi itu supaya ingatan tidak menumpuk;
+        // (2) batalkan izin yang masih menunggu dari sesi itu, karena agent-nya sudah tidak
+        // ada untuk menerima jawaban. Hook yang menunggu izin itu langsung dijawab.
+        case "session_ended": {
           nextSeq.delete(result.sessionId);
+          const cancelled = context.approvals.cancelSession(result.sessionId);
+          if (cancelled > 0) logger.info(`sesi berakhir: ${cancelled} permintaan izin dibatalkan`);
           break;
+        }
         // Nama event tidak dikenal -> cukup dicatat. Hanya nama event yang dicatat, tidak
         // pernah isinya (isi bisa berisi kode atau rahasia).
         case "unknown":
