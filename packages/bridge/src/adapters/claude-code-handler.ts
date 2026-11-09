@@ -66,6 +66,8 @@ export type ClaudeCodeHandlerOptions = {
   emit: EventSink;
   now?: () => Date;
   newId?: () => string;
+  // Batas jumlah sesi yang diingat. Bawaan MAX_TRACKED_SESSIONS; test memakai angka kecil.
+  maxTrackedSessions?: number;
 };
 
 // Batas jumlah sesi yang nomor urutnya diingat sekaligus. Mencegah ingatan membengkak bila
@@ -83,6 +85,7 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
   // "??" = kalau yang kiri tidak diisi, pakai yang kanan.
   const now = options.now ?? (() => new Date());
   const newId = options.newId ?? randomUUID;
+  const maxTracked = options.maxTrackedSessions ?? MAX_TRACKED_SESSIONS;
 
   // BUKU NOMOR ANTREAN per sesi. Map = kamus: nama sesi -> nomor urut berikutnya.
   // Dimulai dari 0 dan dihapus saat sesi berakhir.
@@ -101,7 +104,7 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
   const remember = (sessionId: string, seq: number) => {
     nextSeq.delete(sessionId); // dihapus lalu dipasang lagi = pindah ke posisi "terbaru"
     nextSeq.set(sessionId, seq);
-    if (nextSeq.size > MAX_TRACKED_SESSIONS) {
+    if (nextSeq.size > maxTracked) {
       // keys() = daftar nama sesi sesuai urutan masuk; .next().value = yang paling depan.
       const oldest = nextSeq.keys().next().value;
       if (oldest !== undefined) nextSeq.delete(oldest);

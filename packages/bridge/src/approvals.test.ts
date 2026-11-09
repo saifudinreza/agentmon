@@ -211,6 +211,21 @@ describe("keputusan yang tidak sah", () => {
     expect(result).toMatchObject({ ok: false, reason: "invalid" });
   });
 
+  test("pesan penolakan menyebut kolom yang salah, tanpa menggemakan nilai yang dikirim", () => {
+    const engine = createApprovalEngine();
+    const partialTanpaHunk = engine.decide({ approvalId: "x", decision: "partial" });
+    expect(partialTanpaHunk).toMatchObject({ ok: false, reason: "invalid" });
+    expect((partialTanpaHunk as { message: string }).message).toContain("hunks");
+
+    const keputusanAsing = engine.decide({ approvalId: "x", decision: "RAHASIA-123" });
+    const message = (keputusanAsing as { message: string }).message;
+    expect(message).toContain("decision");
+    expect(message).not.toContain("RAHASIA-123");
+
+    const komentarSalahTipe = engine.decide({ approvalId: "x", decision: "approve", comment: 12345 });
+    expect((komentarSalahTipe as { message: string }).message).toContain("comment");
+  });
+
   test("keputusan yang tidak sah tidak mengubah kartu yang sedang menunggu", () => {
     const engine = createApprovalEngine();
     const ticket = engine.request(NEW);

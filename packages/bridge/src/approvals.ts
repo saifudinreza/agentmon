@@ -27,6 +27,7 @@
 import { randomUUID } from "node:crypto";
 import {
   ApprovalDecisionSchema,
+  formatIssues,
   type ApprovalStatus,
   type FinalApprovalStatus,
   type HunkDecision,
@@ -265,7 +266,9 @@ export function createApprovalEngine(options: ApprovalEngineOptions = {}) {
     decide(input: unknown): DecideResult {
       const parsed = ApprovalDecisionSchema.safeParse(input);
       if (!parsed.success) {
-        return { ok: false, reason: "invalid", message: "keputusan tidak sesuai kontrak" };
+        // Pesan menyebut kolom mana yang salah (misalnya "hunks: ..."), supaya penolakan mudah
+        // dilacak. Pesan Zod hanya menyebut jenis kesalahan dan nama kolom, bukan nilai yang dikirim.
+        return { ok: false, reason: "invalid", message: `keputusan tidak sesuai kontrak: ${formatIssues(parsed.error)}` };
       }
       const decision = parsed.data;
 

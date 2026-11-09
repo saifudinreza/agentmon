@@ -9,7 +9,7 @@ import { createApprovalEngine } from "../approvals";
 import { startDaemon, type RunningDaemon } from "../daemon";
 import { paths } from "../home";
 import type { HookContext, HookInput } from "../server";
-import { createClaudeCodeHandler, MAX_TRACKED_SESSIONS, type EventSink } from "./claude-code-handler";
+import { createClaudeCodeHandler, type EventSink } from "./claude-code-handler";
 
 const FIXTURE_DIR = fileURLToPath(new URL("../../fixtures/claude-code/", import.meta.url));
 const load = (name: string): HookInput =>
@@ -29,6 +29,8 @@ function fakeContext() {
 // Menunggu tugas yang dijadwalkan (pengiriman event berjalan di belakang layar sebagai
 // tugas mikro). setImmediate baru berjalan setelah semua tugas mikro selesai, jadi ini
 // pasti dan tidak bergantung pada kecepatan mesin (berbeda dengan menunggu sekian milidetik).
+// Batas jumlah sesi yang diingat di test pembatasan.
+const LIMIT = 5;
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe("penangan hook Claude Code", () => {
@@ -131,15 +133,16 @@ describe("penangan hook Claude Code", () => {
     expect(seen.map((e) => e.seq)).toEqual([0]); // bukan [1]
   });
 
-  test("hanya MAX_TRACKED_SESSIONS sesi yang diingat; yang paling lama tidak dipakai disingkirkan", async () => {
+  test("hanya sejumlah batas sesi yang diingat; yang paling lama tidak dipakai disingkirkan", async () => {
     const { context } = fakeContext();
     const seen: AgentMonEvent[] = [];
-    const handler = createClaudeCodeHandler({ emit: (event) => void seen.push(event) });
+    // Batas kecil supaya test cepat dan tidak bergantung pada kecepatan mesin.
+    const handler = createClaudeCodeHandler({ emit: (event) => void seen.push(event), maxTrackedSessions: LIMIT });
     const read = (sessionId: string) => inSession(load("PreToolUse.Read.json"), sessionId);
 
     await handler(read("pertama"), context); // seq 0
     await handler(read("pertama"), context); // seq 1
-    for (let i = 0; i < MAX_TRACKED_SESSIONS; i++) await handler(read(`s${i}`), context);
+    for (let i = 0; i < LIMIT; i++) await handler(read(`s${i}`), context);
     await handler(read("pertama"), context); // sudah disingkirkan: mulai lagi dari 0
     await settle();
 
@@ -150,13 +153,13 @@ describe("penangan hook Claude Code", () => {
   test("sesi yang masih aktif tidak disingkirkan walau sesi lain banyak", async () => {
     const { context } = fakeContext();
     const seen: AgentMonEvent[] = [];
-    const handler = createClaudeCodeHandler({ emit: (event) => void seen.push(event) });
+    const handler = createClaudeCodeHandler({ emit: (event) => void seen.push(event), maxTrackedSessions: LIMIT });
     const read = (sessionId: string) => inSession(load("PreToolUse.Read.json"), sessionId);
 
     await handler(read("aktif"), context);
-    for (let i = 0; i < MAX_TRACKED_SESSIONS + 5; i++) {
+    for (let i = 0; i < LIMIT * 5; i++) {
       await handler(read(`s${i}`), context);
-      if (i % 100 === 0) await handler(read("aktif"), context); // tetap dipakai
+      if (i % 2 === 0) await handler(read("aktif"), context); // tetap dipakai
     }
     await settle();
 
