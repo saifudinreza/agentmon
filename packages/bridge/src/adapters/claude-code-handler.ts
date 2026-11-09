@@ -158,10 +158,15 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
             });
           break; // keluar dari switch, jangan lanjut ke cabang berikutnya
         }
-        // Sesi selesai -> lupakan nomor antrean sesi itu supaya ingatan tidak menumpuk.
-        case "session_ended":
+        // Sesi selesai -> (1) lupakan nomor antrean sesi itu supaya ingatan tidak menumpuk;
+        // (2) batalkan izin yang masih menunggu dari sesi itu, karena agent-nya sudah tidak
+        // ada untuk menerima jawaban. Hook yang menunggu izin itu langsung dijawab.
+        case "session_ended": {
           nextSeq.delete(result.sessionId);
+          const cancelled = context.approvals.cancelSession(result.sessionId);
+          if (cancelled > 0) logger.info(`sesi berakhir: ${cancelled} permintaan izin dibatalkan`);
           break;
+        }
         // Nama event tidak dikenal -> cukup dicatat. Hanya nama event yang dicatat, tidak
         // pernah isinya (isi bisa berisi kode atau rahasia).
         case "unknown":

@@ -8,6 +8,7 @@
 // Code berarti "tidak ada keputusan" sehingga alur izin normal berjalan.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { ApprovalEngine } from "./approvals";
 import { guardRequest } from "./guard";
 import type { Logger } from "./logger";
 
@@ -28,8 +29,9 @@ export type HookInput = {
 // Jawaban untuk Claude Code berupa objek keputusan (lihat docs/hooks-claude-code.md
 // bagian 6), atau undefined bila tidak ada keputusan.
 export type HookResponse = Record<string, unknown> | undefined;
-// Bekal yang diberikan daemon ke penangan hook: pencatat log dan identitas laptop ini.
-export type HookContext = { logger: Logger; machineId: string };
+// Bekal yang diberikan daemon ke penangan hook: pencatat log, identitas laptop ini, dan buku
+// antrean izin (approval engine) tempat permintaan izin dibuka dan diputuskan.
+export type HookContext = { logger: Logger; machineId: string; approvals: ApprovalEngine };
 export type HookHandler = (input: HookInput, context: HookContext) => Promise<HookResponse> | HookResponse;
 
 export type ServerOptions = {
@@ -37,6 +39,7 @@ export type ServerOptions = {
   logger: Logger;
   version: string;
   machineId: string;
+  approvals: ApprovalEngine;
   onHook?: HookHandler;
   maxBodyBytes?: number;
 };
@@ -84,10 +87,17 @@ function isHookInput(value: unknown): value is HookInput {
   );
 }
 
-export function createDaemonServer(options: ServerOptions): Server {
-  const { token, logger, version, machineId } = options;
+// Server beserta "pengering": drain() menunggu semua hook yang sedang dijawab sampai selesai
+// terkirim. Dipakai saat daemon berhenti, supaya hook yang menunggu keputusan sempat
+// menerima jawabannya sebelum koneksinya ditutup.
+export type DaemonServer = { server: Server; drain(timeoutMs: number): Promise<void> };
+
+export function createDaemonServer(options: ServerOptions): DaemonServer {
+  const { token, logger, version, machineId, approvals } = options;
   const limit = options.maxBodyBytes ?? MAX_BODY_BYTES;
   const startedAt = Date.now();
+  // Hook yang sedang berjalan. "close" terjadi setelah jawaban selesai terkirim (atau koneksi putus).
+  const inFlight = new Set<Promise<void>>();
 
   const server = createServer((req, res) => {
     handle(req, res).catch((error: unknown) => {
@@ -123,6 +133,9 @@ export function createDaemonServer(options: ServerOptions): Server {
 
     if (path === "/hook") {
       if (req.method !== "POST") return reply(res, 405, { error: "metode tidak diizinkan" }, { allow: "POST" });
+      const finished = new Promise<void>((resolve) => res.once("close", resolve));
+      inFlight.add(finished);
+      void finished.then(() => inFlight.delete(finished));
       return handleHook(req, res);
     }
 
@@ -158,7 +171,7 @@ export function createDaemonServer(options: ServerOptions): Server {
     const started = performance.now();
     let response: HookResponse;
     try {
-      response = await options.onHook?.(input, { logger, machineId });
+      response = await options.onHook?.(input, { logger, machineId, approvals });
     } catch (error) {
       // Gagal berarti tanpa keputusan, bukan persetujuan.
       logger.error(`penangan hook gagal: ${error instanceof Error ? error.message : String(error)}`);
@@ -175,5 +188,15 @@ export function createDaemonServer(options: ServerOptions): Server {
     reply(res, 200, response ?? {});
   }
 
-  return server;
+  async function drain(timeoutMs: number): Promise<void> {
+    if (inFlight.size === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    });
+    await Promise.race([Promise.all([...inFlight]).then(() => undefined), timeout]);
+    clearTimeout(timer);
+  }
+
+  return { server, drain };
 }

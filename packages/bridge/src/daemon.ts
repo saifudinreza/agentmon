@@ -8,6 +8,7 @@ import { request } from "node:http";
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { createApprovalEngine, type ApprovalEngine } from "./approvals";
 import { agentmonHome, loadOrCreateMachineId, loadOrCreateToken, paths } from "./home";
 import { createLogger } from "./logger";
 import { createDaemonServer, type HookHandler } from "./server";
@@ -15,6 +16,8 @@ import { createDaemonServer, type HookHandler } from "./server";
 export const DEFAULT_PORT = 47821;
 export const DAEMON_VERSION = "0.0.0";
 const HOST = "127.0.0.1";
+// Lama maksimum menunggu hook yang sedang berjalan sebelum koneksi dipaksa tutup saat berhenti.
+const DRAIN_TIMEOUT_MS = 3000;
 
 export class DaemonAlreadyRunningError extends Error {
   constructor(
@@ -45,6 +48,7 @@ export type DaemonOptions = {
 
 export type RunningDaemon = {
   port: number;
+  approvals: ApprovalEngine;
   home: string;
   token: string;
   stop(): Promise<void>;
@@ -93,11 +97,15 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
   const file = paths(home);
   const logger = createLogger(file.log, options.logMaxBytes);
 
-  const server = createDaemonServer({
+  // Buku antrean izin: satu untuk seluruh daemon. Ikut berhenti saat daemon berhenti.
+  const approvals = createApprovalEngine({ logger });
+
+  const { server, drain } = createDaemonServer({
     token,
     logger,
     version: DAEMON_VERSION,
     machineId: loadOrCreateMachineId(home),
+    approvals,
     onHook: options.onHook,
     maxBodyBytes: options.maxBodyBytes,
   });
@@ -122,9 +130,15 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
 
   return {
     port,
+    approvals,
     home,
     token,
     async stop() {
+      // Urutan penting: (1) batalkan semua izin yang menunggu, sehingga hook yang menunggu
+      // mendapat jawaban "tanpa keputusan"; (2) tunggu jawaban itu selesai terkirim; baru
+      // (3) tutup koneksi. Tanpa langkah 2, koneksi diputus sebelum hook sempat dijawab.
+      approvals.close();
+      await drain(DRAIN_TIMEOUT_MS);
       await new Promise<void>((resolve) => {
         server.close(() => resolve());
         // Koneksi yang masih terbuka (keep-alive) akan menahan penutupan, jadi diputus.

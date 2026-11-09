@@ -87,6 +87,32 @@ Event dikirim ke penerima (`EventSink`) di belakang layar, sedangkan jawaban ke 
 - Nomor urut diingat untuk paling banyak 1000 sesi; yang paling lama tidak dipakai disingkirkan (sesi yang berakhir mendadak tidak mengirim `SessionEnd`).
 - `seq` hanya hidup selama daemon berjalan. Bila daemon dimulai ulang di tengah sesi, urutan sesi itu mulai lagi dari 0; penerima menyaring duplikat lewat `id`.
 
+## Approval engine (buku antrean izin)
+`packages/bridge/src/approvals.ts` mengelola siklus hidup setiap permintaan izin. Mesinnya dibuat satu kali oleh daemon dan diberikan ke penangan hook lewat `context.approvals`. Mesin ini tidak tahu apa pun soal Claude Code atau HTTP; menyambungkannya ke hook dikerjakan issue berikutnya.
+
+```
+pending --+--> approved | partially_approved | denied | timed_out | cancelled
+```
+Hanya `pending` yang boleh pindah, dan status akhir tidak bisa berubah lagi. `auto_approved` dan `auto_denied` tidak lewat `pending` (langsung dari policy), jadi tidak dibuat oleh mesin ini.
+
+| Fungsi | Tugas |
+|---|---|
+| `request(input)` | Membuka satu kartu. Mengembalikan `approvalId`, `expiresAt`, dan `outcome`: janji jawaban yang **selalu selesai dan tidak pernah gagal** |
+| `decide(input)` | Memutuskan kartu. `input` diperiksa lebih dulu karena datang dari HP. Hasilnya `ok`, `invalid`, `unknown`, atau `already_resolved` |
+| `cancelSession(id)` | Membatalkan kartu satu sesi (dipanggil saat `SessionEnd`) |
+| `close()` | Dipanggil saat daemon berhenti: membatalkan semua kartu dan membatalkan kartu baru yang telat masuk |
+| `get`, `listPending` | Membaca keadaan (salinan, aman diubah) |
+
+**Aturan yang dijaga:**
+- **Keputusan pertama yang berlaku.** Keputusan kedua, atau yang datang terlambat, ditolak dengan `already_resolved` beserta hasil yang sebenarnya.
+- **Kedaluwarsa tidak bisa diputuskan.** Kartu yang waktunya lewat dianggap `timed_out` walau timer-nya belum sempat berjalan, dan keputusannya ditolak.
+- **Kegagalan bukan persetujuan.** Waktu habis dan pembatalan adalah "tanpa keputusan".
+- **Batas waktu bawaan 540 detik**, sengaja lebih pendek dari batas hook di Claude Code (600 detik), supaya daemon yang memutuskan lebih dulu dan menjawab dengan benar. Ada test yang menjaga hubungan ini.
+- **Daemon berhenti dengan urutan tertentu:** batalkan semua kartu, tunggu hook yang menunggu selesai dijawab (`drain`, maksimum 3 detik), baru tutup koneksi. Tanpa langkah tunggu, koneksi terputus sebelum hook sempat menerima jawabannya.
+- Kartu yang sudah selesai diingat paling banyak 1000, supaya keputusan yang terlambat bisa dijawab "sudah selesai" dan bukan "tidak dikenal".
+
+Kabar perubahan (`onChange`: dibuka atau diselesaikan) disiapkan untuk event `approval.requested` dan `approval.resolved` di issue berikutnya.
+
 ## Endpoint
 | Endpoint | Fungsi |
 |---|---|

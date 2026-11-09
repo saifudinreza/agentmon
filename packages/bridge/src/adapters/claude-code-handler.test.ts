@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentMonEvent } from "@agentmon/shared";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { createApprovalEngine } from "../approvals";
 import { startDaemon, type RunningDaemon } from "../daemon";
 import { paths } from "../home";
 import type { HookContext, HookInput } from "../server";
@@ -19,6 +20,7 @@ function fakeContext() {
   const logs: string[] = [];
   const context: HookContext = {
     machineId: "laptop-1",
+    approvals: createApprovalEngine(),
     logger: { info: (m) => logs.push(`info: ${m}`), error: (m) => logs.push(`error: ${m}`) },
   };
   return { context, logs };
@@ -160,6 +162,21 @@ describe("penangan hook Claude Code", () => {
 
     const aktif = seen.filter((e) => e.sessionId === "aktif").map((e) => e.seq);
     expect(aktif).toEqual(aktif.map((_, i) => i)); // 0,1,2,... tanpa reset
+  });
+
+  test("sesi berakhir -> izin yang masih menunggu dari sesi itu dibatalkan, sesi lain tidak", async () => {
+    const { context, logs } = fakeContext();
+    const handler = createClaudeCodeHandler({ emit: () => undefined });
+    const mine = context.approvals.request({ sessionId: "A", toolName: "Write", toolInput: {} });
+    const other = context.approvals.request({ sessionId: "B", toolName: "Write", toolInput: {} });
+
+    await handler(inSession(load("SessionEnd.json"), "A"), context);
+
+    expect(await mine.outcome).toEqual({ status: "cancelled" });
+    expect(context.approvals.listPending().map((a) => a.sessionId)).toEqual(["B"]);
+    expect(logs.join("\n")).toContain("1 permintaan izin dibatalkan");
+    context.approvals.cancelAll(); // bersihkan: sesi B
+    expect(await other.outcome).toEqual({ status: "cancelled" });
   });
 
   test("id dan waktu bisa diganti (supaya test pasti)", async () => {
@@ -317,7 +334,7 @@ describe("batas antara inti daemon dan adapter", () => {
   // kolom khusus Claude. SENGAJA tidak mencakup `hook_event_name` dan `tool_name`: itu
   // amplop minimum bersama (HookInput di server.ts) yang diminta daemon dari agent mana pun,
   // dan akan ditinjau lagi setelah riset Codex.
-  const core = ["daemon.ts", "server.ts", "guard.ts", "home.ts", "logger.ts"];
+  const core = ["daemon.ts", "server.ts", "guard.ts", "home.ts", "logger.ts", "approvals.ts"];
   const claudeSpecific = /PreToolUse|PostToolUse|PermissionRequest|SessionStart|SessionEnd|UserPromptSubmit|tool_input|session_id/;
 
   test.each(core)("%s tidak mengimpor adapter dan tidak menyebut istilah event Claude Code", (name) => {
