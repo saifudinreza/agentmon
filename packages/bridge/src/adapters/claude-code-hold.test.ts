@@ -402,12 +402,14 @@ describe("penahanan mati, dijeda, atau mode bypass", () => {
 
 describe("tidak ada penantian ganda sebelum prompt terminal", () => {
   test("aksi yang waktunya habis di PreToolUse tidak ditahan lagi saat PermissionRequest-nya menyusul", async () => {
-    const s = setup({ timeoutMs: 30 });
+    // Waktu tunggu 600 ms, dan batasnya 250 ms: jaraknya lebar, sehingga beban mesin yang berat tidak
+    // membuat test ini gagal, tetapi menunggu satu kali lagi (600 ms) pasti terdeteksi.
+    const s = setup({ timeoutMs: 600 });
     expect(await s.handler(load("PreToolUse.Edit.json"), s.context)).toBeUndefined(); // habis
     const started = performance.now();
     // Claude Code lanjut bertanya untuk aksi yang SAMA: harus langsung diteruskan.
     expect(await s.handler(load("PermissionRequest.Edit.json"), s.context)).toBeUndefined();
-    expect(performance.now() - started).toBeLessThan(25); // tidak menunggu 30 ms lagi
+    expect(performance.now() - started).toBeLessThan(250); // tidak menunggu 600 ms lagi
     expect(s.approvals.listPending()).toEqual([]);
     expect(s.logs.join("\n")).toContain("diteruskan ke terminal tanpa menahan lagi");
   });

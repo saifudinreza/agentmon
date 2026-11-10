@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, test } from "vitest";
 import { createMemoryDirectory, hashToken } from "./directory";
+import { describeDirectoryContract } from "./directory.contract";
 
 const MACHINE = "machine-token-0000000000000000";
 const DEVICE = "device-token-00000000000000000";
@@ -71,4 +72,16 @@ describe("createMemoryDirectory", () => {
     list.push("d-palsu");
     expect(await directory.isPaired("m1", "d-palsu")).toBe(false);
   });
+});
+
+// Kontrak yang SAMA dijalankan juga terhadap direktori database (db/directory.test.ts).
+describeDirectoryContract("memori", async () => {
+  const directory = createMemoryDirectory();
+  return {
+    directory,
+    addMachine: async (id, token) => directory.addMachine(id, token),
+    addDevice: async (id, token) => directory.addDevice(id, token),
+    pair: async (machineId, deviceId) => directory.pair(machineId, deviceId),
+    unpair: async (machineId, deviceId) => directory.unpair(machineId, deviceId),
+  };
 });
