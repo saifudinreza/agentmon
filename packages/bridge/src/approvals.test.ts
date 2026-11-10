@@ -473,6 +473,24 @@ describe("daemon yang berhenti saat hook sedang menunggu izin", () => {
     daemon = undefined;
   });
 
+  test("tanpa jawaban sampai batas waktu: hook dijawab {} (tanpa keputusan), tidak menggantung", async () => {
+    daemon = await startDaemon({
+      home,
+      port: 0,
+      approvalTimeoutMs: 80,
+      onHook: async (_input, { approvals }) => {
+        const outcome = await approvals.request({ ...NEW }).outcome;
+        return outcome.status === "approved" ? { disetujui: true } : undefined;
+      },
+    });
+    const started = Date.now();
+    const answered = await postHook(daemon);
+    expect(answered.status).toBe(200);
+    expect(JSON.parse(answered.body)).toEqual({});
+    expect(Date.now() - started).toBeGreaterThanOrEqual(70); // memang menunggu sampai batas waktunya
+    expect(daemon.approvals.listPending()).toEqual([]);
+  });
+
   test("keputusan yang masuk lewat mesin daemon membebaskan hook yang menunggu", async () => {
     daemon = await startDaemon({
       home,

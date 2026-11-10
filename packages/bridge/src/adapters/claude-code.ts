@@ -42,7 +42,8 @@ import { CONTRACT_VERSION, eventPayloads, parseEvent, type AgentMonEvent, type E
 // "import type" = meminjam tipe saja. HookInput = bentuk minimum kiriman hook yang diterima
 // daemon (objek JSON yang punya hook_event_name). Didefinisikan di server.ts.
 // "../server" artinya "file server di folder satu tingkat di atas".
-import type { HookInput } from "../server";
+import type { ApprovalOutcome } from "../approvals";
+import type { HookInput, HookResponse } from "../server";
 
 // ---- TIPE: bentuk data yang dipakai file ini ------------------------------------------
 
@@ -279,21 +280,41 @@ export function mapClaudeCodeHook(input: HookInput, stampFor: (sessionId: string
   // berarti buildEvent melaporkan masalah.
   if ("problem" in built) return { status: "invalid", hookEvent, message: built.problem };
 
-  // Langkah 6b. Periksa ISI lebih dulu, SEBELUM memakai nomor urut. eventPayloads[...] memilih
-  // aturan isi yang cocok untuk jenis event ini, .safeParse() memeriksanya tanpa melempar
-  // error (hasilnya punya kolom .success).
-  const payloadCheck = eventPayloads[built.type].safeParse(built.payload);
+  // Langkah 6b-6d. Periksa isi, beri identitas, rakit dan periksa surat lengkap.
+  const finished = buildClaudeEvent(built.type, built.payload, sessionId, stampFor);
+  if (!finished.ok) return { status: "invalid", hookEvent, message: finished.message };
+  return { status: "event", event: finished.event };
+}
+
+/**
+ * Merakit satu event baku yang lengkap dari jenis dan isinya. Dipakai oleh pemetaan hook di
+ * atas, dan oleh penangan untuk event yang LAHIR DI DAEMON (approval.requested dan
+ * approval.resolved), supaya semuanya diberi identitas dan diperiksa dengan cara yang sama.
+ *
+ * Urutannya penting: isi diperiksa lebih dulu, SEBELUM `stampFor` dipanggil, sehingga data
+ * yang ditolak tidak memakai nomor urut.
+ */
+export function buildClaudeEvent(
+  type: EventType,
+  payload: Record<string, unknown>,
+  sessionId: string,
+  stampFor: (sessionId: string) => Stamp,
+): { ok: true; event: AgentMonEvent } | { ok: false; message: string } {
+  // Periksa ISI lebih dulu, SEBELUM memakai nomor urut. eventPayloads[...] memilih aturan isi
+  // yang cocok untuk jenis event ini, .safeParse() memeriksanya tanpa melempar error (hasilnya
+  // punya kolom .success).
+  const payloadCheck = eventPayloads[type].safeParse(payload);
   if (!payloadCheck.success) {
     // Pesan sengaja tidak menyertakan isi data, hanya jenis eventnya (isi bisa rahasia).
-    return { status: "invalid", hookEvent, message: `isi tidak sesuai kontrak untuk ${built.type}` };
+    return { ok: false, message: `isi tidak sesuai kontrak untuk ${type}` };
   }
 
-  // Langkah 6c. Isi sudah terbukti sah, baru minta stempel (id, nomor urut, jam).
+  // Isi sudah terbukti sah, baru minta stempel (id, nomor urut, jam).
   const stamp = stampFor(sessionId);
 
-  // Langkah 6d. Rakit surat LENGKAP (amplop + isi) lalu periksa sekali lagi lewat pintu
-  // validasi yang sama dengan yang dipakai bagian lain AgentMon. Hasilnya bertipe AgentMonEvent
-  // yang pasti benar, jadi tidak perlu memaksa tipe dengan "as".
+  // Rakit surat LENGKAP (amplop + isi) lalu periksa sekali lagi lewat pintu validasi yang sama
+  // dengan yang dipakai bagian lain AgentMon. Hasilnya bertipe AgentMonEvent yang pasti benar,
+  // jadi tidak perlu memaksa tipe dengan "as".
   const parsed = parseEvent({
     v: CONTRACT_VERSION, // nomor edisi formulir
     id: stamp.id,
@@ -302,11 +323,89 @@ export function mapClaudeCodeHook(input: HookInput, stampFor: (sessionId: string
     seq: stamp.seq,
     ts: stamp.ts,
     agent: "claude-code", // penanda surat ini dari agent mana
-    type: built.type,
-    payload: built.payload,
+    type,
+    payload,
   });
-  if (parsed.status !== "ok") {
-    return { status: "invalid", hookEvent, message: `event ditolak kontrak: ${parsed.status}` };
+  if (parsed.status !== "ok") return { ok: false, message: `event ditolak kontrak: ${parsed.status}` };
+  return { ok: true, event: parsed.event };
+}
+
+// ---- KEBIJAKAN TITIK TAHAN DAN TERJEMAHAN KEPUTUSAN ------------------------------------
+//
+// Dua pertanyaan yang dijawab di bawah ini, keduanya fungsi murni:
+//   1. Aksi mana yang DITAHAN sampai ada keputusan?          -> holdCandidate()
+//   2. Hasil persetujuan diterjemahkan jadi jawaban apa?      -> toClaudeDecision()
+//
+// Dasarnya temuan riset (docs/hooks-claude-code.md bagian 4 dan 6):
+//   - PreToolUse muncul untuk SEMUA alat. `allow` di sana melewati prompt izin Claude, jadi
+//     tidak ada prompt kedua setelah disetujui.
+//   - PermissionRequest hanya muncul bila Claude memang akan bertanya (tidak untuk Read,
+//     Glob, atau perintah yang dianggap aman seperti echo).
+
+// Alat yang mengubah berkas. Ditahan di PreToolUse (FR-20). Alat yang hanya membaca
+// (Read, Glob, Grep, dan sebagainya) tidak ada di daftar ini, jadi tidak pernah ditahan.
+// Perintah shell (Bash, PowerShell) sengaja TIDAK ada di sini: isinya tidak bisa ditebak dari
+// namanya, dan yang perlu ditahan datang lewat PermissionRequest saat Claude akan bertanya.
+export const FILE_MUTATING_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+// Aksi yang layak ditahan, lengkap dengan titik tahannya.
+export type HoldCandidate = {
+  point: "PreToolUse" | "PermissionRequest";
+  sessionId: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+};
+
+/**
+ * Apakah input hook ini aksi yang harus ditahan? Mengembalikan undefined bila tidak.
+ *
+ * - PreToolUse: hanya alat pengubah berkas (FILE_MUTATING_TOOLS).
+ * - PermissionRequest: semua alat, karena Claude sedang akan bertanya kepada pengguna.
+ * - Mode `bypassPermissions`: tidak pernah ditahan. Pengguna sudah memilih agent berjalan
+ *   tanpa izin, dan AgentMon hanya memantau (keputusan PRD §18).
+ * - Data tidak lengkap atau bentuknya salah: tidak ditahan (agent berjalan normal).
+ */
+export function holdCandidate(input: HookInput): HoldCandidate | undefined {
+  const point = input.hook_event_name;
+  if (point !== "PreToolUse" && point !== "PermissionRequest") return undefined;
+  if (input.permission_mode === "bypassPermissions") return undefined;
+
+  const sessionId = text(input.session_id);
+  const toolName = text(input.tool_name);
+  if (!sessionId || !toolName) return undefined;
+  if (point === "PreToolUse" && !FILE_MUTATING_TOOLS.has(toolName)) return undefined;
+
+  const toolInput = input.tool_input === undefined ? {} : input.tool_input;
+  if (!isRecord(toolInput)) return undefined;
+  return { point, sessionId, toolName, toolInput };
+}
+
+// Alasan bawaan bila pengguna menolak tanpa menulis komentar.
+export const DEFAULT_DENY_REASON = "Ditolak oleh pengguna lewat AgentMon.";
+
+/**
+ * Menerjemahkan hasil persetujuan menjadi jawaban untuk Claude Code.
+ *
+ *   approved  -> allow   (PreToolUse: melewati prompt, jadi tidak ada prompt kedua)
+ *   denied    -> deny    + komentar pengguna sebagai alasan, yang dibaca dan ditanggapi Claude
+ *   lainnya   -> undefined (tanpa keputusan: alur izin normal di terminal)
+ *
+ * "Lainnya" mencakup waktu habis, dibatalkan, dan terima sebagian. Terima sebagian BELUM bisa
+ * diterapkan (butuh penyaringan hunk, issue terpisah), jadi kembali ke alur normal daripada
+ * menebak. Tidak pernah mengembalikan `ask` (PRD §8, §11) dan tidak pernah `allow` untuk
+ * hasil yang bukan persetujuan.
+ */
+export function toClaudeDecision(point: HoldCandidate["point"], outcome: ApprovalOutcome): HookResponse {
+  if (outcome.status === "approved") {
+    return point === "PreToolUse"
+      ? { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } }
+      : { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } };
   }
-  return { status: "event", event: parsed.event };
+  if (outcome.status === "denied") {
+    const reason = outcome.comment?.trim() ? outcome.comment : DEFAULT_DENY_REASON;
+    return point === "PreToolUse"
+      ? { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }
+      : { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "deny", message: reason } } };
+  }
+  return undefined;
 }
