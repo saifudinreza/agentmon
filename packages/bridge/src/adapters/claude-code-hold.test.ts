@@ -350,6 +350,26 @@ describe("penahanan mati, dijeda, atau mode bypass", () => {
     expect(s.events.at(-1)?.payload).toMatchObject({ status: "cancelled" });
   });
 
+  test("saat dijeda, tercatat di log kenapa aksi tidak ditahan (nama alat saja, tanpa isi input)", async () => {
+    const s = setup();
+    s.control.pause();
+    await s.handler({ ...load("PreToolUse.Write.json"), tool_input: { content: "RAHASIA-123" } }, s.context);
+    const text = s.logs.join("\n");
+    expect(text).toContain("tidak ditahan karena dijeda: PreToolUse alat=Write");
+    expect(text).not.toContain("RAHASIA");
+  });
+
+  test("penahanan mati (bawaan) tidak mencatat baris itu per aksi, dan aksi baca-saja tidak pernah dicatat", async () => {
+    const off = setup({ holdEnabled: false });
+    await off.handler(load("PreToolUse.Write.json"), off.context);
+    expect(off.logs.join("\n")).not.toContain("karena dijeda");
+
+    const paused = setup();
+    paused.control.pause();
+    await paused.handler(load("PreToolUse.Read.json"), paused.context); // bukan kandidat tahan
+    expect(paused.logs.join("\n")).not.toContain("karena dijeda");
+  });
+
   test("setelah resume, aksi ditahan lagi", async () => {
     const s = setup();
     s.control.pause();

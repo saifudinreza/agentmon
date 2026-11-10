@@ -282,7 +282,13 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
       // Catatan "dilepas" selalu dikonsumsi di sini (walau tidak jadi menahan), supaya tidak
       // tertinggal dan salah meloloskan permintaan lain yang kebetulan sama nanti.
       const alreadyReleased = hold.point === "PermissionRequest" && wasReleased(hold);
-      if (!context.control.canHold()) return undefined;
+      if (!context.control.canHold()) {
+        // Dijeda adalah pilihan pengguna, jadi dicatat supaya jelas dari log kenapa aksi ini tidak
+        // ditahan. Penahanan yang mati (keadaan bawaan) sengaja tidak dicatat per aksi: itu akan
+        // menggandakan baris log tiap hook, dan perintah `status` sudah menjelaskannya.
+        if (context.control.isPaused()) logger.info(`tidak ditahan karena dijeda: ${hold.point} alat=${hold.toolName}`);
+        return undefined;
+      }
       if (alreadyReleased) {
         logger.info(`diteruskan ke terminal tanpa menahan lagi: alat=${hold.toolName}`);
         return undefined;
