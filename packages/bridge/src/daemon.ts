@@ -9,6 +9,7 @@ import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createApprovalEngine, type ApprovalEngine } from "./approvals";
+import { createDaemonControl, type DaemonControl } from "./control";
 import { agentmonHome, loadOrCreateMachineId, loadOrCreateToken, paths } from "./home";
 import { createLogger } from "./logger";
 import { createDaemonServer, type HookHandler } from "./server";
@@ -42,6 +43,10 @@ export type DaemonOptions = {
   // 0 = biarkan sistem memilih port kosong (dipakai test).
   port?: number;
   onHook?: HookHandler;
+  // Boleh menahan aksi sampai ada keputusan? Bawaan mati; lihat control.ts untuk alasannya.
+  holdEnabled?: boolean;
+  // Lama menunggu keputusan sebelum izin dianggap habis waktu (milidetik). Bawaan 540 detik.
+  approvalTimeoutMs?: number;
   maxBodyBytes?: number;
   logMaxBytes?: number;
 };
@@ -49,6 +54,7 @@ export type DaemonOptions = {
 export type RunningDaemon = {
   port: number;
   approvals: ApprovalEngine;
+  control: DaemonControl;
   home: string;
   token: string;
   stop(): Promise<void>;
@@ -98,7 +104,11 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
   const logger = createLogger(file.log, options.logMaxBytes);
 
   // Buku antrean izin: satu untuk seluruh daemon. Ikut berhenti saat daemon berhenti.
-  const approvals = createApprovalEngine({ logger });
+  const approvals = createApprovalEngine({
+    logger,
+    ...(options.approvalTimeoutMs !== undefined ? { defaultTimeoutMs: options.approvalTimeoutMs } : {}),
+  });
+  const control = createDaemonControl({ holdEnabled: options.holdEnabled ?? false, approvals });
 
   const { server, drain } = createDaemonServer({
     token,
@@ -106,6 +116,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
     version: DAEMON_VERSION,
     machineId: loadOrCreateMachineId(home),
     approvals,
+    control,
     onHook: options.onHook,
     maxBodyBytes: options.maxBodyBytes,
   });
@@ -131,6 +142,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
   return {
     port,
     approvals,
+    control,
     home,
     token,
     async stop() {

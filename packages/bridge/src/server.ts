@@ -9,6 +9,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { ApprovalEngine } from "./approvals";
+import type { DaemonControl } from "./control";
 import { guardRequest } from "./guard";
 import type { Logger } from "./logger";
 
@@ -31,7 +32,7 @@ export type HookInput = {
 export type HookResponse = Record<string, unknown> | undefined;
 // Bekal yang diberikan daemon ke penangan hook: pencatat log, identitas laptop ini, dan buku
 // antrean izin (approval engine) tempat permintaan izin dibuka dan diputuskan.
-export type HookContext = { logger: Logger; machineId: string; approvals: ApprovalEngine };
+export type HookContext = { logger: Logger; machineId: string; approvals: ApprovalEngine; control: DaemonControl };
 export type HookHandler = (input: HookInput, context: HookContext) => Promise<HookResponse> | HookResponse;
 
 export type ServerOptions = {
@@ -40,6 +41,7 @@ export type ServerOptions = {
   version: string;
   machineId: string;
   approvals: ApprovalEngine;
+  control: DaemonControl;
   onHook?: HookHandler;
   maxBodyBytes?: number;
 };
@@ -93,7 +95,7 @@ function isHookInput(value: unknown): value is HookInput {
 export type DaemonServer = { server: Server; drain(timeoutMs: number): Promise<void> };
 
 export function createDaemonServer(options: ServerOptions): DaemonServer {
-  const { token, logger, version, machineId, approvals } = options;
+  const { token, logger, version, machineId, approvals, control } = options;
   const limit = options.maxBodyBytes ?? MAX_BODY_BYTES;
   const startedAt = Date.now();
   // Hook yang sedang berjalan. "close" terjadi setelah jawaban selesai terkirim (atau koneksi putus).
@@ -139,7 +141,65 @@ export function createDaemonServer(options: ServerOptions): DaemonServer {
       return handleHook(req, res);
     }
 
+    // ---- Kontrol lokal (dipakai perintah `status`, `pause`, `resume`, dan keputusan manual) ----
+    if (path === "/status") {
+      if (req.method !== "GET") return reply(res, 405, { error: "metode tidak diizinkan" }, { allow: "GET" });
+      return reply(res, 200, control.status());
+    }
+
+    if (path === "/pause" || path === "/resume") {
+      if (req.method !== "POST") return reply(res, 405, { error: "metode tidak diizinkan" }, { allow: "POST" });
+      if (path === "/pause") {
+        const released = control.pause();
+        logger.info(`dijeda (${released} izin yang menunggu dilepas)`);
+        return reply(res, 200, { ...control.status(), released });
+      }
+      control.resume();
+      logger.info("dilanjutkan");
+      return reply(res, 200, control.status());
+    }
+
+    // Keputusan untuk satu izin yang menunggu. Isinya bentuk ApprovalDecision dari paket
+    // shared; mesin persetujuan yang memeriksanya, karena nanti datang dari HP.
+    if (path === "/decision") {
+      if (req.method !== "POST") return reply(res, 405, { error: "metode tidak diizinkan" }, { allow: "POST" });
+      const body = await readJson(req, res);
+      if (!body.ok) return;
+      const result = approvals.decide(body.value);
+      if (result.ok) return reply(res, 200, { ok: true, status: result.approval.status });
+      if (result.reason === "invalid") return reply(res, 400, { error: result.message });
+      if (result.reason === "unknown") return reply(res, 404, { error: "izin tidak dikenal" });
+      return reply(res, 409, { error: "izin sudah selesai", status: result.status });
+    }
+
     reply(res, 404, { error: "tidak ditemukan" });
+  }
+
+  // Membaca isi request sebagai JSON. Bila gagal, jawabannya sudah dikirim di sini dan
+  // pemanggil cukup berhenti (ok = false).
+  async function readJson(req: IncomingMessage, res: ServerResponse): Promise<{ ok: true; value: unknown } | { ok: false }> {
+    if (!/^application\/json\b/i.test(req.headers["content-type"] ?? "")) {
+      reply(res, 415, { error: "hanya application/json" });
+      return { ok: false };
+    }
+    let raw: string;
+    try {
+      raw = await readBody(req, limit);
+    } catch (error) {
+      if (error instanceof BodyTooLargeError) {
+        res.on("finish", () => req.destroy());
+        reply(res, 413, { error: "isi terlalu besar" }, { connection: "close" });
+      } else {
+        reply(res, 400, { error: "isi tidak bisa dibaca" });
+      }
+      return { ok: false };
+    }
+    try {
+      return { ok: true, value: JSON.parse(raw) as unknown };
+    } catch {
+      reply(res, 400, { error: "JSON tidak valid" });
+      return { ok: false };
+    }
   }
 
   async function handleHook(req: IncomingMessage, res: ServerResponse) {
@@ -171,7 +231,7 @@ export function createDaemonServer(options: ServerOptions): DaemonServer {
     const started = performance.now();
     let response: HookResponse;
     try {
-      response = await options.onHook?.(input, { logger, machineId, approvals });
+      response = await options.onHook?.(input, { logger, machineId, approvals, control });
     } catch (error) {
       // Gagal berarti tanpa keputusan, bukan persetujuan.
       logger.error(`penangan hook gagal: ${error instanceof Error ? error.message : String(error)}`);

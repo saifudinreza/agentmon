@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "daemon": "tsx src/main.ts",
+    "cli": "tsx src/cli-main.ts",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run"
   },

@@ -17,6 +17,7 @@ Alat untuk riset issue "Spike: hook logger Claude Code dan fixture". Bukan kode 
 | `fake-daemon.mjs` | Daemon palsu yang menjawab salah (lambat, teks biasa, JSON rusak, status 500, `allow`) |
 | `judge.mjs` | Menilai satu eksperimen: sesi selesai, tidak ada aksi yang disetujui, alur izin normal teramati |
 | `print-config.ts` | Mencetak konfigurasi hook dari pembuat konfigurasi yang sebenarnya |
+| `verify-hold.ts` | Menjalankan 5 skenario penahanan aksi dengan Claude Code sungguhan (disetujui, ditolak dengan komentar, tanpa jawaban, dijeda, hanya membaca). Daemon sungguhan berjalan di proses yang sama dengan penjawab otomatis |
 | `measure-overhead.ts` | Mengukur waktu tambahan hook `http` dengan daemon sebenarnya (satu sesi, 15 pembacaan berkas) |
 
 ## Cara menjalankan
@@ -35,6 +36,7 @@ Pembuktian anti-macet dan pengukuran overhead memakai konfigurasi dari kode prod
 ```bash
 SPIKE_OUT=/tmp/spike tools/hook-spike/verify-fail-open.sh
 cd packages/bridge && SPIKE_OUT=/tmp/spike node --import tsx ../../tools/hook-spike/measure-overhead.ts
+cd packages/bridge && SPIKE_OUT=/tmp/spike node --import tsx ../../tools/hook-spike/verify-hold.ts
 ```
 
 Keduanya membutuhkan `pnpm install` lebih dulu, karena memakai `tsx` dari paket `bridge`. Variabel tambahan untuk `run.sh`: `SPIKE_SETTINGS` (berkas pengaturan siap pakai) dan `SPIKE_SEED` (isi folder proyek).

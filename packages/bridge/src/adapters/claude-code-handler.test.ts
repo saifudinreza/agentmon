@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { AgentMonEvent } from "@agentmon/shared";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createApprovalEngine } from "../approvals";
+import { createDaemonControl } from "../control";
 import { startDaemon, type RunningDaemon } from "../daemon";
 import { paths } from "../home";
 import type { HookContext, HookInput } from "../server";
@@ -16,11 +17,16 @@ const load = (name: string): HookInput =>
   JSON.parse(readFileSync(join(FIXTURE_DIR, name), "utf8")) as HookInput;
 const inSession = (input: HookInput, sessionId: string): HookInput => ({ ...input, session_id: sessionId });
 
-function fakeContext() {
+// Bekal palsu untuk penangan. Menahan aksi MATI secara bawaan (seperti daemon bawaan), jadi
+// test lama tetap menguji perilaku tanpa penahanan; test penahanan memakai holdEnabled: true.
+function fakeContext(options: { holdEnabled?: boolean } = {}) {
   const logs: string[] = [];
+  const approvals = createApprovalEngine();
+  const control = createDaemonControl({ holdEnabled: options.holdEnabled ?? false, approvals });
   const context: HookContext = {
     machineId: "laptop-1",
-    approvals: createApprovalEngine(),
+    approvals,
+    control,
     logger: { info: (m) => logs.push(`info: ${m}`), error: (m) => logs.push(`error: ${m}`) },
   };
   return { context, logs };
@@ -337,7 +343,7 @@ describe("batas antara inti daemon dan adapter", () => {
   // kolom khusus Claude. SENGAJA tidak mencakup `hook_event_name` dan `tool_name`: itu
   // amplop minimum bersama (HookInput di server.ts) yang diminta daemon dari agent mana pun,
   // dan akan ditinjau lagi setelah riset Codex.
-  const core = ["daemon.ts", "server.ts", "guard.ts", "home.ts", "logger.ts", "approvals.ts"];
+  const core = ["daemon.ts", "server.ts", "guard.ts", "home.ts", "logger.ts", "approvals.ts", "control.ts", "cli.ts"];
   const claudeSpecific = /PreToolUse|PostToolUse|PermissionRequest|SessionStart|SessionEnd|UserPromptSubmit|tool_input|session_id/;
 
   test.each(core)("%s tidak mengimpor adapter dan tidak menyebut istilah event Claude Code", (name) => {

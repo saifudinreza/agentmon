@@ -113,6 +113,57 @@ Hanya `pending` yang boleh pindah, dan status akhir tidak bisa berubah lagi. `au
 
 Kabar perubahan (`onChange`: dibuka atau diselesaikan) disiapkan untuk event `approval.requested` dan `approval.resolved` di issue berikutnya.
 
+## Menahan aksi agent sampai ada keputusan
+Penangan hook Claude Code (`adapters/claude-code-handler.ts`) menahan aksi lewat approval engine, lalu menerjemahkan hasilnya.
+
+**Aksi mana yang ditahan** (kebijakannya `holdCandidate` di `adapters/claude-code.ts`):
+
+| Hook | Ditahan | Alasan |
+|---|---|---|
+| `PreToolUse` | Alat pengubah berkas: `Write`, `Edit`, `MultiEdit`, `NotebookEdit` | `allow` di sini melewati prompt Claude, jadi tidak ada prompt izin kedua (FR-20) |
+| `PermissionRequest` | Semua alat, termasuk `Bash` dan `PowerShell` | Hook ini hanya muncul bila Claude memang akan bertanya (FR-21) |
+| `PreToolUse` untuk alat baca-saja (`Read`, `Glob`, `Grep`, ...) | Tidak | Tidak mengubah apa pun |
+| Mode `bypassPermissions` | Tidak, hanya dipantau | Pengguna memilih agent berjalan tanpa izin (keputusan PRD §18) |
+
+**Terjemahan hasil** (`toClaudeDecision`):
+
+| Hasil | Jawaban ke Claude Code |
+|---|---|
+| Disetujui | `allow` |
+| Ditolak | `deny` dengan komentar pengguna apa adanya sebagai alasan (alasan bawaan bila kosong). Claude membaca dan menanggapinya |
+| Waktu habis, dibatalkan, dijeda, error, terima sebagian | **Tanpa keputusan**: Claude Code bertanya di terminal seperti biasa. Tidak pernah `allow` dan tidak pernah `ask` |
+
+Terima sebagian (`partial`) belum bisa diterapkan karena butuh penyaringan hunk; sementara ini kembali ke alur normal.
+
+**Tidak menunggu dua kali.** Bila sebuah aksi sudah menunggu di `PreToolUse` lalu waktunya habis, Claude Code lanjut dengan `PermissionRequest` untuk aksi yang sama. Aksi yang baru dilepas itu diingat selama 60 detik sehingga `PermissionRequest` susulannya langsung diteruskan, dan prompt terminal muncul seketika. Tanpa ini pengguna menunggu dua kali.
+
+**Hook yang menunggu tidak menahan hook lain.** Daemon tetap melayani hook dan perintah lain selama satu hook menunggu.
+
+**Event** yang dikirim ke penerima: `tool.requested`, lalu `approval.requested` (berisi `approvalId` dan `expiresAt`), dan `approval.resolved` (status akhir, komentar).
+
+### Saklar penahanan dan perintah kontrol
+Penahanan **mati secara bawaan**, karena belum ada HP yang bisa menjawab (relay dibuat di tahap 2). Bila menyala tanpa ada yang menjawab, setiap aksi tertahan 9 menit sebelum prompt terminal muncul. Nyalakan dengan `AGENTMON_HOLD=1` saat menjalankan daemon.
+
+```bash
+AGENTMON_HOLD=1 pnpm --filter @agentmon/bridge daemon
+pnpm --filter @agentmon/bridge cli status        # apa yang sedang terjadi?
+pnpm --filter @agentmon/bridge cli approve       # setujui (id boleh dilewati bila hanya ada satu)
+pnpm --filter @agentmon/bridge cli deny jangan ubah berkas ini   # tolak dengan komentar
+pnpm --filter @agentmon/bridge cli pause         # jeda: tidak menahan, yang menunggu dilepas
+pnpm --filter @agentmon/bridge cli resume
+```
+`approve` dan `deny` menerima awalan id (8 karakter cukup). `status` menjelaskan keadaan dengan kalimat, misalnya "AgentMon sedang menunggu keputusan dari HP untuk 1 permintaan". Isi input alat tidak pernah ditampilkan, hanya nama alat.
+
+`pause` untuk saat kamu duduk di depan laptop dan ingin menjawab di terminal: aksi yang sedang menunggu langsung dilepas, sehingga prompt terminal muncul saat itu juga, dan aksi berikutnya tidak ditahan sampai `resume`.
+
+| Endpoint | Fungsi |
+|---|---|
+| `GET /status` | Keadaan: `paused`, `holdEnabled`, daftar izin yang menunggu, dan `message` |
+| `POST /pause`, `POST /resume` | Menjeda dan melanjutkan |
+| `POST /decision` | Memutuskan satu izin. Isinya `ApprovalDecision` dari paket `shared`. Hasil: `200`, `400` (bentuk salah), `404` (tidak dikenal), `409` (sudah selesai, menyebut hasil sebenarnya) |
+
+Semua endpoint memakai tiga pemeriksaan keamanan yang sama dengan `/hook`.
+
 ## Endpoint
 | Endpoint | Fungsi |
 |---|---|
