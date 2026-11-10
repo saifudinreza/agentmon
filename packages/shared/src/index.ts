@@ -14,4 +14,5 @@ export * from "./approval"; // status dan keputusan approval
 export * from "./diff"; // bentuk perubahan sebuah berkas (diff, hunk)
 export * from "./events"; // amplop dan jenis event
 export * from "./parse"; // parseEvent() dan hasilnya
+export * from "./relay"; // bingkai pesan antara klien dan relay
 export * from "./risk"; // level risiko dan hasil policy
