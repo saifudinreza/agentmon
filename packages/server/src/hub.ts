@@ -30,10 +30,14 @@ import type { RelayDirectory } from "./directory";
 import { silentLogger, type Logger } from "./logger";
 import { createRateLimiter, type RateLimiter } from "./rate-limit";
 
-// Sebuah koneksi dilihat hub hanya sebagai dua kemampuan: mengirim teks dan menutup diri.
+// Sebuah koneksi dilihat hub hanya sebagai beberapa kemampuan sederhana: mengirim teks, menutup diri,
+// dan (opsional) melaporkan berapa byte yang masih antre belum terkirim.
 export type RelayConnection = {
   send(text: string): void;
   close(code: number, reason: string): void;
+  // Jumlah byte yang sudah diserahkan ke soket tetapi belum sampai ke klien. Dipakai untuk
+  // memutus penerima yang lambat; transport yang tidak bisa mengukurnya boleh tidak mengisinya.
+  bufferedAmount?(): number;
 };
 
 export type RelayLimits = {
@@ -43,6 +47,7 @@ export type RelayLimits = {
   maxRateViolations: number; // pesan ditolak karena terlalu cepat berturut-turut sebelum koneksi diputus
   helloTimeoutMs: number; // batas waktu menyebut peran dan token setelah tersambung
   idleTimeoutMs: number; // batas waktu tanpa tanda hidup sebelum koneksi dianggap mati
+  maxBufferedBytes: number; // antrean kirim terbesar untuk satu penerima sebelum ia dianggap terlalu lambat
 };
 
 export const DEFAULT_LIMITS: RelayLimits = {
@@ -52,6 +57,7 @@ export const DEFAULT_LIMITS: RelayLimits = {
   maxRateViolations: 5,
   helloTimeoutMs: 5_000,
   idleTimeoutMs: 70_000, // dua kali jarak ping 30 detik, ditambah kelonggaran
+  maxBufferedBytes: 8 * 1024 * 1024, // 8 MiB antre untuk satu penerima
 };
 
 // Kode penutup WebSocket. 1000-1015 dipakai standar, 4000-4999 bebas dipakai aplikasi.
@@ -63,6 +69,7 @@ export const CLOSE = {
   unauthorized: 4003,
   idle: 4004,
   replaced: 4005,
+  slowConsumer: 4006, // penerima membaca terlalu lambat, antreannya melewati batas
 } as const;
 
 // Satu sesi = satu koneksi beserta keadaannya.
@@ -188,7 +195,11 @@ export function createRelayHub(options: RelayHubOptions) {
         }
         const paired = await directory.devicesOf(session.id as string);
         if (session.closed) return;
-        const text = JSON.stringify({ kind: "event", event: frame.event } satisfies ServerFrame);
+        // Yang diteruskan adalah objek ASLI yang baru saja lolos validasi, bukan hasil parse-nya.
+        // Hasil parse membuang kolom amplop yang belum dikenal; daemon versi baru yang menambah
+        // kolom akan kehilangan kolom itu diam-diam saat lewat relay lama. Dengan meneruskan yang
+        // asli, kontrak bisa berkembang tanpa menunggu relay diperbarui. Ukurannya sudah dibatasi.
+        const text = JSON.stringify({ kind: "event", event: (json as { event: unknown }).event });
         // Hanya HP yang dipasangkan DAN sedang tersambung yang menerima.
         for (const deviceId of paired) {
           const target = devices.get(deviceId);
@@ -207,7 +218,7 @@ export function createRelayHub(options: RelayHubOptions) {
         if (!allowed) return reject(session, "forbidden", "tidak dipasangkan dengan laptop itu");
         const target = machines.get(frame.machineId);
         if (!target) return reject(session, "target_offline", "laptop sedang tidak tersambung");
-        send(target, { kind: "command", deviceId: session.id as string, body: frame.body });
+        deliver(target, JSON.stringify({ kind: "command", deviceId: session.id as string, body: frame.body } satisfies ServerFrame));
         return;
       }
     }
@@ -216,6 +227,16 @@ export function createRelayHub(options: RelayHubOptions) {
   // Meneruskan teks yang sudah jadi ke satu penerima.
   function deliver(target: Session, text: string): void {
     if (target.closed) return;
+    // Penerima yang membaca lambat (atau sengaja tidak membaca) membuat antrean kirimnya menumpuk
+    // di memori relay. Satu laptop boleh mengirim puluhan pesan per detik, jadi tanpa batas ini satu
+    // penerima nakal bisa menghabiskan memori relay yang melayani semua orang. Penerima yang
+    // antreannya melewati batas diputus; ia bisa menyambung lagi dan mengambil riwayat.
+    const buffered = target.conn.bufferedAmount?.() ?? 0;
+    if (buffered > limits.maxBufferedBytes) {
+      logger.info(`penerima lambat diputus role=${target.role ?? "belum-dikenal"}`);
+      close(target, CLOSE.slowConsumer, "slow_consumer");
+      return;
+    }
     try {
       target.conn.send(text);
     } catch (error) {

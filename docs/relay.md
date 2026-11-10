@@ -12,7 +12,7 @@ Mode ini hanya untuk mencoba relay: direktori pemasangan ada di memori dengan **
 
 | Alamat | Fungsi |
 |---|---|
-| `GET /health` | `status` dan jumlah koneksi (untuk pemeriksaan hosting) |
+| `GET /health` | Hanya `{ "status": "ok" }` untuk pemeriksaan hosting. Jumlah koneksi sengaja tidak dibuka (bahan pengintaian); statistik tersedia di dalam proses lewat `hub.stats()` |
 | `WebSocket /ws` | Jalur pesan untuk laptop dan HP |
 
 ## Protokol
@@ -28,7 +28,7 @@ Bentuk bingkai didefinisikan di paket `shared` (`relay.ts`), jadi daemon dan PWA
 
 **Relay ke klien:** `welcome` (jawaban `hello` yang berhasil, berisi nomor), `event`, `command` (membawa `deviceId` pengirim), dan `error` (berisi `code` dan `message`).
 
-Relay hanya memeriksa **amplop** event (`v`, `id`, `machineId`, `sessionId`, `seq`, `ts`, `agent`, `type`). `payload` dibiarkan apa adanya, karena mulai tahap 4 isinya terenkripsi dan relay tidak boleh membukanya.
+Relay hanya memeriksa **amplop** event (`v`, `id`, `machineId`, `sessionId`, `seq`, `ts`, `agent`, `type`). `payload` dibiarkan apa adanya, karena mulai tahap 4 isinya terenkripsi dan relay tidak boleh membukanya. Yang diteruskan adalah **objek aslinya** setelah lolos validasi, bukan hasil parse, sehingga kolom amplop baru dari daemon versi lebih baru tidak hilang diam-diam saat lewat relay lama.
 
 **Kode galat:** `invalid_json`, `invalid_frame`, `too_large`, `rate_limited`, `unauthenticated`, `unauthorized`, `already_authenticated`, `forbidden`, `target_offline`, `hello_timeout`, `idle_timeout`, `replaced`.
 
@@ -47,6 +47,9 @@ Relay hanya memeriksa **amplop** event (`v`, `id`, `machineId`, `sessionId`, `se
 | Laju pesan | lonjakan 100, rata-rata 50 per detik per koneksi | `rate_limited`; bila 5 kali berturut-turut, koneksi diputus (1008) |
 | Menyebut `hello` | 5 detik setelah tersambung | Ditutup (`hello_timeout`, 4002) |
 | Tanda hidup | ping tiap 30 detik, batas diam 70 detik | Ditutup (`idle_timeout`, 4004) dan dibersihkan |
+| Antrean kirim satu penerima | 8 MiB | Penerima yang membaca terlalu lambat diputus (4006, `slow_consumer`) alih-alih menumpuk pesan di memori relay. Ia bisa menyambung lagi |
+
+Penyapuan koneksi berjalan **lebih rapat daripada ping** (setengah batas `hello`, jadi 2,5 detik secara bawaan). Kalau hanya tiap jarak ping, koneksi yang tidak pernah menyebut `hello` bisa bertahan sampai 35 detik walau batasnya 5 detik.
 
 Pesan biner ditolak (hanya teks). Koneksi yang belum menyebut `hello` dan mengirim sampah langsung diputus.
 

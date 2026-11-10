@@ -4,7 +4,7 @@ import WebSocket, { type ClientOptions } from "ws";
 import { createMemoryDirectory } from "./directory";
 import { CLOSE, type RelayLimits } from "./hub";
 import type { Logger } from "./logger";
-import { startRelayServer, type RunningRelay } from "./node";
+import { startRelayServer, sweepIntervalMs, type RunningRelay } from "./node";
 
 const TOKENS = {
   m1: "machine-token-satu-0000000000000000",
@@ -105,11 +105,13 @@ const envelope = (machineId: string, extra: Record<string, unknown> = {}) => ({
 });
 
 describe("HTTP", () => {
-  test("/health menjawab ok beserta jumlah koneksi", async () => {
+  test("/health hanya menjawab ok, tanpa membuka jumlah koneksi (bahan pengintaian)", async () => {
     const { relay } = await start();
+    await join(relay.port, "machine", TOKENS.m1);
     const reply = await fetch(`http://127.0.0.1:${relay.port}/health`);
     expect(reply.status).toBe(200);
-    expect(await reply.json()).toEqual({ status: "ok", connections: 0, machines: 0, devices: 0 });
+    expect(await reply.json()).toEqual({ status: "ok" });
+    expect(relay.hub.stats().machines).toBe(1); // statistik tetap tersedia di dalam proses
   });
 
   test("alamat lain -> 404", async () => {
@@ -315,6 +317,57 @@ describe("log tidak memuat isi pesan", () => {
     for (const token of Object.values(TOKENS)) expect(text).not.toContain(token);
     expect(text).toContain("terautentikasi role=machine"); // memang ada yang dicatat
   });
+});
+
+describe("penyapuan lebih rapat daripada ping", () => {
+  test("sweepIntervalMs: setengah batas hello, tidak lebih jarang dari ping, dengan batas bawah", () => {
+    expect(sweepIntervalMs(30_000, 5_000)).toBe(2_500); // bawaan: disapu tiap 2,5 detik, bukan 30 detik
+    expect(sweepIntervalMs(1_000, 5_000)).toBe(1_000); // ping lebih rapat: ikut ping
+    expect(sweepIntervalMs(30_000, 4)).toBe(10); // batas bawah
+  });
+
+  test("koneksi yang tidak menyebut hello ditutup mendekati batasnya walau jarak ping sangat panjang", async () => {
+    // Ping hanya tiap 60 detik. Tanpa penyapuan yang lebih rapat, koneksi diam ini bertahan sampai 60 detik.
+    const { relay } = await start({ heartbeatMs: 60_000, limits: { helloTimeoutMs: 100 } });
+    const started = Date.now();
+    const silent = await Client.open(relay.port);
+    await silent.waitFor("ditutup", () => silent.closed !== undefined, 3000);
+    expect(silent.closed?.code).toBe(CLOSE.helloTimeout);
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+});
+
+describe("penerima yang tidak membaca", () => {
+  test("diputus saat antreannya membengkak, tanpa mengganggu penerima lain", async () => {
+    // Batas antrean (2 MiB) jauh lebih besar daripada satu pesan (100 KiB), supaya penerima yang sehat
+    // tidak ikut terhitung lambat hanya karena ada beberapa pesan yang sedang dalam perjalanan.
+    const { relay } = await start({
+      limits: { maxBufferedBytes: 2 * 1024 * 1024, maxMessageBytes: 512 * 1024, rateCapacity: 1000, rateRefillPerSecond: 1000 },
+    });
+    const m1 = await join(relay.port, "machine", TOKENS.m1);
+    const slow = await join(relay.port, "device", TOKENS.d1);
+    const fast = await join(relay.port, "device", TOKENS.d2);
+
+    // `slow` berhenti membaca dari soketnya, seperti HP yang hang atau klien yang sengaja nakal.
+    (slow.ws as unknown as { _socket: { pause(): void } })._socket.pause();
+
+    // Total 15 MiB, dikirim bergelombang kecil: cukup banyak untuk melampaui penyangga soket sistem
+    // operasi pada penerima yang diam, tetapi cukup santai agar penerima yang membaca tetap mengimbangi.
+    const payload = "x".repeat(100 * 1024);
+    for (let i = 0; i < 150; i++) {
+      m1.send({ kind: "event", event: envelope("m1", { seq: i, payload: { isi: payload } }) });
+      if (i % 3 === 2) await new Promise((r) => setTimeout(r, 10));
+    }
+
+    // Relay memutus penerima yang lambat: ia hilang dari hub, sedangkan yang lain tetap ada.
+    const deadline = Date.now() + 15_000;
+    while (relay.hub.stats().devices > 1 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    expect(relay.hub.stats().devices).toBe(1);
+
+    expect(fast.closed).toBeUndefined();
+    expect(fast.kinds().filter((k) => k === "event").length).toBeGreaterThan(0);
+    expect((await fetch(`http://127.0.0.1:${relay.port}/health`)).status).toBe(200);
+  }, 30_000);
 });
 
 describe("berhenti dengan rapi", () => {

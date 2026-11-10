@@ -36,6 +36,16 @@ export type RunningRelay = {
 
 export const DEFAULT_HEARTBEAT_MS = 30_000;
 
+/**
+ * Jarak penyapuan koneksi. HARUS lebih rapat daripada jarak ping dan daripada batas `hello`: kalau
+ * disapu hanya tiap jarak ping (30 detik), koneksi yang tidak pernah menyebut `hello` bisa bertahan
+ * sampai 35 detik walau batasnya 5 detik. Dipakai setengah dari batas `hello`, dengan batas bawah
+ * supaya tidak menyapu terlalu sering.
+ */
+export function sweepIntervalMs(heartbeatMs: number, helloTimeoutMs: number): number {
+  return Math.max(10, Math.min(heartbeatMs, Math.floor(helloTimeoutMs / 2)));
+}
+
 export async function startRelayServer(options: RelayServerOptions): Promise<RunningRelay> {
   const logger = options.logger ?? silentLogger;
   const limits: RelayLimits = { ...DEFAULT_LIMITS, ...options.limits };
@@ -43,7 +53,9 @@ export async function startRelayServer(options: RelayServerOptions): Promise<Run
 
   // ---- HTTP (Hono) ----
   const app = new Hono();
-  app.get("/health", (c) => c.json({ status: "ok", ...hub.stats() }));
+  // Hanya "ok". Jumlah laptop dan HP yang tersambung adalah bahan pengintaian yang tidak dibutuhkan
+  // pemeriksaan hosting; statistik tetap bisa dibaca di dalam proses lewat hub.stats().
+  app.get("/health", (c) => c.json({ status: "ok" }));
   const server = createAdaptorServer({ fetch: app.fetch }) as Server;
 
   // ---- WebSocket ----
@@ -66,6 +78,8 @@ export async function startRelayServer(options: RelayServerOptions): Promise<Run
     const session = hub.accept({
       send: (text) => ws.send(text),
       close: (code, reason) => ws.close(code, reason),
+      // Berapa byte yang masih antre belum terkirim ke klien; hub memakainya untuk memutus penerima lambat.
+      bufferedAmount: () => ws.bufferedAmount,
     });
     ws.on("message", (data, isBinary) => {
       // Teks diteruskan sebagai teks. Biner diteruskan apa adanya agar hub yang menolaknya.
@@ -79,7 +93,8 @@ export async function startRelayServer(options: RelayServerOptions): Promise<Run
     ws.on("error", (error) => logger.error(`kesalahan soket: ${error.message}`));
   });
 
-  // ---- Detak: ping ke semua soket, lalu sapu yang mati ----
+  // ---- Detak: ping ke semua soket. Penyapuan berjalan di jadwalnya sendiri yang lebih rapat. ----
+  const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
   const heartbeat = setInterval(() => {
     for (const ws of wss.clients) {
       try {
@@ -88,9 +103,10 @@ export async function startRelayServer(options: RelayServerOptions): Promise<Run
         // soket sudah putus; akan disapu hub
       }
     }
-    hub.sweep();
-  }, options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
+  }, heartbeatMs);
+  const sweeper = setInterval(() => hub.sweep(), sweepIntervalMs(heartbeatMs, limits.helloTimeoutMs));
   heartbeat.unref();
+  sweeper.unref();
 
   // ---- Mulai mendengarkan ----
   await new Promise<void>((resolve, reject) => {
@@ -109,6 +125,7 @@ export async function startRelayServer(options: RelayServerOptions): Promise<Run
     hub,
     async stop() {
       clearInterval(heartbeat);
+      clearInterval(sweeper);
       hub.closeAll(1001, "server berhenti");
       for (const ws of wss.clients) ws.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));

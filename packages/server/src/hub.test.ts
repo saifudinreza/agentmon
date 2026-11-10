@@ -29,7 +29,7 @@ function makeDirectory() {
 // Koneksi tiruan: mencatat apa yang dikirim hub kepadanya dan bagaimana ia ditutup.
 function fakeConnection() {
   const sent: ServerFrame[] = [];
-  const state: { closed?: { code: number; reason: string }; throwOnSend: boolean } = { throwOnSend: false };
+  const state: { closed?: { code: number; reason: string }; throwOnSend: boolean; buffered: number } = { throwOnSend: false, buffered: 0 };
   return {
     sent,
     state,
@@ -41,6 +41,8 @@ function fakeConnection() {
       close(code: number, reason: string) {
         state.closed = { code, reason };
       },
+      // Antrean kirim yang bisa diatur test, untuk meniru penerima yang membaca lambat.
+      bufferedAmount: () => state.buffered,
     },
     errors: () => sent.filter((f): f is Extract<ServerFrame, { kind: "error" }> => f.kind === "error").map((f) => f.code),
     events: () => sent.filter((f) => f.kind === "event"),
@@ -501,6 +503,87 @@ describe("ketahanan", () => {
 
     expect(d2.fake.events()).toHaveLength(1); // penerima lain tetap menerima
     expect(logs.join("\n")).toContain("gagal meneruskan");
+  });
+});
+
+describe("penerima yang membaca lambat", () => {
+  test("penerima yang antreannya melewati batas diputus, dan penerima lain tetap menerima", async () => {
+    const { hub, logs } = setup({ limits: { maxBufferedBytes: 1000 } });
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const slow = await connect(hub, "device", TOKENS.d1);
+    const fast = await connect(hub, "device", TOKENS.d2);
+    slow.fake.state.buffered = 5000; // antreannya menumpuk
+
+    await send(m1.session, { kind: "event", event: envelope("m1", { payload: { isi: "RAHASIA-ISI" } }) });
+
+    expect(slow.fake.state.closed?.code).toBe(CLOSE.slowConsumer);
+    expect(slow.fake.events()).toHaveLength(0); // tidak ditambahkan ke antrean yang sudah menumpuk
+    expect(fast.fake.events()).toHaveLength(1);
+    expect(hub.stats().devices).toBe(1);
+    expect(logs.join("\n")).toContain("penerima lambat diputus");
+    expect(logs.join("\n")).not.toContain("RAHASIA");
+  });
+
+  test("antrean tepat di batas belum diputus", async () => {
+    const { hub } = setup({ limits: { maxBufferedBytes: 1000 } });
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const d1 = await connect(hub, "device", TOKENS.d1);
+    d1.fake.state.buffered = 1000;
+    await send(m1.session, { kind: "event", event: envelope("m1") });
+    expect(d1.fake.state.closed).toBeUndefined();
+    expect(d1.fake.events()).toHaveLength(1);
+  });
+
+  test("laptop yang lambat menerima perintah juga diputus", async () => {
+    const { hub } = setup({ limits: { maxBufferedBytes: 1000 } });
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const d1 = await connect(hub, "device", TOKENS.d1);
+    m1.fake.state.buffered = 5000;
+    await send(d1.session, { kind: "command", machineId: "m1", body: { decision: "approve" } });
+    expect(m1.fake.state.closed?.code).toBe(CLOSE.slowConsumer);
+    expect(hub.stats().machines).toBe(0);
+  });
+
+  test("penerima yang kemudian menyambung lagi dilayani seperti biasa", async () => {
+    const { hub } = setup({ limits: { maxBufferedBytes: 1000 } });
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const slow = await connect(hub, "device", TOKENS.d1);
+    slow.fake.state.buffered = 5000;
+    await send(m1.session, { kind: "event", event: envelope("m1") });
+    expect(slow.fake.state.closed).toBeDefined();
+
+    const again = await connect(hub, "device", TOKENS.d1);
+    await send(m1.session, { kind: "event", event: envelope("m1", { seq: 1 }) });
+    expect(again.fake.events()).toHaveLength(1);
+  });
+
+  test("koneksi yang tidak melaporkan antrean tetap berfungsi", async () => {
+    const { hub } = setup({ limits: { maxBufferedBytes: 1 } });
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const bare = fakeConnection();
+    const session = hub.accept({ send: bare.conn.send, close: bare.conn.close }); // tanpa bufferedAmount
+    await send(session, { kind: "hello", role: "device", token: TOKENS.d1 });
+    await send(m1.session, { kind: "event", event: envelope("m1") });
+    expect(bare.events()).toHaveLength(1);
+  });
+});
+
+describe("event diteruskan dalam bentuk aslinya", () => {
+  test("kolom amplop yang belum dikenal (dari daemon versi lebih baru) tidak hilang di jalan", async () => {
+    const { hub } = setup();
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const d1 = await connect(hub, "device", TOKENS.d1);
+    await send(m1.session, { kind: "event", event: envelope("m1", { kolomBaru: "dari-versi-depan", bersarang: { a: 1 } }) });
+    expect(d1.fake.events()[0]).toMatchObject({ event: { kolomBaru: "dari-versi-depan", bersarang: { a: 1 } } });
+  });
+
+  test("validasi amplop tetap berlaku walau yang diteruskan objek aslinya", async () => {
+    const { hub } = setup();
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const d1 = await connect(hub, "device", TOKENS.d1);
+    await send(m1.session, { kind: "event", event: envelope("m1", { id: "bukan-uuid", kolomBaru: "x" }) });
+    expect(m1.fake.errors()).toEqual(["invalid_frame"]);
+    expect(d1.fake.events()).toHaveLength(0);
   });
 });
 
