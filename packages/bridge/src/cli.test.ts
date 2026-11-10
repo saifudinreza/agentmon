@@ -180,3 +180,28 @@ describe("status menampilkan ringkasan perubahan", () => {
     d.approvals.cancelAll();
   });
 });
+
+describe("ui", () => {
+  test("mencetak alamat halaman web lokal dengan kredensial di fragmen (setelah #), bukan di query", async () => {
+    const d = await startDaemonForCli();
+    const result = await cli(["ui"], d.port);
+    expect(result.code).toBe(0);
+    expect(result.out).toBe(`http://127.0.0.1:${d.port}/dev#${d.token}`);
+    expect(result.out).not.toContain("?"); // token di query string akan masuk log dan riwayat
+    expect(result.err).toContain("jangan dibagikan");
+    expect(result.err).toContain("AGENTMON_DEV_UI=1");
+    expect(result.err).not.toContain(d.token); // peringatan tidak ikut mencetak kredensial
+  });
+
+  test("tidak memerlukan daemon yang sedang berjalan (hanya membaca berkas token)", async () => {
+    const d = await startDaemonForCli();
+    const port = d.port;
+    await d.stop();
+    daemon = undefined;
+    expect((await cli(["ui"], port)).code).toBe(0);
+  });
+
+  test("tanpa berkas token (daemon belum pernah dijalankan) dilaporkan", async () => {
+    expect(await cli(["ui"], 47999)).toMatchObject({ code: 1 });
+  });
+});

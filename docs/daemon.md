@@ -164,6 +164,36 @@ pnpm --filter @agentmon/bridge cli resume
 
 Semua endpoint memakai tiga pemeriksaan keamanan yang sama dengan `/hook`.
 
+## Halaman web lokal (alat pengembangan)
+Halaman sederhana yang dilayani daemon untuk membuktikan alur inti dari awal sampai akhir sebelum ada relay dan HP: melihat izin yang menunggu beserta diff-nya, menyetujui atau menolak dengan komentar, dan membaca timeline. Tampilannya sengaja polos.
+
+**Hanya aktif di mode pengembangan.** Bawaannya mati, dan alamat `/dev` tidak ada sama sekali (404). Nyalakan:
+
+```bash
+AGENTMON_HOLD=1 AGENTMON_DEV_UI=1 pnpm --filter @agentmon/bridge daemon
+pnpm --filter @agentmon/bridge cli ui     # mencetak alamat lengkap dengan kredensial
+```
+`AGENTMON_DEV_UI=1` tidak berlaku bila `NODE_ENV=production`. Tanpa `AGENTMON_HOLD=1` halaman tetap menyala, tetapi tidak ada izin yang ditahan sehingga daftarnya kosong.
+
+**Kredensial.** Alamat dari `cli ui` berbentuk `http://127.0.0.1:47821/dev#<token>`. Token ada di bagian setelah `#` (fragmen), yang tidak pernah dikirim ke server dan tidak masuk log. Halaman membacanya, langsung menghapusnya dari alamat, dan menyimpannya hanya untuk tab itu. Token tidak boleh ada di query string (`?token=`), karena itu akan masuk log dan riwayat. Alamat itu berisi kredensial, jadi jangan dibagikan.
+
+| Alamat | Fungsi | Kredensial |
+|---|---|---|
+| `GET /dev` | Kode halaman. Tidak berisi data atau rahasia | Tidak perlu |
+| `GET /dev/api/state` | Status, izin yang menunggu (dengan diff), timeline | Token wajib |
+| `POST /dev/api/decision` | Setujui atau tolak. Aturannya sama dengan `/decision` | Token wajib |
+| `POST /dev/api/pause`, `/dev/api/resume` | Jeda dan lanjutkan penahanan | Token wajib |
+
+**Keamanan** (semuanya dijaga test):
+- **Penjaga biasa tidak dilonggarkan.** Semua endpoint lain (`/hook`, `/status`, `/decision`, ...) tetap menolak setiap request dari browser. Hanya `/dev/...` yang memakai penjaga khusus.
+- **Penjaga `/dev`:** Host harus `127.0.0.1` atau `localhost` (menolak DNS rebinding); `Origin` dari situs lain ditolak; API menolak `Sec-Fetch-Site` selain `same-origin` (penanda ini dipasang browser dan tidak bisa dipalsukan halaman web), jadi situs lain tidak bisa menembak API walau tahu tokennya; token Bearer tetap wajib.
+- **Isi dari agent tidak dipercaya.** Isi berkas, perintah, dan nama berkas dirender sebagai **teks** (tidak pernah `innerHTML`), sehingga `<script>` atau `onerror` di dalam kode hanya tampil sebagai tulisan. Uji dengan browser sungguhan membuktikan skrip hostile tidak dieksekusi.
+- **CSP ketat:** `default-src 'none'`, skrip dan gaya hanya yang membawa kode acak sekali pakai (berbeda tiap pemuatan), `connect-src 'self'`, `frame-ancestors 'none'`, tanpa `unsafe-inline` dan `unsafe-eval`. Halaman tidak memuat apa pun dari luar.
+- **Timeline hanya ringkasan** ("alat diminta: Write", "keputusan: denied"), tanpa isi input, pesan agent, atau komentar. Jumlahnya dibatasi 200 dan tidak disimpan ke disk.
+- Input alat yang tampil dipotong (teks lebih dari 2000 karakter); diff lengkap tampil terpisah.
+
+Halaman memperbarui diri tiap detik (polling). Komentar yang sedang diketik tidak hilang saat pembaruan.
+
 ## Kalkulator diff
 Saat sebuah aksi ditahan, daemon menghitung **perubahan yang diusulkan agent** dan menyimpannya bersama izin yang menunggu (`approvals.get(id).diff`), sebagai bahan tampilan review dan terima sebagian. Kodenya di `packages/bridge/src/diff/`, dan bentuk datanya di paket `shared` (`diff.ts`) karena dipakai bersama halaman web dan HP.
 

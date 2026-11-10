@@ -10,8 +10,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import type { ApprovalEngine } from "./approvals";
 import type { DaemonControl } from "./control";
+import { decisionAnswer, handleDevRequest } from "./dev-ui";
 import { guardRequest } from "./guard";
 import type { Logger } from "./logger";
+import type { Timeline } from "./timeline";
 
 // Input hook bisa besar (misalnya hasil membaca berkas panjang), tetapi tidak tanpa batas.
 export const MAX_BODY_BYTES = 10 * 1024 * 1024;
@@ -42,6 +44,9 @@ export type ServerOptions = {
   machineId: string;
   approvals: ApprovalEngine;
   control: DaemonControl;
+  timeline: Timeline;
+  // Halaman web lokal (alat pengembangan). Bawaan mati: alamat /dev tidak ada sama sekali.
+  devUi?: boolean;
   onHook?: HookHandler;
   maxBodyBytes?: number;
 };
@@ -95,7 +100,7 @@ function isHookInput(value: unknown): value is HookInput {
 export type DaemonServer = { server: Server; drain(timeoutMs: number): Promise<void> };
 
 export function createDaemonServer(options: ServerOptions): DaemonServer {
-  const { token, logger, version, machineId, approvals, control } = options;
+  const { token, logger, version, machineId, approvals, control, timeline } = options;
   const limit = options.maxBodyBytes ?? MAX_BODY_BYTES;
   const startedAt = Date.now();
   // Hook yang sedang berjalan. "close" terjadi setelah jawaban selesai terkirim (atau koneksi putus).
@@ -114,8 +119,16 @@ export function createDaemonServer(options: ServerOptions): DaemonServer {
 
   async function handle(req: IncomingMessage, res: ServerResponse) {
     const port = (server.address() as AddressInfo).port;
+    const path = (req.url ?? "").split("?")[0] ?? "";
+
+    // Halaman web lokal punya penjaga sendiri (browser harus bisa memakainya). Hanya dilayani bila
+    // mode pengembangan menyala; bila mati, alamat /dev diperlakukan seperti alamat lain dan
+    // jatuh ke penjaga biasa di bawah.
+    if (options.devUi && (path === "/dev" || path.startsWith("/dev/"))) {
+      return handleDevRequest(req, res, path, { token, port, approvals, control, timeline, logger, reply, readJson });
+    }
+
     const guard = guardRequest(req, { port, token });
-    const path = (req.url ?? "").split("?")[0];
     if (!guard.ok) {
       logger.error(`ditolak ${guard.status} ${req.method} ${path}: ${guard.message}`);
       reply(res, guard.status, { error: guard.message });
@@ -165,11 +178,8 @@ export function createDaemonServer(options: ServerOptions): DaemonServer {
       if (req.method !== "POST") return reply(res, 405, { error: "metode tidak diizinkan" }, { allow: "POST" });
       const body = await readJson(req, res);
       if (!body.ok) return;
-      const result = approvals.decide(body.value);
-      if (result.ok) return reply(res, 200, { ok: true, status: result.approval.status });
-      if (result.reason === "invalid") return reply(res, 400, { error: result.message });
-      if (result.reason === "unknown") return reply(res, 404, { error: "izin tidak dikenal" });
-      return reply(res, 409, { error: "izin sudah selesai", status: result.status });
+      const answer = decisionAnswer(approvals, body.value);
+      return reply(res, answer.status, answer.body);
     }
 
     reply(res, 404, { error: "tidak ditemukan" });
