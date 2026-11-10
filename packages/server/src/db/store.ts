@@ -13,7 +13,7 @@
 // Yang disimpan adalah AMPLOP event apa adanya. `payload` sampai tahap 3 berupa objek, sejak
 // tahap 4 berupa teks terenkripsi; relay tidak membukanya, dan kolom jsonb menerima keduanya.
 import type { Agent, Envelope } from "@agentmon/shared";
-import { and, asc, desc, eq, gt, lt, isNotNull, notExists, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lt, isNotNull, or, sql } from "drizzle-orm";
 import type { Logger } from "../logger";
 import { silentLogger } from "../logger";
 import type { Database } from "./connect";
@@ -26,6 +26,29 @@ export const DEFAULT_RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000; // dicek tiap 6
 // Batas jumlah event dalam satu pengambilan riwayat, supaya satu permintaan tidak menarik jutaan baris.
 export const DEFAULT_PAGE_SIZE = 100;
 export const MAX_PAGE_SIZE = 500;
+
+// Banyak baris yang dihapus per pernyataan saat penghapusan otomatis.
+export const DEFAULT_PURGE_BATCH = 5000;
+
+// Bilangan bulat dari nilai yang mungkin bukan angka sah. Selain angka berhingga, dipakai nilai bawaan.
+function finiteInt(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : fallback;
+}
+
+// Jumlah baris hasil `db.execute`. Bentuk hasilnya sedikit berbeda antar driver, tetapi semuanya punya `rows`.
+function rowCount(result: unknown): number {
+  return (result as { rows: unknown[] }).rows.length;
+}
+
+// Menjalankan penghapusan potongan demi potongan sampai tidak ada lagi. Mengembalikan jumlah totalnya.
+async function deleteInBatches(batch: number, deleteOne: () => Promise<number>): Promise<number> {
+  let total = 0;
+  for (;;) {
+    const removed = await deleteOne();
+    total += removed;
+    if (removed < batch) return total;
+  }
+}
 
 export type StoredSession = {
   sessionId: string;
@@ -99,7 +122,9 @@ export function createStore(db: Database, options: { now?: () => Date } = {}) {
      * nomor itu (untuk HP yang menyambung ulang dan hanya butuh yang terlewat).
      */
     async listEvents(query: { machineId: string; sessionId: string; afterSeq?: number; limit?: number }): Promise<Envelope[]> {
-      const limit = Math.min(Math.max(1, Math.floor(query.limit ?? DEFAULT_PAGE_SIZE)), MAX_PAGE_SIZE);
+      // Nilai yang bukan angka berhingga (NaN, Infinity) memakai nilai bawaan, bukan diteruskan ke SQL
+      // yang akan menolaknya. Nilainya nanti datang dari parameter permintaan HP.
+      const limit = Math.min(Math.max(1, finiteInt(query.limit, DEFAULT_PAGE_SIZE)), MAX_PAGE_SIZE);
       const rows = await db
         .select()
         .from(events)
@@ -107,7 +132,7 @@ export function createStore(db: Database, options: { now?: () => Date } = {}) {
           and(
             eq(events.machineId, query.machineId),
             eq(events.sessionId, query.sessionId),
-            gt(events.seq, query.afterSeq ?? -1),
+            gt(events.seq, finiteInt(query.afterSeq, -1)),
           ),
         )
         .orderBy(asc(events.seq), asc(events.receivedAt))
@@ -135,7 +160,7 @@ export function createStore(db: Database, options: { now?: () => Date } = {}) {
         .from(sessions)
         .where(eq(sessions.machineId, machineId))
         .orderBy(desc(sessions.lastEventAt))
-        .limit(Math.min(Math.max(1, Math.floor(options.limit ?? 50)), MAX_PAGE_SIZE));
+        .limit(Math.min(Math.max(1, finiteInt(options.limit, 50)), MAX_PAGE_SIZE));
       return rows.map((row) => ({
         sessionId: row.sessionId,
         agent: row.agent as Agent,
@@ -153,26 +178,46 @@ export function createStore(db: Database, options: { now?: () => Date } = {}) {
      *   - sesi yang sudah tidak punya event lagi;
      *   - kode pairing yang sudah dipakai atau kedaluwarsa (tidak berguna lagi).
      */
-    async purge(purgeOptions: { olderThan: Date }): Promise<PurgeResult> {
-      return db.transaction(async (tx) => {
-        const removedEvents = await tx.delete(events).where(lt(events.receivedAt, purgeOptions.olderThan)).returning({ id: events.id });
-        const removedSessions = await tx
-          .delete(sessions)
-          .where(
-            notExists(
-              tx
-                .select({ one: sql`1` })
-                .from(events)
-                .where(and(eq(events.machineId, sessions.machineId), eq(events.sessionId, sessions.sessionId))),
-            ),
+    async purge(purgeOptions: { olderThan: Date; batchSize?: number }): Promise<PurgeResult> {
+      const batch = Math.max(1, finiteInt(purgeOptions.batchSize, DEFAULT_PURGE_BATCH));
+
+      // Dihapus BERTAHAP, bukan dalam satu pernyataan raksasa: setelah berbulan-bulan, jumlah event
+      // yang lewat masa simpan bisa jutaan. Satu DELETE sebesar itu menahan kunci lama, membengkakkan
+      // log transaksi, dan bisa melewati batas waktu pernyataan, padahal relay harus tetap menulis
+      // event baru. Tiap potongan adalah pernyataan sendiri yang pendek.
+      const removedEvents = await deleteInBatches(batch, async () => {
+        const rows = await db.execute(sql`
+          delete from events
+          where (machine_id, id) in (
+            select machine_id, id from events where received_at < ${purgeOptions.olderThan} limit ${batch}
           )
-          .returning({ id: sessions.sessionId });
-        const removedCodes = await tx
-          .delete(pairingCodes)
-          .where(or(isNotNull(pairingCodes.usedAt), lt(pairingCodes.expiresAt, now())))
-          .returning({ id: pairingCodes.codeHash });
-        return { events: removedEvents.length, sessions: removedSessions.length, pairingCodes: removedCodes.length };
+          returning 1`);
+        return rowCount(rows);
       });
+
+      // Sesi yang sudah kosong. `for update skip locked` melewati sesi yang sedang dipakai saveEvent
+      // yang berjalan bersamaan, supaya event yang BARU tiba untuk sesi lama tidak ikut terhapus
+      // (kunci asing berantai akan menghapusnya bersama sesinya).
+      const removedSessions = await deleteInBatches(batch, async () => {
+        const rows = await db.execute(sql`
+          delete from sessions
+          where (machine_id, session_id) in (
+            select s.machine_id, s.session_id from sessions s
+            where not exists (select 1 from events e where e.machine_id = s.machine_id and e.session_id = s.session_id)
+            limit ${batch}
+            for update of s skip locked
+          )
+          returning 1`);
+        return rowCount(rows);
+      });
+
+      // Kode pairing biasanya sedikit, jadi satu pernyataan cukup.
+      const removedCodes = await db
+        .delete(pairingCodes)
+        .where(or(isNotNull(pairingCodes.usedAt), lt(pairingCodes.expiresAt, now())))
+        .returning({ id: pairingCodes.codeHash });
+
+      return { events: removedEvents, sessions: removedSessions, pairingCodes: removedCodes.length };
     },
   };
 }
@@ -194,7 +239,7 @@ export function startRetention(options: RetentionOptions): { stop(): void; runNo
   const now = options.now ?? (() => new Date());
   const days = options.retentionDays ?? DEFAULT_RETENTION_DAYS;
 
-  const runNow = async (): Promise<PurgeResult | undefined> => {
+  const runOnce = async (): Promise<PurgeResult | undefined> => {
     try {
       const olderThan = new Date(now().getTime() - days * 24 * 60 * 60 * 1000);
       const result = await options.store.purge({ olderThan });
@@ -204,6 +249,17 @@ export function startRetention(options: RetentionOptions): { stop(): void; runNo
       logger.error(`retensi gagal: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
     }
+  };
+
+  // Penjaga tumpang tindih: bila putaran sebelumnya belum selesai (jadwal berikutnya tiba, atau ada
+  // yang memanggil runNow), putaran baru TIDAK dimulai. Pemanggil mendapat hasil putaran yang sedang
+  // berjalan. Dua penghapusan besar yang berjalan serentak hanya saling berebut baris.
+  let running: Promise<PurgeResult | undefined> | undefined;
+  const runNow = (): Promise<PurgeResult | undefined> => {
+    running ??= runOnce().finally(() => {
+      running = undefined;
+    });
+    return running;
   };
 
   void runNow();

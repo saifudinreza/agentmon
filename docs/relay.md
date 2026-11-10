@@ -84,9 +84,11 @@ Setelah mengubah `src/db/schema.ts`, hasilkan migrasinya dengan `pnpm --filter @
 
 **Riwayat.** `store.saveEvent` menyimpan event (dan membuat sesinya), `listEvents` mengambil riwayat satu sesi berurutan menurut nomor urut dan bisa dilanjutkan dengan `afterSeq` (untuk HP yang menyambung ulang), dan `listSessions` mendaftar sesi sebuah laptop. Satu pengambilan paling banyak 500 event.
 
-**Penghapusan otomatis.** `startRetention` menghapus riwayat yang **diterima relay** lebih dari 30 hari lalu (dicek tiap 6 jam), beserta sesi yang sudah kosong dan kode pairing yang sudah dipakai atau kedaluwarsa. Dasarnya jam relay, bukan jam pengirim yang bisa keliru atau dipalsukan. Laptop dan HP yang terdaftar tidak ikut terhapus.
+**Penghapusan otomatis.** `startRetention` menghapus riwayat yang **diterima relay** lebih dari 30 hari lalu (dicek tiap 6 jam), beserta sesi yang sudah kosong dan kode pairing yang sudah dipakai atau kedaluwarsa. Dasarnya jam relay, bukan jam pengirim yang bisa keliru atau dipalsukan. Laptop dan HP yang terdaftar tidak ikut terhapus. Penghapusan berjalan **bertahap** (5.000 baris per pernyataan) supaya tidak menahan kunci lama saat relay masih menulis event baru, dan sesi yang sedang dipakai `saveEvent` dilewati. Bila putaran sebelumnya belum selesai, putaran baru tidak ditumpuk.
 
-**Direktori berbasis database** (`createDbDirectory`) menggantikan versi memori tanpa mengubah hub, dan lolos kontrak test yang sama. HP yang dicabut (`revokedAt`) tidak bisa tersambung dan tidak dianggap dipasangkan.
+**Direktori berbasis database** (`createDbDirectory`) menggantikan versi memori tanpa mengubah hub, dan lolos kontrak test yang sama. HP yang dicabut (`revokedAt`) tidak bisa tersambung dan tidak dianggap dipasangkan. Pencatatan "terakhir terlihat" laptop hanya pembukuan: bila itu gagal, laptop bertoken sah tetap diterima (pencarian tokennya yang gagal tetap menolak).
+
+**Koneksi produksi.** `openPostgres` memasang penangan galat pada kolam koneksi. Tanpanya, koneksi idle yang diputus server (rutin di Neon) memicu pengecualian tak tertangkap yang mematikan relay. Galat hanya dicatat, dengan kata sandi alamat database disamarkan. Parameter `limit` dan `afterSeq` yang bukan angka berhingga (NaN, Infinity) memakai nilai bawaan.
 
 **Isi event disimpan sebagai teks JSON**, bukan `jsonb`. Relay tidak pernah mengkueri isinya (dan mulai tahap 4 terenkripsi), sedangkan `jsonb` menolak karakter NUL (`\u0000`) yang bisa saja ada di isi berkas atau perintah dari agent. Teks JSON menyimpannya persis sama.
 

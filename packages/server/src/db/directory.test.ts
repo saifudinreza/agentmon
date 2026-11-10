@@ -124,6 +124,20 @@ describe("waktu terakhir terlihat", () => {
     const seen = (await query(handle.db, sql`select last_seen_at from machines`))[0]?.last_seen_at;
     expect(new Date(String(seen)).toISOString()).toBe(new Date(clock.ms).toISOString());
   });
+
+  test("bila hanya pencatatan waktu yang gagal, laptop dengan token sah tetap diterima", async () => {
+    await directory.registerMachine({ id: "m1", name: "Laptop", token: MACHINE });
+    await handle.db.execute(sql`create function tolak_update() returns trigger language plpgsql as $$ begin raise exception 'update ditolak'; end $$`);
+    await handle.db.execute(sql`create trigger tolak before update on machines for each row execute function tolak_update()`);
+    try {
+      expect(await directory.authenticate("machine", MACHINE)).toBe("m1");
+      // Token salah tetap ditolak: gagal tertutup berlaku untuk keputusan, bukan pembukuan.
+      expect(await directory.authenticate("machine", "token-salah-0000000000000000")).toBeUndefined();
+    } finally {
+      await handle.db.execute(sql`drop trigger tolak on machines`);
+      await handle.db.execute(sql`drop function tolak_update()`);
+    }
+  });
 });
 
 describe("dipakai relay sungguhan: menggantikan direktori memori tanpa mengubah hub", () => {

@@ -42,7 +42,15 @@ export function createDbDirectory(db: Database, options: { now?: () => Date } = 
       if (role === "machine") {
         const [row] = await db.select({ id: machines.id }).from(machines).where(eq(machines.tokenHash, hash)).limit(1);
         if (!row) return undefined;
-        await db.update(machines).set({ lastSeenAt: now() }).where(eq(machines.id, row.id));
+        // Mencatat "terakhir terlihat" hanya pembukuan, bukan bagian dari keputusan autentikasi. Bila
+        // hanya pencatatan ini yang gagal (misalnya batas waktu sesaat), laptop yang tokennya sah tidak
+        // boleh ikut ditolak. "Gagal tertutup" berlaku untuk keputusan: pencarian token di atas, yang
+        // bila gagal tetap melempar galat dan membuat hub menolak.
+        try {
+          await db.update(machines).set({ lastSeenAt: now() }).where(eq(machines.id, row.id));
+        } catch {
+          // diabaikan: hanya pembukuan
+        }
         return row.id;
       }
       // HP yang dicabut tidak bisa tersambung.

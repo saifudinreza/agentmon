@@ -314,6 +314,85 @@ describe("purge (penghapusan sesuai masa simpan)", () => {
   });
 });
 
+describe("purge bertahap", () => {
+  // Menyimpan `n` event yang DITERIMA 40 hari lalu langsung lewat SQL (jauh lebih cepat daripada n kali saveEvent).
+  async function seedOld(n: number, sessionId: string) {
+    await handle.db.insert(sessions).values({
+      machineId: "m1", sessionId, agent: "claude-code", startedAt: new Date(clock.ms - 40 * DAY), lastEventAt: new Date(clock.ms - 40 * DAY),
+    });
+    await handle.db.execute(sql`
+      insert into events (machine_id, id, session_id, seq, ts, agent, type, payload, received_at)
+      select 'm1', gen_random_uuid(), ${sessionId}, g, now(), 'claude-code', 'x', '{}', ${new Date(clock.ms - 40 * DAY)}
+      from generate_series(1, ${n}) as g`);
+  }
+  const cutoff = () => new Date(clock.ms - 30 * DAY);
+
+  test.each([1, 2, 3, 7, 100])("batas %s baris per pernyataan menghapus semuanya dan melaporkan jumlah yang benar", async (batchSize) => {
+    await seedOld(7, "lama");
+    const result = await store.purge({ olderThan: cutoff(), batchSize });
+    expect(result).toEqual({ events: 7, sessions: 1, pairingCodes: 0 });
+    expect(await count("events")).toBe(0);
+    expect(await count("sessions")).toBe(0);
+  });
+
+  test("jumlah tepat kelipatan ukuran potongan juga selesai dengan benar (tidak berhenti kurang, tidak berputar selamanya)", async () => {
+    await seedOld(6, "lama");
+    expect(await store.purge({ olderThan: cutoff(), batchSize: 3 })).toMatchObject({ events: 6 });
+    expect(await count("events")).toBe(0);
+  });
+
+  test("jumlah besar (12.000 event) dihapus semuanya dengan potongan bawaan, dan yang baru tidak tersentuh", async () => {
+    await seedOld(12_000, "sangat-lama");
+    await store.saveEvent(event({ sessionId: "baru" })); // diterima sekarang
+    const result = await store.purge({ olderThan: cutoff() });
+    expect(result).toMatchObject({ events: 12_000, sessions: 1 });
+    expect(await count("events")).toBe(1);
+    expect((await store.listSessions("m1")).map((s) => s.sessionId)).toEqual(["baru"]);
+  }, 60_000);
+
+  test("sesi kosong juga dihapus bertahap", async () => {
+    for (let i = 0; i < 7; i++) await seedOld(1, `lama-${i}`);
+    const result = await store.purge({ olderThan: cutoff(), batchSize: 2 });
+    expect(result).toMatchObject({ events: 7, sessions: 7 });
+    expect(await count("sessions")).toBe(0);
+  });
+
+  test.each([0, -3, Number.NaN, Number.POSITIVE_INFINITY, 2.7])("ukuran potongan tidak sah (%s) memakai nilai yang aman, bukan berputar atau error", async (batchSize) => {
+    await seedOld(5, "lama");
+    const result = await store.purge({ olderThan: cutoff(), batchSize });
+    expect(result.events).toBe(5);
+    expect(await count("events")).toBe(0);
+  });
+
+  test("tidak ada yang lama: aman dan semua nol", async () => {
+    await store.saveEvent(event());
+    expect(await store.purge({ olderThan: cutoff(), batchSize: 2 })).toEqual({ events: 0, sessions: 0, pairingCodes: 0 });
+  });
+});
+
+describe("masukan yang bukan angka sah", () => {
+  async function seed(n: number) {
+    for (let seq = 0; seq < n; seq++) await store.saveEvent(event({ seq }));
+  }
+
+  test.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])("limit %s memakai nilai bawaan, bukan galat SQL", async (limit) => {
+    await seed(3);
+    expect(await store.listEvents({ machineId: "m1", sessionId: "s1", limit })).toHaveLength(3);
+    expect(await store.listSessions("m1", { limit })).toHaveLength(1);
+  });
+
+  test.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])("afterSeq %s memakai nilai bawaan (dari awal), bukan galat SQL", async (afterSeq) => {
+    await seed(3);
+    expect(await store.listEvents({ machineId: "m1", sessionId: "s1", afterSeq })).toHaveLength(3);
+  });
+
+  test("angka pecahan dibulatkan ke bawah", async () => {
+    await seed(5);
+    expect((await store.listEvents({ machineId: "m1", sessionId: "s1", afterSeq: 1.9 })).map((e) => e.seq)).toEqual([2, 3, 4]);
+    expect(await store.listEvents({ machineId: "m1", sessionId: "s1", limit: 2.9 })).toHaveLength(2);
+  });
+});
+
 describe("startRetention (penghapusan berkala)", () => {
   test("berjalan segera saat dimulai, dan menghapus yang sudah lewat 30 hari", async () => {
     const real = clock.ms;
@@ -351,6 +430,26 @@ describe("startRetention (penghapusan berkala)", () => {
     clock.ms = real;
     await new Promise((r) => setTimeout(r, 150));
     expect(await store.listSessions("m1")).toHaveLength(1);
+  });
+
+  test("putaran yang belum selesai tidak ditumpuk: jadwal berikutnya dan runNow memakai putaran yang sama", async () => {
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const slow = { purge: async () => { calls++; await gate; return { events: 1, sessions: 0, pairingCodes: 0 }; } } as unknown as Store;
+
+    const job = startRetention({ store: slow, intervalMs: 5 });
+    try {
+      await new Promise((r) => setTimeout(r, 80)); // belasan jadwal lewat selagi putaran pertama macet
+      const again = job.runNow();
+      expect(calls).toBe(1);
+      release();
+      expect(await again).toEqual({ events: 1, sessions: 0, pairingCodes: 0 });
+      // Setelah selesai, putaran baru boleh dimulai lagi.
+      await vi.waitFor(() => expect(calls).toBeGreaterThan(1));
+    } finally {
+      job.stop();
+    }
   });
 
   test("kegagalan hanya dicatat dan tidak menghentikan jadwal, tanpa melempar error", async () => {

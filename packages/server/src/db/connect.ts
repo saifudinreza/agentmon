@@ -19,6 +19,7 @@ import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 import { migrate as migratePg } from "drizzle-orm/node-postgres/migrator";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import { Pool } from "pg";
+import { silentLogger, type Logger } from "../logger";
 import * as schema from "./schema";
 
 // Tipe database yang dipakai seluruh kode: sama untuk Postgres sungguhan maupun PGlite.
@@ -45,8 +46,31 @@ export async function openPglite(dataDir?: string): Promise<DatabaseHandle> {
   };
 }
 
-export function openPostgres(connectionString: string): DatabaseHandle {
+// Menyamarkan kata sandi bila sebuah pesan galat kebetulan memuat alamat database
+// (postgres://pengguna:kata-sandi@host/db). Berjaga-jaga: log tidak boleh memuat rahasia.
+export function redactConnectionSecrets(message: string): string {
+  return message.replace(/(\w+:\/\/[^:/\s@]+:)[^@\s]+@/g, "$1***@");
+}
+
+/**
+ * Memasang penangan galat pada kolam koneksi. WAJIB: koneksi idle yang diputus server (rutin
+ * terjadi pada Neon, yang menutup koneksi idle) membuat Pool memancarkan event `error`. Di Node,
+ * event `error` tanpa pendengar dilempar sebagai pengecualian yang tidak tertangkap dan mematikan
+ * seluruh proses relay. Dengan penangan ini galatnya hanya dicatat, dan Pool membuat koneksi baru
+ * saat dibutuhkan.
+ */
+export function attachPoolErrorHandler(
+  pool: { on(event: "error", listener: (error: Error) => void): unknown },
+  logger: Logger = silentLogger,
+): void {
+  pool.on("error", (error) => {
+    logger.error(`kesalahan koneksi database: ${redactConnectionSecrets(error.message)}`);
+  });
+}
+
+export function openPostgres(connectionString: string, options: { logger?: Logger } = {}): DatabaseHandle {
   const pool = new Pool({ connectionString });
+  attachPoolErrorHandler(pool, options.logger);
   const db = drizzlePg(pool, { schema });
   return {
     db,
