@@ -605,3 +605,31 @@ describe("diff untuk aksi yang ditahan", () => {
     expect(requested?.payload).not.toHaveProperty("diff");
   });
 });
+
+describe("penghitung diff yang menolak terlambat", () => {
+  test("penolakan SETELAH batas waktu tidak menjadi unhandled rejection, dan aksi tetap ditahan tanpa diff", async () => {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", listener);
+    try {
+      const s = setup({
+        handler: {
+          // Menolak 80 ms kemudian, padahal batas waktunya 20 ms: batas waktu menang lebih dulu.
+          computeDiff: () => new Promise((_, reject) => setTimeout(() => reject(new Error("terlambat")), 80)),
+          diffTimeoutMs: 20,
+        },
+      });
+      const response = s.handler({ ...load("PreToolUse.Edit.json"), cwd: tmpdir() }, s.context);
+      await s.waitPending();
+      expect(s.approvals.listPending()[0]?.diff).toBeUndefined();
+
+      await new Promise((resolve) => setTimeout(resolve, 200)); // lewati saat penolakan itu terjadi
+      expect(unhandled).toEqual([]);
+
+      s.decideFirst("approve");
+      await response;
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+  });
+});

@@ -10,6 +10,7 @@ describe("classifyPath: berkas rahasia", () => {
     ["/home/u/proyek/.env", "env_file"],
     ["/home/u/proyek/.env.local", "env_file"],
     ["/home/u/proyek/.env.production", "env_file"],
+    ["/home/u/proyek/.envrc", "env_file"], // direnv: kredensial sekaligus skrip yang dijalankan otomatis
     ["/home/u/proyek/.ENV", "env_file"], // huruf besar (Windows tidak peduli)
     ["/home/u/.ssh/id_rsa", "private_key"],
     ["/home/u/proyek/server.pem", "private_key"],
@@ -37,6 +38,11 @@ describe("classifyPath: berkas rahasia", () => {
     },
   );
 
+  test("pencocokan 'credential' dan 'secret' sengaja kasar: nama yang mengandungnya ikut tertandai", () => {
+    expect(codes("/proyek/mysecrets.yml")).toContain("credentials"); // tidak boleh terlewat
+    expect(codes("/proyek/secretary_notes.md")).toContain("credentials"); // salah tandai yang dapat diterima
+  });
+
   test("kunci publik (.pub) tidak dianggap kunci privat", () => {
     expect(codes("/home/u/proyek/id_rsa.pub")).not.toContain("private_key");
   });
@@ -56,8 +62,23 @@ describe("classifyPath: berkas yang membuat perintah berjalan sendiri", () => {
     ["/proyek/Makefile", "script_config"],
     ["/proyek/.husky/pre-push", "script_config"],
     ["/proyek/pyproject.toml", "script_config"],
+    ["/proyek/Cargo.toml", "script_config"],
+    ["/proyek/build.rs", "script_config"],
+    ["/proyek/pom.xml", "script_config"],
+    ["/proyek/build.gradle.kts", "script_config"],
+    ["/proyek/composer.json", "script_config"],
+    ["/proyek/Gemfile", "script_config"],
+    ["/proyek/Rakefile", "script_config"],
+    ["/proyek/Dockerfile", "container_config"],
+    ["/proyek/Dockerfile.dev", "container_config"],
+    ["/proyek/docker-compose.yml", "container_config"],
+    ["C:\\proyek\\compose.yaml", "container_config"],
   ])("%s ditandai %s", (path, code) => {
     expect(codes(path)).toContain(code);
+  });
+
+  test("go.mod tidak ditandai: isinya deklaratif (daftar dependensi), bukan skrip", () => {
+    expect(codes("/proyek/go.mod", "/proyek")).toEqual([]);
   });
 
   test("package.json di dalam folder bersarang tetap ditandai", () => {

@@ -51,14 +51,26 @@ const SHELL_PROFILES = new Set([".bashrc", ".bash_profile", ".bash_login", ".zsh
 // menyebutnya sebagai "celah skrip": agent bisa mengubahnya lebih dulu, lalu perintah "aman"
 // seperti `npm test` menjalankan kode yang sudah diubah.
 const SCRIPT_CONFIG_FILES = new Set([
-  "package.json",
+  "package.json", // Node
   "makefile",
   "justfile",
   "taskfile.yml",
-  "pyproject.toml",
+  "pyproject.toml", // Python
   "setup.py",
   ".pre-commit-config.yaml",
+  "cargo.toml", // Rust (build.rs di bawah menjalankan kode saat build)
+  "build.rs",
+  "pom.xml", // Java
+  "build.gradle",
+  "build.gradle.kts",
+  "settings.gradle",
+  "settings.gradle.kts",
+  "composer.json", // PHP
+  "gemfile", // Ruby
+  "rakefile",
 ]);
+// go.mod sengaja tidak masuk: isinya deklaratif (daftar dependensi), bukan skrip yang dijalankan.
+const COMPOSE_FILES = new Set(["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]);
 const AGENT_FOLDERS = new Set([".claude", ".agentmon", ".codex"]);
 
 /**
@@ -76,11 +88,18 @@ export function classifyPath(filePath: string, options: ClassifyOptions = {}): S
   if ((base === ".env" || base.startsWith(".env.")) && !ENV_TEMPLATE.test(base)) {
     reasons.push(reason("env_file", "Berkas .env biasanya berisi kata sandi dan kunci API."));
   }
+  // .envrc (direnv) berisi kredensial DAN dijalankan sebagai skrip shell setiap kali folder dimasuki.
+  if (base === ".envrc") {
+    reasons.push(reason("env_file", "Berkas .envrc (direnv) berisi variabel lingkungan dan dijalankan otomatis sebagai skrip."));
+  }
 
   if (PRIVATE_KEY_EXTENSIONS.some((ext) => base.endsWith(ext)) || PRIVATE_KEY_NAMES.has(base)) {
     reasons.push(reason("private_key", "Berkas ini kemungkinan kunci privat atau sertifikat."));
   }
 
+  // Pencocokan nama berkas sengaja KASAR (substring): "secretary_notes.md" ikut tertandai, tetapi
+  // pola yang lebih presisi akan melewatkan "mysecrets.yml". Melewatkan berkas rahasia lebih buruk
+  // daripada menandai berlebihan, dan ini hanya penanda.
   if (
     CREDENTIAL_FILES.has(base) ||
     /credential|secret/.test(base) ||
@@ -110,6 +129,12 @@ export function classifyPath(filePath: string, options: ClassifyOptions = {}): S
 
   if (SHELL_PROFILES.has(base) || /profile\.ps1$/.test(base)) {
     reasons.push(reason("shell_profile", "Profil shell dijalankan setiap kali terminal dibuka."));
+  }
+
+  // Dockerfile menjalankan perintah saat membangun citra; Compose memuat variabel lingkungan,
+  // rahasia, dan pemasangan folder dari laptop ke kontainer.
+  if (base === "dockerfile" || base.startsWith("dockerfile.") || COMPOSE_FILES.has(base)) {
+    reasons.push(reason("container_config", "Berkas Docker menentukan perintah build, variabel lingkungan, dan akses ke laptop."));
   }
 
   if (SCRIPT_CONFIG_FILES.has(base) || folders.includes(".husky")) {

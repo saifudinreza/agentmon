@@ -113,6 +113,9 @@ function editsOf(toolName: string, input: Record<string, unknown>): EditStep[] |
 
 // Menghitung berapa kali `needle` muncul di `haystack` (tanpa tumpang tindih).
 function countOccurrences(haystack: string, needle: string): number {
+  // Teks kosong "ditemukan" di mana saja, dan pencarian berikutnya tidak pernah maju (loop tanpa
+  // henti). Pemanggil sudah menangani old_string kosong, tetapi fungsi ini dijaga sendiri.
+  if (needle === "") return 0;
   let count = 0;
   for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + needle.length)) count++;
   return count;
