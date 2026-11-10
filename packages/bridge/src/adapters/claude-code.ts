@@ -354,6 +354,8 @@ export type HoldCandidate = {
   sessionId: string;
   toolName: string;
   toolInput: Record<string, unknown>;
+  // Folder kerja agent, untuk menghitung diff dengan path relatif.
+  cwd?: string;
 };
 
 /**
@@ -377,7 +379,10 @@ export function holdCandidate(input: HookInput): HoldCandidate | undefined {
 
   const toolInput = input.tool_input === undefined ? {} : input.tool_input;
   if (!isRecord(toolInput)) return undefined;
-  return { point, sessionId, toolName, toolInput };
+  const candidate: HoldCandidate = { point, sessionId, toolName, toolInput };
+  const cwd = text(input.cwd);
+  if (cwd) candidate.cwd = cwd;
+  return candidate;
 }
 
 // Alasan bawaan bila pengguna menolak tanpa menulis komentar.

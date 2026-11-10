@@ -29,6 +29,7 @@ import {
   ApprovalDecisionSchema,
   formatIssues,
   type ApprovalStatus,
+  type FileDiff,
   type FinalApprovalStatus,
   type HunkDecision,
   type Risk,
@@ -69,6 +70,9 @@ export type ApprovalRequestInput = {
   // Diteruskan apa adanya untuk event `approval.requested` nanti (diisi penilai risiko).
   risk?: Risk;
   summary?: string;
+  // Perubahan berkas yang diusulkan (dihitung kalkulator diff). Disimpan bersama kartu supaya
+  // tampilan review bisa membacanya; tidak memengaruhi keputusan.
+  diff?: FileDiff;
   // Lama menunggu dalam milidetik. Bawaan: DEFAULT_APPROVAL_TIMEOUT_MS.
   timeoutMs?: number;
 };
@@ -88,6 +92,7 @@ export type ApprovalSnapshot = {
   toolInput: Record<string, unknown>;
   risk?: Risk;
   summary?: string;
+  diff?: FileDiff;
   status: ApprovalStatus;
   createdAt: string;
   expiresAt: string;
@@ -233,6 +238,7 @@ export function createApprovalEngine(options: ApprovalEngineOptions = {}) {
         toolInput: structuredClone(input.toolInput),
         ...(input.risk !== undefined ? { risk: input.risk } : {}),
         ...(input.summary !== undefined ? { summary: input.summary } : {}),
+        ...(input.diff !== undefined ? { diff: structuredClone(input.diff) } : {}),
         status: "pending",
         createdAt: new Date(createdMs).toISOString(),
         expiresAt: new Date(createdMs + timeoutMs).toISOString(),

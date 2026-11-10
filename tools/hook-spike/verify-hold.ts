@@ -55,6 +55,8 @@ const SCENARIOS: Scenario[] = [
     check: (r) => [
       ...(r.created ? [] : ["berkas tidak terbentuk padahal disetujui"]),
       ...(r.held === 1 ? [] : [`seharusnya ditahan 1 kali, bukan ${r.held}`]),
+      // Diff dihitung untuk aksi yang ditahan (berkas baru, jadi tipenya text).
+      ...(r.log.includes("diff dihitung alat=Write: text") ? [] : ["diff tidak dihitung untuk aksi Write yang ditahan"]),
       // Tidak ada prompt izin kedua: PermissionRequest tidak boleh muncul setelah `allow` di PreToolUse.
       ...(r.hooks.some((h) => h.startsWith("PermissionRequest:")) ? ["muncul PermissionRequest (prompt izin kedua)"] : []),
     ],

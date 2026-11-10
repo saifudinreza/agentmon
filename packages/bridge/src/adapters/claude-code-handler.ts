@@ -37,9 +37,10 @@
 // "node:crypto" = modul bawaan Node, tidak perlu dipasang dari internet.
 import { randomUUID } from "node:crypto";
 // Tipe event baku dari paket shared (hanya tipe, tidak ikut jalan di program akhir).
-import type { AgentMonEvent, EventType } from "@agentmon/shared";
+import type { AgentMonEvent, EventType, FileDiff } from "@agentmon/shared";
 // Dari server.ts: HookContext = bekal dari daemon (pencatat log, identitas laptop, buku antrean
 // izin, panel kontrol), HookHandler = bentuk fungsi penangan yang diminta server.
+import { computeToolDiff, type ToolDiffInput } from "../diff";
 import type { HookContext, HookHandler } from "../server";
 // Penerjemah dari file tetangga. "./claude-code" = file claude-code di folder yang sama.
 import { buildClaudeEvent, holdCandidate, mapClaudeCodeHook, toClaudeDecision, type HoldCandidate, type Stamp } from "./claude-code";
@@ -74,11 +75,18 @@ export type ClaudeCodeHandlerOptions = {
   newId?: () => string;
   // Batas jumlah sesi yang diingat. Bawaan MAX_TRACKED_SESSIONS; test memakai angka kecil.
   maxTrackedSessions?: number;
+  // Penghitung diff dan batas waktunya. Bawaan: computeToolDiff dan DIFF_TIMEOUT_MS. Bisa diganti di test.
+  computeDiff?: (input: ToolDiffInput) => Promise<FileDiff | undefined>;
+  diffTimeoutMs?: number;
 };
 
 // Batas jumlah sesi yang nomor urutnya diingat sekaligus. Mencegah ingatan membengkak bila
 // banyak sesi berakhir mendadak (crash) tanpa pernah mengirim SessionEnd.
 export const MAX_TRACKED_SESSIONS = 1000;
+
+// Batas waktu menghitung diff. Diff hanya bahan tampilan: menghitungnya tidak boleh menunda aksi
+// lebih dari ini (misalnya berkas ada di jaringan yang lambat).
+export const DIFF_TIMEOUT_MS = 2000;
 
 // Berapa lama sebuah aksi yang "dilepas ke terminal" diingat. Lihat `released` di bawah.
 export const RELEASED_TTL_MS = 60_000;
@@ -96,6 +104,8 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
   const now = options.now ?? (() => new Date());
   const newId = options.newId ?? randomUUID;
   const maxTracked = options.maxTrackedSessions ?? MAX_TRACKED_SESSIONS;
+  const computeDiff = options.computeDiff ?? computeToolDiff;
+  const diffTimeoutMs = options.diffTimeoutMs ?? DIFF_TIMEOUT_MS;
 
   // BUKU NOMOR ANTREAN per sesi. Map = kamus: nama sesi -> nomor urut berikutnya.
   // Dimulai dari 0 dan dihapus saat sesi berakhir.
@@ -186,11 +196,39 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
     return until > now().getTime();
   };
 
+  // Menghitung perubahan berkas yang diusulkan, sebagai bahan tampilan review. TIDAK PERNAH
+  // menghalangi aksi: gagal, error, atau melewati batas waktu berarti aksi ditahan tanpa diff.
+  const diffFor = async (hold: HoldCandidate, logger: HookContext["logger"]): Promise<FileDiff | undefined> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeout = new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), diffTimeoutMs);
+      });
+      const diff = await Promise.race([
+        computeDiff({ toolName: hold.toolName, toolInput: hold.toolInput, ...(hold.cwd !== undefined ? { cwd: hold.cwd } : {}) }),
+        timeout,
+      ]);
+      if (diff) logger.info(`diff dihitung alat=${hold.toolName}: ${diff.change.type}`);
+      return diff;
+    } catch (error) {
+      logger.error(`diff gagal dihitung: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   // MENAHAN satu aksi sampai ada keputusan, lalu menerjemahkannya jadi jawaban.
   const holdForDecision = async (hold: HoldCandidate, context: HookContext) => {
     const { logger, approvals } = context;
 
-    const ticket = approvals.request({ sessionId: hold.sessionId, toolName: hold.toolName, toolInput: hold.toolInput });
+    const diff = await diffFor(hold, logger);
+    const ticket = approvals.request({
+      sessionId: hold.sessionId,
+      toolName: hold.toolName,
+      toolInput: hold.toolInput,
+      ...(diff !== undefined ? { diff } : {}),
+    });
     logger.info(`menahan ${hold.point} alat=${hold.toolName}, menunggu keputusan`);
     // Kabari timeline/HP bahwa ada permintaan baru.
     emitOwn(

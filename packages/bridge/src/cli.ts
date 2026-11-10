@@ -117,7 +117,11 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     const status = reply.body as DaemonStatus & { released?: number };
     deps.out(status.message);
     if (command === "pause" && status.released) deps.out(`${status.released} permintaan yang menunggu dilepas ke terminal.`);
-    for (const p of status.pending) deps.out(`  - ${p.approvalId.slice(0, 8)}  alat=${p.toolName}  kedaluwarsa ${p.expiresAt}`);
+    for (const p of status.pending) {
+      const change = p.change ? `  perubahan: ${p.change}` : "";
+      const sensitive = p.sensitive ? `  [SENSITIF: ${p.sensitive.join(", ")}]` : "";
+      deps.out(`  - ${p.approvalId.slice(0, 8)}  alat=${p.toolName}${change}${sensitive}  kedaluwarsa ${p.expiresAt}`);
+    }
     return 0;
   }
 
