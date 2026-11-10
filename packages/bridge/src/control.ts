@@ -15,6 +15,7 @@
 //        dilepas supaya prompt terminal muncul saat itu juga.
 //
 // Aksi hanya ditahan bila holdEnabled menyala DAN tidak sedang dijeda.
+import type { FileDiff } from "@agentmon/shared";
 import type { ApprovalEngine } from "./approvals";
 
 export type PendingSummary = {
@@ -23,6 +24,10 @@ export type PendingSummary = {
   toolName: string;
   createdAt: string;
   expiresAt: string;
+  // Ringkasan perubahan dalam satu baris, misalnya "+3 -1 (2 hunk)". Tanpa isi berkas.
+  change?: string;
+  // Kode alasan path ditandai sensitif, misalnya ["env_file"].
+  sensitive?: string[];
 };
 
 // Keadaan yang ditampilkan perintah `status`. Sengaja tidak memuat isi input alat
@@ -44,6 +49,24 @@ export type DaemonControl = {
   resume(): void;
   status(): DaemonStatus;
 };
+
+// Ringkasan satu baris untuk sebuah diff, SENGAJA tanpa isi berkas (bisa berisi kode atau rahasia):
+// hanya jenis perubahan dan jumlahnya.
+export function summarizeDiff(diff: FileDiff): string {
+  const change = diff.change;
+  switch (change.type) {
+    case "text":
+      return `${change.isNew ? "berkas baru " : ""}+${change.added} -${change.removed} (${change.hunks.length} hunk)`;
+    case "unchanged":
+      return change.formatChanged ? "isi sama, hanya format yang berubah" : "tidak ada perubahan";
+    case "binary":
+      return "berkas biner";
+    case "too_large":
+      return change.added !== undefined ? `terlalu besar (~+${change.added} -${change.removed ?? 0})` : "terlalu besar";
+    case "mismatch":
+      return `tidak cocok: ${change.reason}`;
+  }
+}
 
 export function createDaemonControl(options: { holdEnabled: boolean; approvals: ApprovalEngine }): DaemonControl {
   const { holdEnabled, approvals } = options;
@@ -85,6 +108,8 @@ export function createDaemonControl(options: { holdEnabled: boolean; approvals: 
           toolName: a.toolName,
           createdAt: a.createdAt,
           expiresAt: a.expiresAt,
+          ...(a.diff ? { change: summarizeDiff(a.diff) } : {}),
+          ...(a.diff && a.diff.sensitive.length > 0 ? { sensitive: a.diff.sensitive.map((r) => r.code) } : {}),
         }),
       );
       return { paused, holdEnabled, pending, message: describe(pending.map((p) => p.toolName)) };

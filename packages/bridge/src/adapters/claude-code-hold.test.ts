@@ -1,13 +1,14 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentMonEvent, FinalApprovalStatus } from "@agentmon/shared";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createApprovalEngine, type ApprovalEngine } from "../approvals";
 import { createDaemonControl } from "../control";
 import type { HookContext, HookInput } from "../server";
 import { DEFAULT_DENY_REASON, holdCandidate, toClaudeDecision } from "./claude-code";
-import { createClaudeCodeHandler, RELEASED_TTL_MS } from "./claude-code-handler";
+import { createClaudeCodeHandler, RELEASED_TTL_MS, type ClaudeCodeHandlerOptions } from "./claude-code-handler";
 
 const FIXTURE_DIR = fileURLToPath(new URL("../../fixtures/claude-code/", import.meta.url));
 const fixtures = readdirSync(FIXTURE_DIR).filter((n) => n.endsWith(".json")).sort();
@@ -144,7 +145,15 @@ describe("toClaudeDecision: hasil persetujuan menjadi jawaban untuk Claude Code"
 
 // ---- Penangan: menahan aksi sampai ada keputusan ---------------------------------------
 
-function setup(options: { holdEnabled?: boolean; timeoutMs?: number; clock?: { ms: number }; approvals?: ApprovalEngine } = {}) {
+function setup(
+  options: {
+    holdEnabled?: boolean;
+    timeoutMs?: number;
+    clock?: { ms: number };
+    approvals?: ApprovalEngine;
+    handler?: Partial<ClaudeCodeHandlerOptions>;
+  } = {},
+) {
   const logs: string[] = [];
   const events: AgentMonEvent[] = [];
   const approvals = options.approvals ?? createApprovalEngine({ defaultTimeoutMs: options.timeoutMs ?? 60_000 });
@@ -158,6 +167,7 @@ function setup(options: { holdEnabled?: boolean; timeoutMs?: number; clock?: { m
   const handler = createClaudeCodeHandler({
     emit: (event) => void events.push(event),
     ...(options.clock ? { now: () => new Date(options.clock!.ms) } : {}),
+    ...options.handler,
   });
   const waitPending = (count = 1) => vi.waitFor(() => expect(approvals.listPending()).toHaveLength(count));
   const decideFirst = (decision: "approve" | "deny" | "partial", extra: Record<string, unknown> = {}) => {
@@ -418,8 +428,11 @@ describe("tidak ada penantian ganda sebelum prompt terminal", () => {
   });
 
   test("aksi lain tetap ditahan walau ada aksi yang baru dilepas", async () => {
-    const s = setup({ timeoutMs: 30 });
-    await s.handler(load("PreToolUse.Edit.json"), s.context); // habis, dilepas
+    const s = setup();
+    const first = s.handler(load("PreToolUse.Edit.json"), s.context);
+    await s.waitPending();
+    s.approvals.cancelAll(); // dilepas ke terminal
+    await first;
     const other = s.handler(load("PermissionRequest.Write.json"), s.context); // alat lain
     await s.waitPending();
     s.approvals.cancelAll();
@@ -428,8 +441,11 @@ describe("tidak ada penantian ganda sebelum prompt terminal", () => {
 
   test("catatan 'dilepas' kedaluwarsa setelah beberapa saat", async () => {
     const clock = { ms: Date.parse("2026-11-09T10:00:00Z") };
-    const s = setup({ timeoutMs: 30, clock });
-    await s.handler(load("PreToolUse.Edit.json"), s.context); // habis, dilepas
+    const s = setup({ clock });
+    const first = s.handler(load("PreToolUse.Edit.json"), s.context);
+    await s.waitPending();
+    s.approvals.cancelAll(); // dilepas ke terminal
+    await first;
     clock.ms += RELEASED_TTL_MS + 1000;
     const late = s.handler(load("PermissionRequest.Edit.json"), s.context);
     await s.waitPending(); // sudah kedaluwarsa -> ditahan
@@ -470,5 +486,150 @@ describe("hook yang menunggu tidak menahan hook lain", () => {
 
     s.decideFirst("deny", { comment: "tidak untuk A" });
     expect(await writeA).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: "tidak untuk A" } });
+  });
+});
+
+// ---- Diff yang ikut tersimpan bersama izin yang menunggu -------------------------------
+
+describe("diff untuk aksi yang ditahan", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "agentmon-hold-diff-"));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const editInput = (extra: Record<string, unknown> = {}): HookInput => ({
+    ...load("PreToolUse.Edit.json"),
+    cwd: dir,
+    tool_input: { file_path: "app.ts", old_string: "Halo", new_string: "Hai" },
+    ...extra,
+  });
+
+  test("Edit yang ditahan membawa diff-nya: satu hunk, satu baris diganti", async () => {
+    writeFileSync(join(dir, "app.ts"), "function salam() {\n  return Halo;\n}\n");
+    const s = setup();
+    const response = s.handler(editInput(), s.context);
+    await s.waitPending();
+
+    const [pending] = s.approvals.listPending();
+    expect(pending?.diff?.change).toMatchObject({ type: "text", isNew: false, added: 1, removed: 1 });
+    expect(pending?.diff?.path).toBe("app.ts");
+    expect(s.logs.join("\n")).toContain("diff dihitung alat=Edit: text");
+    s.decideFirst("approve");
+    await response;
+  });
+
+  test("Write berkas baru membawa diff berkas baru", async () => {
+    const s = setup();
+    const response = s.handler(
+      { ...load("PreToolUse.Write.json"), cwd: dir, tool_input: { file_path: "baru.txt", content: "satu\ndua\n" } },
+      s.context,
+    );
+    await s.waitPending();
+    expect(s.approvals.listPending()[0]?.diff?.change).toMatchObject({ type: "text", isNew: true, added: 2 });
+    s.decideFirst("deny");
+    await response;
+  });
+
+  test("path sensitif ikut ditandai pada diff", async () => {
+    writeFileSync(join(dir, ".env"), "RAHASIA=1\n");
+    const s = setup();
+    const response = s.handler(
+      { ...load("PreToolUse.Write.json"), cwd: dir, tool_input: { file_path: ".env", content: "RAHASIA=2\n" } },
+      s.context,
+    );
+    await s.waitPending();
+    expect(s.approvals.listPending()[0]?.diff?.sensitive.map((r) => r.code)).toContain("env_file");
+    s.decideFirst("deny");
+    await response;
+  });
+
+  test("aksi yang bukan perubahan berkas (perintah shell) ditahan tanpa diff", async () => {
+    const s = setup();
+    const response = s.handler(load("PermissionRequest.Bash.json"), s.context);
+    await s.waitPending();
+    expect(s.approvals.listPending()[0]?.diff).toBeUndefined();
+    s.decideFirst("approve");
+    await response;
+  });
+
+  test("penghitung diff yang error tidak menghalangi: aksi tetap ditahan tanpa diff, dan dicatat", async () => {
+    const s = setup({
+      handler: {
+        computeDiff: () => {
+          throw new Error("diff rusak");
+        },
+      },
+    });
+    const response = s.handler(editInput(), s.context);
+    await s.waitPending();
+    expect(s.approvals.listPending()[0]?.diff).toBeUndefined();
+    expect(s.logs.join("\n")).toContain("diff gagal dihitung: diff rusak");
+    s.decideFirst("approve");
+    expect(await response).toMatchObject({ hookSpecificOutput: { permissionDecision: "allow" } });
+  });
+
+  test("penghitung diff yang macet dilewati setelah batas waktunya, aksi tetap ditahan", async () => {
+    const s = setup({ handler: { computeDiff: () => new Promise(() => undefined), diffTimeoutMs: 40 } });
+    const started = performance.now();
+    const response = s.handler(editInput(), s.context);
+    await s.waitPending();
+    expect(performance.now() - started).toBeGreaterThanOrEqual(35); // memang menunggu batas waktunya
+    expect(s.approvals.listPending()[0]?.diff).toBeUndefined();
+    s.decideFirst("approve");
+    await response;
+  });
+
+  test("log tidak memuat isi berkas maupun isi usulan", async () => {
+    writeFileSync(join(dir, "app.ts"), "kode RAHASIA-LAMA\n");
+    const s = setup();
+    const response = s.handler(
+      editInput({ tool_input: { file_path: "app.ts", old_string: "RAHASIA-LAMA", new_string: "RAHASIA-BARU" } }),
+      s.context,
+    );
+    await s.waitPending();
+    s.decideFirst("approve");
+    await response;
+    expect(s.logs.join("\n")).not.toContain("RAHASIA");
+  });
+
+  test("diff tidak ikut dikirim di event approval.requested (kontrak pesan tidak berubah)", async () => {
+    writeFileSync(join(dir, "app.ts"), "Halo\n");
+    const s = setup();
+    const response = s.handler(editInput(), s.context);
+    await s.waitPending();
+    s.decideFirst("approve");
+    await response;
+    await flush();
+    const requested = s.events.find((e) => e.type === "approval.requested");
+    expect(requested?.payload).not.toHaveProperty("diff");
+  });
+});
+
+describe("penghitung diff yang menolak terlambat", () => {
+  test("penolakan SETELAH batas waktu tidak menjadi unhandled rejection, dan aksi tetap ditahan tanpa diff", async () => {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", listener);
+    try {
+      const s = setup({
+        handler: {
+          // Menolak 80 ms kemudian, padahal batas waktunya 20 ms: batas waktu menang lebih dulu.
+          computeDiff: () => new Promise((_, reject) => setTimeout(() => reject(new Error("terlambat")), 80)),
+          diffTimeoutMs: 20,
+        },
+      });
+      const response = s.handler({ ...load("PreToolUse.Edit.json"), cwd: tmpdir() }, s.context);
+      await s.waitPending();
+      expect(s.approvals.listPending()[0]?.diff).toBeUndefined();
+
+      await new Promise((resolve) => setTimeout(resolve, 200)); // lewati saat penolakan itu terjadi
+      expect(unhandled).toEqual([]);
+
+      s.decideFirst("approve");
+      await response;
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
   });
 });

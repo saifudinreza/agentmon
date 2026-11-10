@@ -11,6 +11,7 @@ export const PROJECT_NAME = "AgentMon";
 
 // "export * from" = teruskan SEMUA yang di-export file itu lewat pintu ini.
 export * from "./approval"; // status dan keputusan approval
+export * from "./diff"; // bentuk perubahan sebuah berkas (diff, hunk)
 export * from "./events"; // amplop dan jenis event
 export * from "./parse"; // parseEvent() dan hasilnya
 export * from "./risk"; // level risiko dan hasil policy

@@ -153,3 +153,30 @@ describe("daemon tidak berjalan atau perintah salah", () => {
     expect(result.err).toContain("AGENTMON_PORT tidak valid");
   });
 });
+
+describe("status menampilkan ringkasan perubahan", () => {
+  test("perubahan dan tanda sensitif tampil, isi berkas tidak", async () => {
+    const d = await startDaemonForCli();
+    d.approvals.request({
+      ...NEW,
+      diff: {
+        path: ".env",
+        toolName: "Write",
+        sensitive: [{ code: "env_file", message: "Berkas .env" }],
+        change: {
+          type: "text",
+          isNew: false,
+          hunks: [{ id: "h1", oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: [{ type: "add", text: "RAHASIA-123", newLine: 1 }] }],
+          added: 1,
+          removed: 0,
+          format: { oldEol: "lf", newEol: "lf", oldFinalNewline: true, newFinalNewline: true },
+        },
+      },
+    });
+    const result = await cli(["status"], d.port);
+    expect(result.out).toContain("perubahan: +1 -0 (1 hunk)");
+    expect(result.out).toContain("[SENSITIF: env_file]");
+    expect(result.out).not.toContain("RAHASIA-123");
+    d.approvals.cancelAll();
+  });
+});

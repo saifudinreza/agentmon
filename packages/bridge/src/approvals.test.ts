@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ApprovalStatusSchema, type ApprovalStatus } from "@agentmon/shared";
+import { ApprovalStatusSchema, type ApprovalStatus, type FileDiff } from "@agentmon/shared";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   canTransition,
@@ -507,5 +507,46 @@ describe("daemon yang berhenti saat hook sedang menunggu izin", () => {
 
     const answered = await reply;
     expect(JSON.parse(answered.body)).toEqual({ disetujui: true });
+  });
+});
+
+describe("diff yang menyertai izin", () => {
+  const diff: FileDiff = {
+    path: "app.ts",
+    toolName: "Edit",
+    sensitive: [],
+    change: {
+      type: "text",
+      isNew: false,
+      hunks: [],
+      added: 0,
+      removed: 0,
+      format: { oldEol: "lf", newEol: "lf", oldFinalNewline: true, newFinalNewline: true },
+    },
+  };
+
+  test("disimpan bersama kartu dan bisa dibaca, tanpa memengaruhi keputusan", async () => {
+    const engine = createApprovalEngine();
+    const ticket = engine.request({ ...NEW, diff });
+    expect(engine.get(ticket.approvalId)?.diff).toEqual(diff);
+    expect(engine.listPending()[0]?.diff).toEqual(diff);
+    engine.decide(approveOf(ticket.approvalId));
+    expect(await ticket.outcome).toEqual({ status: "approved" }); // diff tidak ikut ke jawaban
+    expect(engine.get(ticket.approvalId)?.diff).toEqual(diff); // tetap ada setelah selesai
+  });
+
+  test("berupa salinan: mengubah masukan atau hasilnya tidak memengaruhi mesin", () => {
+    const engine = createApprovalEngine();
+    const input = structuredClone(diff);
+    const ticket = engine.request({ ...NEW, diff: input });
+    input.path = "diubah.ts";
+    const read = engine.get(ticket.approvalId);
+    if (read?.diff) read.diff.path = "diubah-lagi.ts";
+    expect(engine.get(ticket.approvalId)?.diff?.path).toBe("app.ts");
+  });
+
+  test("tanpa diff, kolomnya tidak ada", () => {
+    const engine = createApprovalEngine();
+    expect(engine.get(engine.request(NEW).approvalId)).not.toHaveProperty("diff");
   });
 });

@@ -2,10 +2,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { FileDiff } from "@agentmon/shared";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createApprovalEngine } from "./approvals";
 import { createClaudeCodeHandler } from "./adapters/claude-code-handler";
-import { createDaemonControl } from "./control";
+import { createDaemonControl, summarizeDiff } from "./control";
 import { startDaemon, type RunningDaemon } from "./daemon";
 
 const NEW = { sessionId: "s1", toolName: "Write", toolInput: { file_path: "a.txt" } };
@@ -221,5 +222,53 @@ describe("endpoint kontrol", () => {
 
     expect((await send(d, "POST", "/decision", { body: "{bukan json" })).status).toBe(400);
     expect((await send(d, "POST", "/decision", { body: "{}", json: false })).status).toBe(415);
+  });
+});
+
+describe("ringkasan diff di status", () => {
+  const format = { oldEol: "lf", newEol: "lf", oldFinalNewline: true, newFinalNewline: true } as const;
+  const diffOf = (change: FileDiff["change"], sensitive: FileDiff["sensitive"] = []): FileDiff => ({
+    path: "a.txt",
+    toolName: "Write",
+    sensitive,
+    change,
+  });
+
+  test.each<[string, FileDiff["change"], string]>([
+    ["teks", { type: "text", isNew: false, hunks: [], added: 3, removed: 1, format }, "+3 -1 (0 hunk)"],
+    ["berkas baru", { type: "text", isNew: true, hunks: [], added: 5, removed: 0, format }, "berkas baru +5 -0"],
+    ["tanpa perubahan", { type: "unchanged", formatChanged: false, format }, "tidak ada perubahan"],
+    ["hanya format", { type: "unchanged", formatChanged: true, format }, "hanya format yang berubah"],
+    ["biner", { type: "binary", isNew: false }, "berkas biner"],
+    ["terlalu besar", { type: "too_large", isNew: false, message: "besar", added: 900, removed: 800 }, "terlalu besar (~+900 -800)"],
+    ["terlalu besar tanpa hitungan", { type: "too_large", isNew: false, message: "besar" }, "terlalu besar"],
+    ["tidak cocok", { type: "mismatch", reason: "old_string_not_found", message: "x" }, "tidak cocok: old_string_not_found"],
+  ])("%s", (_name, change, expected) => {
+    expect(summarizeDiff(diffOf(change))).toContain(expected);
+  });
+
+  test("status menampilkan ringkasan dan tanda sensitif, tanpa isi berkas", () => {
+    const approvals = createApprovalEngine();
+    const control = createDaemonControl({ holdEnabled: true, approvals });
+    const secret = diffOf(
+      {
+        type: "text",
+        isNew: false,
+        hunks: [{ id: "h1", oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [{ type: "add", text: "RAHASIA-123", newLine: 1 }] }],
+        added: 1,
+        removed: 0,
+        format,
+      },
+      [{ code: "env_file", message: "Berkas .env" }],
+    );
+    approvals.request({ ...NEW, diff: secret });
+    approvals.request(NEW); // tanpa diff
+
+    const [withDiff, without] = control.status().pending;
+    expect(withDiff).toMatchObject({ change: "+1 -0 (1 hunk)", sensitive: ["env_file"] });
+    expect(without).not.toHaveProperty("change");
+    expect(without).not.toHaveProperty("sensitive");
+    expect(JSON.stringify(control.status())).not.toContain("RAHASIA-123");
+    approvals.cancelAll();
   });
 });

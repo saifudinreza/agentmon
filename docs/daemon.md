@@ -164,6 +164,36 @@ pnpm --filter @agentmon/bridge cli resume
 
 Semua endpoint memakai tiga pemeriksaan keamanan yang sama dengan `/hook`.
 
+## Kalkulator diff
+Saat sebuah aksi ditahan, daemon menghitung **perubahan yang diusulkan agent** dan menyimpannya bersama izin yang menunggu (`approvals.get(id).diff`), sebagai bahan tampilan review dan terima sebagian. Kodenya di `packages/bridge/src/diff/`, dan bentuk datanya di paket `shared` (`diff.ts`) karena dipakai bersama halaman web dan HP.
+
+**Alurnya** (`computeToolDiff`):
+1. Baca isi berkas **sekarang** di laptop (path relatif diselesaikan terhadap folder kerja agent).
+2. Bayangkan hasil akhirnya. `Write` membawa isi lengkap; `Edit` dan `MultiEdit` diterapkan dulu pada isi yang ada, dengan aturan seperti di Claude Code (teks yang dicari harus ada, dan tunggal kecuali `replace_all`).
+3. Bandingkan baris demi baris (algoritma Myers), kelompokkan menjadi **hunk** dengan 3 baris konteks. Hunk diberi id `h1`, `h2`, dan seterusnya, yang nanti dipakai sebagai `hunkId` pada keputusan terima sebagian.
+4. Tandai path sensitif.
+
+**Hasil** (`change.type`): `text` (hunk, jumlah baris ditambah dan dihapus, `isNew` untuk berkas baru), `unchanged` (isi sama), `binary`, `too_large`, atau `mismatch` (usulan tidak bisa diterapkan: berkas tidak ada, teks tidak ditemukan, ambigu, atau tidak terbaca).
+
+**Kasus sulit:**
+
+| Kasus | Perilaku |
+|---|---|
+| Berkas biner (ada byte NUL, atau bukan UTF-8 yang sah) | `binary`, isinya tidak ditampilkan |
+| Berkas lebih dari 1 MiB | `too_large`. **Ukuran diperiksa sebelum membaca**, jadi isinya tidak pernah masuk memori |
+| Terlalu banyak baris berbeda (lebih dari 20 000 baris dibandingkan, atau jarak edit di atas 1000) | `too_large` dengan perkiraan jumlah baris. Bagian awal dan akhir yang sama dibuang dulu, jadi berkas besar dengan perubahan kecil tetap menghasilkan diff penuh |
+| Akhir baris Windows (CRLF) | Disamakan dengan LF saat membandingkan, sehingga berkas CRLF yang ditulis ulang dengan LF tidak terlihat berubah seluruhnya. Perbedaan gaya akhir baris dan enter di akhir berkas dicatat terpisah di `format` |
+| `Edit` yang tidak cocok | `mismatch`, bukan error |
+| Target bukan berkas biasa (folder, perangkat) | `mismatch` dengan alasan `unreadable` |
+
+**Path sensitif** ditandai beserta alasannya, hanya dari path (isi tidak diperiksa): `env_file`, `private_key`, `credentials`, `git_internals`, `ci_workflow`, `agent_config` (`.claude`, `.agentmon`, `.codex`), `shell_profile`, `script_config` (`package.json`, `Makefile`, dan sejenisnya, yang membuka "celah skrip" di PRD §9), serta `outside_project`. Ini hanya penanda; keputusan seberapa berisiko ada di penilai risiko dan policy engine.
+
+**Tidak pernah menghalangi aksi.** Diff hanya bahan tampilan. Menghitungnya dibatasi 2 detik; bila gagal, error, atau melewati batas, aksi tetap ditahan tanpa diff. Kalkulator tidak pernah mengubah apa pun di disk.
+
+**Catatan penting:**
+- Diff **memuat isi berkas** (termasuk berkas yang ditandai sensitif). Ia hanya disimpan di memori daemon bersama izinnya, tidak masuk log, tidak ikut event `approval.requested`, dan tidak tampil di `status` (yang hanya menampilkan ringkasan seperti `+3 -1 (2 hunk)` dan kode alasan sensitif). Saat nanti dikirim ke HP, diff harus ikut terenkripsi (tahap 4).
+- Menghitung diff berjalan di thread utama dan murni CPU. Batas di atas menjaganya tetap singkat (puluhan milidetik dalam kasus terburuk), sejalan dengan aturan bahwa daemon tidak boleh memblokir event loop-nya.
+
 ## Endpoint
 | Endpoint | Fungsi |
 |---|---|
