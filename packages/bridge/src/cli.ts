@@ -7,6 +7,7 @@
 //   resume                      lanjutkan penahanan
 //   approve [id] [komentar]     setujui satu permintaan yang menunggu
 //   deny    [id] [komentar]     tolak, dengan komentar yang dibaca agent
+//   ui                          cetak alamat halaman web lokal (alat pengembangan), lengkap dengan kredensial
 //
 // ANALOGI: remote control untuk satpam (daemon). Satpam duduk di pos jaga (proses lain);
 // remote ini berbicara dengannya lewat loket lokal yang sama, dengan kata sandi (token) yang
@@ -75,12 +76,13 @@ const USAGE = [
   "  resume                    lanjutkan penahanan",
   "  approve [id] [komentar]   setujui permintaan yang menunggu",
   "  deny [id] [komentar]      tolak permintaan, dengan komentar untuk agent",
+  "  ui                        cetak alamat halaman web lokal (alat pengembangan)",
 ].join("\n");
 
 /** Menjalankan satu perintah. Mengembalikan kode keluar (0 = berhasil). */
 export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   const [command, ...rest] = argv;
-  if (!command || !["status", "pause", "resume", "approve", "deny"].includes(command)) {
+  if (!command || !["status", "pause", "resume", "approve", "deny", "ui"].includes(command)) {
     deps.err(USAGE);
     return command ? 2 : 0;
   }
@@ -105,6 +107,14 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     deps.err(`Daemon tidak berjalan di 127.0.0.1:${port}. Jalankan dulu dengan: pnpm --filter @agentmon/bridge daemon`);
     return 1;
   };
+
+  if (command === "ui") {
+    // Kredensial ditaruh di FRAGMEN alamat (setelah #): fragmen tidak pernah dikirim ke server dan
+    // tidak masuk log. Halaman membacanya lalu langsung menghapusnya dari alamat.
+    deps.out(`http://127.0.0.1:${port}/dev#${token}`);
+    deps.err("Alamat ini berisi kredensial; jangan dibagikan. Halaman hanya ada bila daemon dijalankan dengan AGENTMON_DEV_UI=1.");
+    return 0;
+  }
 
   if (command === "status" || command === "pause" || command === "resume") {
     const method = command === "status" ? "GET" : "POST";

@@ -10,6 +10,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createApprovalEngine, type ApprovalEngine } from "./approvals";
 import { createDaemonControl, type DaemonControl } from "./control";
+import { createTimeline, type Timeline } from "./timeline";
 import { agentmonHome, loadOrCreateMachineId, loadOrCreateToken, paths } from "./home";
 import { createLogger } from "./logger";
 import { createDaemonServer, type HookHandler } from "./server";
@@ -47,6 +48,11 @@ export type DaemonOptions = {
   holdEnabled?: boolean;
   // Lama menunggu keputusan sebelum izin dianggap habis waktu (milidetik). Bawaan 540 detik.
   approvalTimeoutMs?: number;
+  // Halaman web lokal (alat pengembangan) di /dev. Bawaan mati.
+  devUi?: boolean;
+  // Timeline yang ditampilkan halaman itu. Bila tidak diisi, daemon membuat sendiri. Pemanggil yang
+  // mengisinya sendiri (main.ts) bertanggung jawab mencatat event ke dalamnya.
+  timeline?: Timeline;
   maxBodyBytes?: number;
   logMaxBytes?: number;
 };
@@ -55,6 +61,7 @@ export type RunningDaemon = {
   port: number;
   approvals: ApprovalEngine;
   control: DaemonControl;
+  timeline: Timeline;
   home: string;
   token: string;
   stop(): Promise<void>;
@@ -110,6 +117,8 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
   });
   const control = createDaemonControl({ holdEnabled: options.holdEnabled ?? false, approvals });
 
+  const timeline = options.timeline ?? createTimeline();
+
   const { server, drain } = createDaemonServer({
     token,
     logger,
@@ -117,6 +126,8 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
     machineId: loadOrCreateMachineId(home),
     approvals,
     control,
+    timeline,
+    devUi: options.devUi ?? false,
     onHook: options.onHook,
     maxBodyBytes: options.maxBodyBytes,
   });
@@ -143,6 +154,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
     port,
     approvals,
     control,
+    timeline,
     home,
     token,
     async stop() {

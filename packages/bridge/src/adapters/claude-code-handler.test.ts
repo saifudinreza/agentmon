@@ -343,7 +343,7 @@ describe("batas antara inti daemon dan adapter", () => {
   // kolom khusus Claude. SENGAJA tidak mencakup `hook_event_name` dan `tool_name`: itu
   // amplop minimum bersama (HookInput di server.ts) yang diminta daemon dari agent mana pun,
   // dan akan ditinjau lagi setelah riset Codex.
-  const core = ["daemon.ts", "server.ts", "guard.ts", "home.ts", "logger.ts", "approvals.ts", "control.ts", "cli.ts"];
+  const core = ["daemon.ts", "server.ts", "guard.ts", "home.ts", "logger.ts", "approvals.ts", "control.ts", "cli.ts", "timeline.ts", "dev-ui.ts", "dev-page.ts"];
   const claudeSpecific = /PreToolUse|PostToolUse|PermissionRequest|SessionStart|SessionEnd|UserPromptSubmit|tool_input|session_id/;
 
   test.each(core)("%s tidak mengimpor adapter dan tidak menyebut istilah event Claude Code", (name) => {

@@ -18,6 +18,7 @@ Alat untuk riset issue "Spike: hook logger Claude Code dan fixture". Bukan kode 
 | `judge.mjs` | Menilai satu eksperimen: sesi selesai, tidak ada aksi yang disetujui, alur izin normal teramati |
 | `print-config.ts` | Mencetak konfigurasi hook dari pembuat konfigurasi yang sebenarnya |
 | `verify-hold.ts` | Menjalankan 5 skenario penahanan aksi dengan Claude Code sungguhan (disetujui, ditolak dengan komentar, tanpa jawaban, dijeda, hanya membaca). Daemon sungguhan berjalan di proses yang sama dengan penjawab otomatis |
+| `verify-dev-ui.ts` | Membuktikan halaman web lokal dengan browser (Edge tanpa tampilan, dikendalikan lewat CDP) dan Claude Code sungguhan: isi hostile tampil sebagai teks, lalu klik Setujui dan Tolak di halaman menentukan nasib sesi Claude. Butuh Edge (atur `EDGE_PATH` bila lokasinya berbeda) |
 | `measure-overhead.ts` | Mengukur waktu tambahan hook `http` dengan daemon sebenarnya (satu sesi, 15 pembacaan berkas) |
 
 ## Cara menjalankan
@@ -37,6 +38,7 @@ Pembuktian anti-macet dan pengukuran overhead memakai konfigurasi dari kode prod
 SPIKE_OUT=/tmp/spike tools/hook-spike/verify-fail-open.sh
 cd packages/bridge && SPIKE_OUT=/tmp/spike node --import tsx ../../tools/hook-spike/measure-overhead.ts
 cd packages/bridge && SPIKE_OUT=/tmp/spike node --import tsx ../../tools/hook-spike/verify-hold.ts
+cd packages/bridge && SPIKE_OUT=/tmp/spike node --import tsx ../../tools/hook-spike/verify-dev-ui.ts
 ```
 
 Keduanya membutuhkan `pnpm install` lebih dulu, karena memakai `tsx` dari paket `bridge`. Variabel tambahan untuk `run.sh`: `SPIKE_SETTINGS` (berkas pengaturan siap pakai) dan `SPIKE_SEED` (isi folder proyek).
