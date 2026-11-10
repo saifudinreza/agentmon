@@ -58,8 +58,43 @@ Pesan biner ditolak (hanya teks). Koneksi yang belum menyebut `hello` dan mengir
 - `node.ts`: **transport Node.js** (Hono untuk HTTP, `ws` untuk WebSocket). Hanya mencolokkan soket ke hub dan mengirim ping. Bila hosting dipindah (misalnya ke Cloudflare Workers), cukup ganti file ini.
 - `directory.ts`: antarmuka **direktori pemasangan** (siapa pemilik token, HP mana dipasangkan dengan laptop mana). Sekarang ada versi memori; token disimpan **hanya dalam bentuk hash** (SHA-256). Versi database dibuat di issue skema database.
 
+## Database
+Relay menyimpan data permanen di PostgreSQL (Neon) lewat Drizzle. Kodenya di `packages/server/src/db/`.
+
+| Tabel | Isi |
+|---|---|
+| `machines` | Laptop: nomor, nama, **hash** token, terakhir terlihat |
+| `devices` | HP: nomor, nama, **hash** token, kunci publik (tahap 4), waktu dicabut |
+| `pairings` | Relasi laptop dan HP |
+| `pairing_codes` | Kode pairing sekali pakai (**hash** kodenya) dan kedaluwarsanya |
+| `sessions` | Sesi agent: laptop, agent, status (`active` atau `ended`), waktu mulai dan terakhir |
+| `events` | Riwayat event. Kunci utamanya **(laptop, nomor event)** |
+| `push_subscriptions` | Langganan Web Push per HP |
+
+**Menjalankan migrasi** (aman diulang, hanya yang belum dijalankan yang diterapkan):
+```bash
+DATABASE_URL=postgres://pengguna:kata-sandi@host/namadb pnpm --filter @agentmon/server db:migrate
+```
+Setelah mengubah `src/db/schema.ts`, hasilkan migrasinya dengan `pnpm --filter @agentmon/server db:generate` dan **commit hasilnya bersama perubahan skema**. Ada test yang gagal bila skema dan migrasi terakhir tidak sama.
+
+**Jaminan yang dijaga database sendiri** (tetap berlaku walau ada bug di kode penulisnya):
+- **Token hanya tersimpan sebagai hash.** Kolom token menerima hanya SHA-256 heksadesimal (64 karakter); batasan `CHECK` menolak yang lain, termasuk token mentah yang tak sengaja masuk. Hal yang sama berlaku untuk kode pairing.
+- **Event tidak tersimpan dua kali.** Event yang dikirim ulang diabaikan (event pertama yang berlaku, tidak menimpa). Keunikannya **per laptop**, sehingga satu laptop tidak bisa menghalangi event laptop lain dengan memakai nomor yang sama.
+- **Menghapus laptop menghapus turunannya** (pasangan, kode, sesi, event). Menghapus HP menghapus pasangan dan langganan pushnya.
+
+**Riwayat.** `store.saveEvent` menyimpan event (dan membuat sesinya), `listEvents` mengambil riwayat satu sesi berurutan menurut nomor urut dan bisa dilanjutkan dengan `afterSeq` (untuk HP yang menyambung ulang), dan `listSessions` mendaftar sesi sebuah laptop. Satu pengambilan paling banyak 500 event.
+
+**Penghapusan otomatis.** `startRetention` menghapus riwayat yang **diterima relay** lebih dari 30 hari lalu (dicek tiap 6 jam), beserta sesi yang sudah kosong dan kode pairing yang sudah dipakai atau kedaluwarsa. Dasarnya jam relay, bukan jam pengirim yang bisa keliru atau dipalsukan. Laptop dan HP yang terdaftar tidak ikut terhapus.
+
+**Direktori berbasis database** (`createDbDirectory`) menggantikan versi memori tanpa mengubah hub, dan lolos kontrak test yang sama. HP yang dicabut (`revokedAt`) tidak bisa tersambung dan tidak dianggap dipasangkan.
+
+**Isi event disimpan sebagai teks JSON**, bukan `jsonb`. Relay tidak pernah mengkueri isinya (dan mulai tahap 4 terenkripsi), sedangkan `jsonb` menolak karakter NUL (`\u0000`) yang bisa saja ada di isi berkas atau perintah dari agent. Teks JSON menyimpannya persis sama.
+
+**Test memakai PGlite**, yaitu mesin Postgres asli yang berjalan di dalam proses Node. CI di Windows, macOS, dan Linux menguji perilaku Postgres yang sebenarnya (batasan, kunci asing, `ON CONFLICT`) tanpa perlu memasang server database.
+
 ## Keterbatasan saat ini
-- Direktori hanya di memori (satu laptop dan satu HP di mode pengembangan).
+- Penyimpan event dan direktori database sudah ada, **tetapi belum disambungkan ke relay yang berjalan**: `main.ts` masih memakai direktori memori, dan hub belum menyimpan event yang lewat. Penyambungannya dikerjakan bersama klien relay di daemon dan daftar sesi di HP. Pairing lewat QR (yang mengisi tabel pairing) juga di issue terpisah.
+- Penyimpan event mengembalikan galat bila event berisi karakter NUL di kolom pengenal (nomor sesi, jenis event). Pemanggil harus memperlakukan kegagalan simpan sebagai tidak fatal, supaya meneruskan pesan tidak ikut terhenti.
 - Pembatasan laju per koneksi, belum per alamat IP. Pembatasan jumlah koneksi per IP diserahkan ke hosting untuk saat ini.
 - Pesan maksimum 1 MiB. Event berisi input alat yang besar (misalnya `Write` dengan isi berkas besar) bisa melebihi itu; daemon yang mengirim ke relay (issue klien relay) harus memotong atau meringkasnya.
 - Relay tidak menyimpan pesan: bila HP sedang offline, event untuknya dibuang. Riwayat disimpan di issue skema database, dan antrean offline di klien relay.
