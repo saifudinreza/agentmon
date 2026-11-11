@@ -117,6 +117,27 @@ export function createRelayHub(options: RelayHubOptions) {
   const machines = new Map<string, Session>();
   const devices = new Map<string, Session>();
 
+  // Nomor event yang baru-baru ini diterima, per laptop, untuk mengenali kiriman ulang. Jumlahnya
+  // dibatasi (yang paling lama dilupakan); kiriman ulang yang sah selalu datang tak lama setelah
+  // aslinya, jadi tidak perlu mengingat selamanya. Hanya ada di memori: setelah relay dimulai ulang,
+  // penyimpan event (kunci unik per laptop dan nomor event) yang menjaga agar tidak ganda.
+  const recentEvents = new Map<string, Set<string>>();
+  const RECENT_EVENTS_PER_MACHINE = 2000;
+
+  // Mencatat nomor event. Mengembalikan true bila nomor itu SUDAH ada (kiriman ulang).
+  function rememberEvent(machineId: string, eventId: string): boolean {
+    let seen = recentEvents.get(machineId);
+    if (!seen) {
+      seen = new Set();
+      recentEvents.set(machineId, seen);
+    }
+    if (seen.has(eventId)) return true;
+    seen.add(eventId);
+    // Set mengingat urutan masuk, jadi yang pertama adalah yang paling lama.
+    if (seen.size > RECENT_EVENTS_PER_MACHINE) seen.delete(seen.values().next().value as string);
+    return false;
+  }
+
   // ---- Alat bantu ----------------------------------------------------------------------
 
   // Mengirim satu bingkai. Gagal mengirim (soket sudah putus) tidak boleh melempar error.
@@ -194,7 +215,14 @@ export function createRelayHub(options: RelayHubOptions) {
           return reject(session, "forbidden", "machineId tidak sama dengan identitas koneksi");
         }
         const paired = await directory.devicesOf(session.id as string);
+        // Tidak ada `ack` bila koneksi sudah putus: laptop akan mengirim ulang setelah tersambung lagi.
         if (session.closed) return;
+
+        // Event yang id-nya sudah pernah diterima (laptop mengirim ulang karena konfirmasi
+        // sebelumnya tidak sempat sampai) cukup dikonfirmasi lagi, tanpa diteruskan dua kali.
+        if (rememberEvent(session.id as string, frame.event.id)) {
+          return send(session, { kind: "ack", eventId: frame.event.id });
+        }
         // Yang diteruskan adalah objek ASLI yang baru saja lolos validasi, bukan hasil parse-nya.
         // Hasil parse membuang kolom amplop yang belum dikenal; daemon versi baru yang menambah
         // kolom akan kehilangan kolom itu diam-diam saat lewat relay lama. Dengan meneruskan yang
@@ -205,6 +233,7 @@ export function createRelayHub(options: RelayHubOptions) {
           const target = devices.get(deviceId);
           if (target) deliver(target, text);
         }
+        send(session, { kind: "ack", eventId: frame.event.id });
         return;
       }
 

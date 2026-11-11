@@ -68,6 +68,12 @@ export const ServerFrameSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("event"), event: EnvelopeSchema }),
   // Perintah dari HP yang dipasangkan. `deviceId` = HP yang mengirim.
   z.object({ kind: z.literal("command"), deviceId: nonEmpty, body }),
+  // Konfirmasi ke LAPTOP: event dengan `eventId` ini sudah diterima dan diproses relay, jadi aman
+  // dihapus dari antrean laptop. Tanpa konfirmasi, laptop tidak bisa membedakan "terkirim" dari
+  // "benar-benar sampai" saat koneksi putus di tengah jalan, dan harus memilih antara kehilangan
+  // event atau mengirimnya dua kali. Dengan konfirmasi, laptop mengirim ulang yang belum
+  // dikonfirmasi, dan relay mengabaikan event yang id-nya sudah pernah diterima.
+  z.object({ kind: z.literal("ack"), eventId: nonEmpty }),
   z.object({ kind: z.literal("error"), code: RelayErrorCodeSchema, message: nonEmpty }),
 ]);
 export type ServerFrame = z.infer<typeof ServerFrameSchema>;
