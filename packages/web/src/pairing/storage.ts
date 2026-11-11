@@ -15,6 +15,8 @@
 import { z } from "zod";
 
 export const PAIRINGS_STORAGE_KEY = "agentmon.pairings";
+// Dipancarkan di window setelah pairing berubah, supaya bagian aplikasi lain (sambungan ke relay) membacanya ulang.
+export const PAIRINGS_CHANGED_EVENT = "agentmon:pairings";
 
 const MachineSchema = z.object({ id: z.string().min(1), name: z.string(), pairedAt: z.string() });
 const PairingSchema = z.object({

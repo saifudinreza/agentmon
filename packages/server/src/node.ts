@@ -14,7 +14,8 @@ import { createAdaptorServer } from "@hono/node-server";
 import { Hono } from "hono";
 import { WebSocketServer } from "ws";
 import type { RelayDirectory } from "./directory";
-import { createRelayHub, DEFAULT_LIMITS, type RelayHub, type RelayLimits } from "./hub";
+import { mountDeviceApi, type DeviceApiOptions } from "./device-api";
+import { createRelayHub, DEFAULT_LIMITS, type RelayHub, type RelayHubOptions, type RelayLimits } from "./hub";
 import { silentLogger, type Logger } from "./logger";
 import { mountPairingRoutes, type PairingRoutesOptions } from "./pairing-http";
 
@@ -29,6 +30,10 @@ export type RelayServerOptions = {
   heartbeatMs?: number;
   // Pairing lewat QR (HTTP). Tanpa ini endpoint /pair/* tidak ada (404).
   pairing?: PairingRoutesOptions;
+  // API baca riwayat untuk HP (HTTP). Tanpa ini endpoint /api/* tidak ada (404).
+  deviceApi?: Omit<DeviceApiOptions, "isMachineOnline">;
+  // Menyimpan event sebelum diteruskan dan di-ack (lihat hub.ts).
+  persist?: RelayHubOptions["persist"];
 };
 
 export type RunningRelay = {
@@ -52,7 +57,7 @@ export function sweepIntervalMs(heartbeatMs: number, helloTimeoutMs: number): nu
 export async function startRelayServer(options: RelayServerOptions): Promise<RunningRelay> {
   const logger = options.logger ?? silentLogger;
   const limits: RelayLimits = { ...DEFAULT_LIMITS, ...options.limits };
-  const hub = createRelayHub({ directory: options.directory, logger, limits });
+  const hub = createRelayHub({ directory: options.directory, logger, limits, ...(options.persist ? { persist: options.persist } : {}) });
 
   // ---- HTTP (Hono) ----
   const app = new Hono();
@@ -60,6 +65,7 @@ export async function startRelayServer(options: RelayServerOptions): Promise<Run
   // pemeriksaan hosting; statistik tetap bisa dibaca di dalam proses lewat hub.stats().
   app.get("/health", (c) => c.json({ status: "ok" }));
   if (options.pairing) mountPairingRoutes(app, options.pairing);
+  if (options.deviceApi) mountDeviceApi(app, { ...options.deviceApi, isMachineOnline: (id) => hub.isMachineOnline(id) });
   // Galat tak terduga (misalnya database sesaat tidak terjangkau): jawab 500 yang polos dan catat.
   // Tidak ada rincian ke klien, dan pairing tetap gagal tertutup (tidak ada kredensial yang keluar).
   app.onError((error, c) => {

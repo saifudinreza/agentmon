@@ -727,3 +727,156 @@ describe("konfirmasi (ack) dan kiriman ulang", () => {
     expect(d1.fake.events()).toHaveLength(2003);
   }, 30_000);
 });
+
+describe("menyimpan event sebelum diteruskan dan di-ack (persist)", () => {
+  const acks = (fake: ReturnType<typeof fakeConnection>) => fake.sent.filter((f) => f.kind === "ack");
+
+  test("ack hanya dikirim SETELAH event tersimpan, dan urutannya: simpan, lalu teruskan ke HP", async () => {
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const { hub } = setup({
+      persist: async () => {
+        order.push("mulai simpan");
+        await gate;
+        order.push("selesai simpan");
+        return { inserted: true };
+      },
+    });
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const d1 = await connect(hub, "device", TOKENS.d1);
+
+    const pending = send(m1.session, { kind: "event", event: envelope("m1") });
+    await Promise.resolve();
+    // Selagi menyimpan: belum ada ack dan belum diteruskan.
+    expect(acks(m1.fake)).toEqual([]);
+    expect(d1.fake.events()).toEqual([]);
+    release();
+    await pending;
+    expect(order).toEqual(["mulai simpan", "selesai simpan"]);
+    expect(acks(m1.fake)).toHaveLength(1);
+    expect(d1.fake.events()).toHaveLength(1);
+  });
+
+  test("yang disimpan adalah event yang sama dengan yang diterima", async () => {
+    const stored: unknown[] = [];
+    const { hub } = setup({ persist: async (event) => void stored.push(event) });
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const event = envelope("m1", { seq: 7, type: "tool.completed", payload: { toolName: "Write", ok: true } });
+    await send(m1.session, { kind: "event", event });
+    expect(stored).toEqual([expect.objectContaining({ id: event.id, machineId: "m1", seq: 7, type: "tool.completed" })]);
+  });
+
+  test("gagal menyimpan: TIDAK di-ack dan TIDAK diteruskan, lalu kiriman ulang diproses lagi (bukan dianggap sudah selesai)", async () => {
+    let fail = true;
+    const attempts: string[] = [];
+    const { hub, logs } = setup({
+      persist: async (event) => {
+        attempts.push(event.id);
+        if (fail) throw new Error("database mati");
+        return { inserted: true };
+      },
+    });
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const d1 = await connect(hub, "device", TOKENS.d1);
+    const event = envelope("m1");
+
+    await send(m1.session, { kind: "event", event });
+    expect(acks(m1.fake)).toEqual([]);
+    expect(d1.fake.events()).toEqual([]);
+    expect(logs.join("\n")).toContain("gagal menyimpan event: database mati");
+
+    fail = false;
+    await send(m1.session, { kind: "event", event }); // laptop mengirim ulang
+    expect(attempts).toEqual([event.id, event.id]); // diproses lagi, tidak diabaikan
+    expect(acks(m1.fake)).toHaveLength(1);
+    expect(d1.fake.events()).toHaveLength(1);
+  });
+
+  test("event yang sudah tersimpan sebelumnya (inserted: false, mis. relay dimulai ulang): di-ack tetapi tidak diteruskan lagi", async () => {
+    const { hub } = setup({ persist: async () => ({ inserted: false }) });
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const d1 = await connect(hub, "device", TOKENS.d1);
+    const event = envelope("m1");
+    await send(m1.session, { kind: "event", event });
+    expect(acks(m1.fake)).toEqual([{ kind: "ack", eventId: event.id }]);
+    expect(d1.fake.events()).toEqual([]);
+  });
+
+  test("kiriman ulang yang baru saja berhasil dikenali di memori tanpa menyentuh penyimpanan lagi", async () => {
+    let calls = 0;
+    const { hub } = setup({
+      persist: async () => {
+        calls++;
+        return { inserted: true };
+      },
+    });
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const event = envelope("m1");
+    await send(m1.session, { kind: "event", event });
+    await send(m1.session, { kind: "event", event });
+    await send(m1.session, { kind: "event", event });
+    expect(calls).toBe(1);
+    expect(acks(m1.fake)).toHaveLength(3);
+  });
+
+  test("koneksi putus selagi menyimpan: tidak di-ack; kiriman ulang dari koneksi baru di-ack tanpa diteruskan dua kali", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let started!: () => void;
+    const persistStarted = new Promise<void>((resolve) => (started = resolve));
+    let inserted = true;
+    const { hub } = setup({
+      persist: async () => {
+        started();
+        await gate;
+        const result = { inserted };
+        inserted = false; // pemanggilan berikutnya: sudah ada
+        return result;
+      },
+    });
+    const first = await connect(hub, "machine", TOKENS.m1);
+    const d1 = await connect(hub, "device", TOKENS.d1);
+    const event = envelope("m1");
+
+    const pending = send(first.session, { kind: "event", event });
+    await persistStarted; // koneksi putus TEPAT selagi menyimpan, bukan sebelumnya
+    first.session.closed();
+    release();
+    await pending;
+    expect(acks(first.fake)).toEqual([]);
+    expect(d1.fake.events()).toEqual([]); // tersimpan, tetapi tidak diteruskan karena pengirimnya sudah putus
+
+    const second = await connect(hub, "machine", TOKENS.m1);
+    await send(second.session, { kind: "event", event });
+    expect(acks(second.fake)).toEqual([{ kind: "ack", eventId: event.id }]);
+    expect(d1.fake.events()).toEqual([]); // sudah tersimpan oleh percobaan pertama; tidak diteruskan lagi
+  });
+
+  test("tanpa persist, perilaku lama tidak berubah: diteruskan dan di-ack", async () => {
+    const { hub } = setup();
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const d1 = await connect(hub, "device", TOKENS.d1);
+    await send(m1.session, { kind: "event", event: envelope("m1") });
+    expect(acks(m1.fake)).toHaveLength(1);
+    expect(d1.fake.events()).toHaveLength(1);
+  });
+});
+
+describe("isMachineOnline", () => {
+  test("benar hanya selama laptop tersambung dan sudah lolos hello", async () => {
+    const { hub } = setup();
+    expect(hub.isMachineOnline("m1")).toBe(false);
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    expect(hub.isMachineOnline("m1")).toBe(true);
+    expect(hub.isMachineOnline("m2")).toBe(false);
+    m1.session.closed();
+    expect(hub.isMachineOnline("m1")).toBe(false);
+  });
+
+  test("HP dengan nomor yang sama dengan laptop tidak dihitung sebagai laptop", async () => {
+    const { hub } = setup();
+    await connect(hub, "device", TOKENS.d1);
+    expect(hub.isMachineOnline("d1")).toBe(false);
+  });
+});

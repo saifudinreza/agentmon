@@ -10,11 +10,13 @@
 // supaya nyaman disentuh satu tangan, jarak aman untuk notch iPhone), lalu dibatasi lebarnya
 // supaya tetap rapi di layar besar.
 import { Routes } from "./Home";
+import { ConnectionChip } from "./relay/ConnectionChip";
+import { RelayProvider, type RelayStoreFactory } from "./relay/RelayProvider";
 import { useI18n } from "./i18n/react";
 import { useOnline } from "./hooks/useOnline";
 import { useTheme } from "./theme/useTheme";
 
-export function App() {
+function Shell() {
   const { t } = useI18n();
   const online = useOnline();
   const { mode, cycle } = useTheme();
@@ -24,8 +26,11 @@ export function App() {
   return (
     <div className="flex min-h-dvh flex-col bg-bg text-fg pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
       <header className="sticky top-0 z-10 border-b border-line bg-bg/90 pt-[env(safe-area-inset-top)] backdrop-blur">
-        <div className="mx-auto flex h-14 w-full max-w-xl items-center justify-between px-4">
-          <h1 className="text-lg font-semibold tracking-tight">{t("app.name")}</h1>
+        <div className="mx-auto flex min-h-14 w-full max-w-xl items-center justify-between gap-3 px-4 py-1">
+          <div className="flex flex-col">
+            <h1 className="text-lg font-semibold leading-tight tracking-tight">{t("app.name")}</h1>
+            <ConnectionChip />
+          </div>
           <button
             type="button"
             onClick={cycle}
@@ -50,5 +55,14 @@ export function App() {
         <Routes />
       </main>
     </div>
+  );
+}
+
+/** Kerangka aplikasi. `relayFactory` hanya untuk test (mengganti pembuat sambungan ke relay). */
+export function App({ relayFactory }: { relayFactory?: RelayStoreFactory } = {}) {
+  return (
+    <RelayProvider {...(relayFactory ? { factory: relayFactory } : {})}>
+      <Shell />
+    </RelayProvider>
   );
 }

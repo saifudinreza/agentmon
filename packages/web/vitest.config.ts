@@ -5,6 +5,8 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "jsdom",
+    // WebSocket diganti soket mati supaya test tidak menghubungi jaringan (lihat src/setup-tests.ts).
+    setupFiles: ["./src/setup-tests.ts"],
     // Setiap test mendapat localStorage dan DOM yang bersih.
     restoreMocks: true,
   },

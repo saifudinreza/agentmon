@@ -25,7 +25,7 @@
 //   4. Kegagalan satu koneksi (pesan rusak, terlalu besar, terlalu cepat) tidak pernah
 //      menjatuhkan hub atau mengganggu koneksi lain.
 //   5. Log tidak pernah memuat isi pesan maupun token.
-import { ClientFrameSchema, type RelayErrorCode, type RelayRole, type ServerFrame } from "@agentmon/shared";
+import { ClientFrameSchema, type Envelope, type RelayErrorCode, type RelayRole, type ServerFrame } from "@agentmon/shared";
 import type { RelayDirectory } from "./directory";
 import { silentLogger, type Logger } from "./logger";
 import { createRateLimiter, type RateLimiter } from "./rate-limit";
@@ -102,6 +102,13 @@ export type RelayHubOptions = {
   limits?: Partial<RelayLimits>;
   // Pembaca jam (milidetik). Bisa diganti di test supaya hasilnya pasti.
   now?: () => number;
+  /**
+   * Menyimpan event sebelum diteruskan dan di-ack. Bila diberikan, `ack` berarti event SUDAH TERSIMPAN,
+   * bukan hanya diterima. Bila menyimpan gagal, event tidak diteruskan dan tidak di-ack, sehingga laptop
+   * mengirimnya ulang. Mengembalikan `inserted: false` untuk event yang sudah pernah tersimpan (kiriman ulang):
+   * dikonfirmasi lagi tanpa diteruskan dua kali.
+   */
+  persist?: (event: Envelope) => Promise<{ inserted: boolean } | void>;
 };
 
 export type RelayHub = ReturnType<typeof createRelayHub>;
@@ -124,18 +131,22 @@ export function createRelayHub(options: RelayHubOptions) {
   const recentEvents = new Map<string, Set<string>>();
   const RECENT_EVENTS_PER_MACHINE = 2000;
 
-  // Mencatat nomor event. Mengembalikan true bila nomor itu SUDAH ada (kiriman ulang).
-  function rememberEvent(machineId: string, eventId: string): boolean {
+  // Apakah nomor event ini baru-baru ini sudah diterima (kiriman ulang)?
+  function wasSeen(machineId: string, eventId: string): boolean {
+    return recentEvents.get(machineId)?.has(eventId) ?? false;
+  }
+
+  // Mencatat nomor event. Dipanggil SETELAH event berhasil diproses (disimpan), bukan sebelumnya: bila
+  // menyimpan gagal, kiriman ulang dari laptop harus diproses lagi, bukan dianggap sudah selesai.
+  function markSeen(machineId: string, eventId: string): void {
     let seen = recentEvents.get(machineId);
     if (!seen) {
       seen = new Set();
       recentEvents.set(machineId, seen);
     }
-    if (seen.has(eventId)) return true;
     seen.add(eventId);
     // Set mengingat urutan masuk, jadi yang pertama adalah yang paling lama.
     if (seen.size > RECENT_EVENTS_PER_MACHINE) seen.delete(seen.values().next().value as string);
-    return false;
   }
 
   // ---- Alat bantu ----------------------------------------------------------------------
@@ -220,8 +231,25 @@ export function createRelayHub(options: RelayHubOptions) {
 
         // Event yang id-nya sudah pernah diterima (laptop mengirim ulang karena konfirmasi
         // sebelumnya tidak sempat sampai) cukup dikonfirmasi lagi, tanpa diteruskan dua kali.
-        if (rememberEvent(session.id as string, frame.event.id)) {
+        if (wasSeen(session.id as string, frame.event.id)) {
           return send(session, { kind: "ack", eventId: frame.event.id });
+        }
+        // Menyimpan SEBELUM meneruskan dan me-ack: yang di-ack pasti tersimpan, dan HP yang menyambung ulang
+        // bisa mengambilnya dari riwayat. Gagal menyimpan = tidak diteruskan dan tidak di-ack (laptop mengulang).
+        if (options.persist) {
+          let stored: { inserted: boolean } | void;
+          try {
+            stored = await options.persist(frame.event);
+          } catch (error) {
+            logger.error(`gagal menyimpan event: ${error instanceof Error ? error.message : String(error)}`);
+            return;
+          }
+          if (session.closed) return; // putus selagi menyimpan: tidak di-ack; kiriman ulang dikenali sebagai sudah tersimpan
+          markSeen(session.id as string, frame.event.id);
+          // Sudah pernah tersimpan (mis. relay dimulai ulang lalu laptop mengirim ulang): cukup di-ack.
+          if (stored && stored.inserted === false) return send(session, { kind: "ack", eventId: frame.event.id });
+        } else {
+          markSeen(session.id as string, frame.event.id);
         }
         // Yang diteruskan adalah objek ASLI yang baru saja lolos validasi, bukan hasil parse-nya.
         // Hasil parse membuang kolom amplop yang belum dikenal; daemon versi baru yang menambah
@@ -383,6 +411,11 @@ export function createRelayHub(options: RelayHubOptions) {
     /** Jumlah koneksi saat ini, untuk pemantauan dan test. */
     stats() {
       return { connections: sessions.size, machines: machines.size, devices: devices.size };
+    },
+
+    /** Apakah laptop ini sedang tersambung ke relay? */
+    isMachineOnline(machineId: string): boolean {
+      return machines.has(machineId);
     },
   };
 }

@@ -27,6 +27,7 @@ import { clearPendingLink, peekPendingLink } from "./pending";
 import { PasteLinkForm } from "./PasteLinkForm";
 import { currentPlatform, defaultDeviceName } from "./platform";
 import { redeemPairing, type RedeemOutcome } from "./redeem";
+import { PAIRINGS_CHANGED_EVENT } from "./storage";
 
 type Phase =
   | { name: "confirm" }
@@ -110,6 +111,7 @@ export function PairScreen({ focusHeading = false }: { focusHeading?: boolean })
         // Minta browser menjaga data ini dari pembersihan otomatis. Boleh ditolak; hanya membantu.
         void navigator.storage?.persist?.().catch(() => undefined);
         setLink(undefined); // kode sudah terpakai; tidak perlu disimpan lagi
+        window.dispatchEvent(new Event(PAIRINGS_CHANGED_EVENT)); // sambungan ke relay dibuat ulang dengan pairing baru
         setPhase({ name: "success", machineName: outcome.machine.name });
       } else {
         setPhase({ name: "error", outcome });

@@ -28,7 +28,7 @@ Bentuk bingkai didefinisikan di paket `shared` (`relay.ts`), jadi daemon dan PWA
 
 **Relay ke klien:** `welcome` (jawaban `hello` yang berhasil, berisi nomor), `event`, `command` (membawa `deviceId` pengirim), `ack` (tanda terima untuk laptop, berisi `eventId`), dan `error` (berisi `code` dan `message`).
 
-**Tanda terima (`ack`).** Setiap event dari laptop yang diterima dan diproses relay dijawab `ack`. Event yang ditolak (salah bentuk, `machineId` palsu, terlalu cepat) tidak di-`ack`. Relay mengingat 2.000 nomor event terakhir per laptop: event yang dikirim ulang dengan nomor yang sama di-`ack` lagi tetapi **tidak diteruskan dua kali** ke HP. Ingatan ini hanya di memori; setelah relay dimulai ulang, penyimpan event (unik per laptop dan nomor event) yang menjaga agar tidak ganda.
+**Tanda terima (`ack`).** Setiap event dari laptop yang diterima dan diproses relay dijawab `ack`. Di mode database, `ack` berarti event **sudah tersimpan** di database: relay menyimpan dulu, baru meneruskan ke HP dan me-`ack`. Bila menyimpan gagal, event tidak diteruskan dan tidak di-`ack`, sehingga laptop mengirimnya ulang. Event yang ditolak (salah bentuk, `machineId` palsu, terlalu cepat) tidak di-`ack`. Relay mengingat 2.000 nomor event terakhir per laptop: event yang dikirim ulang dengan nomor yang sama di-`ack` lagi tetapi **tidak diteruskan dua kali** ke HP. Ingatan ini hanya di memori dan dicatat SETELAH event berhasil disimpan; setelah relay dimulai ulang, penyimpan event (unik per laptop dan nomor event) yang menjaga agar tidak ganda.
 
 Relay hanya memeriksa **amplop** event (`v`, `id`, `machineId`, `sessionId`, `seq`, `ts`, `agent`, `type`). `payload` dibiarkan apa adanya, karena mulai tahap 4 isinya terenkripsi dan relay tidak boleh membukanya. Yang diteruskan adalah **objek aslinya** setelah lolos validasi, bukan hasil parse, sehingga kolom amplop baru dari daemon versi lebih baru tidak hilang diam-diam saat lewat relay lama.
 
@@ -130,18 +130,29 @@ Daemon di laptop menyambung ke relay lewat `packages/bridge/src/relay-client.ts`
 - **Sambungan harus terenkripsi.** Token laptop dikirim di pesan pertama, jadi `http://` dan `ws://` hanya diterima untuk komputer ini sendiri (`localhost`, `127.x.x.x`, `::1`). Ke host lain pakai `https://` atau `wss://`; untuk jaringan tepercaya, izinkan dengan sadar lewat `AGENTMON_RELAY_INSECURE=1`. Alamat yang ditolak hanya mematikan relay, daemon tetap berjalan.
 - **Keputusan dari HP**: perintah `{type: "approval.decision", approvalId, decision, comment?, hunks?}` diserahkan ke approval engine. Log hanya mencatat hasilnya, tidak pernah komentar atau isi keputusan.
 
+## API baca riwayat untuk HP
+Aktif di mode database (`PAIRING_ALLOWED_ORIGINS` juga berlaku untuk CORS). Semua jalur butuh token HP (`Authorization: Bearer`); laju dibatasi per HP.
+
+| Endpoint | Fungsi |
+|---|---|
+| `GET /api/machines` | laptop yang dipasangkan dengan HP ini, beserta `online` (sedang tersambung ke relay) |
+| `GET /api/machines/:machineId/sessions` | sesi laptop itu, dari yang paling baru aktif |
+| `GET /api/machines/:machineId/sessions/:sessionId/events?afterSeq=N&limit=M` | event sesi itu berurutan menurut `seq`, sesudah `afterSeq`; paling banyak 500 per halaman; `hasMore` memberi tahu masih ada lanjutan |
+
+HP hanya boleh membaca laptop yang dipasangkan dengannya. Laptop yang tidak dipasangkan dan laptop yang tidak ada dijawab sama (404), supaya tidak bisa dipakai mengintai. HP memakainya saat pertama dibuka dan untuk **menambal yang terlewat** setelah koneksi pulih atau HP dibuka dari kunci: ambil lagi mulai dari nomor urut terakhir yang sudah diambil dari riwayat.
+
 ## Keterbatasan saat ini
 - **Antrean klien hanya di memori.** Bila daemon dimatikan paksa selagi relay tidak terjangkau, event yang belum terkirim hilang. Penutupan normal memberi relay 2 detik untuk menerima sisa antrean.
-- **`ack` berarti relay sudah memproses event, bukan bahwa HP sudah menerimanya.** Relay belum menyimpan riwayat, jadi HP yang sedang offline tidak mendapat event tersebut. Itu dikerjakan di penyimpanan event dan daftar sesi.
+- **`ack` berarti event sudah tersimpan di relay (mode database), bukan bahwa HP sudah menerimanya.** HP yang sedang offline tidak mendapat event secara langsung, tetapi mengambilnya dari riwayat lewat API baca saat tersambung lagi (lihat bagian API baca riwayat).
 - Kode pairing yang terpakai atau kedaluwarsa dihapus oleh penghapusan otomatis (dijalankan `main.ts` di mode database: sekali saat mulai, lalu tiap 6 jam), sehingga bisa tertinggal sampai 6 jam. Itu aman, karena kode kedaluwarsa tetap ditolak walau barisnya belum terhapus.
 - Nama perangkat dari HP ditolak bila memuat karakter kontrol, dan tetap disanitasi saat dicetak di terminal laptop.
 - **Pendaftaran laptop ke relay belum ada.** Pairing mengandaikan laptop sudah punya baris dan token di relay. Alur pendaftaran otomatis dikerjakan bersama klien relay di daemon; sementara itu laptop didaftarkan lewat `createDbDirectory(...).registerMachine`.
 - **Layar pairing di PWA belum ada** (issue PWA). Sampai saat itu penukaran bisa dicoba dengan `POST /pair/redeem` langsung.
 - **Pemberitahuan "perangkat baru" memakai pertanyaan berkala** (tiap 2 detik selama perintah `pair` berjalan), bukan dorongan lewat WebSocket. Notifikasi ke daemon yang sedang berjalan menunggu klien relay.
 - QR dicetak dengan kode warna ANSI (hitam di atas putih). Terminal yang tidak mendukung ANSI menampilkan karakter aneh; alamat tertulis di bawah QR tetap bisa dipakai.
-- Bila `DATABASE_URL` diisi, relay sudah memakai **direktori database, pairing QR, dan penghapusan otomatis**. Yang **belum tersambung** adalah penyimpanan event: hub belum menyimpan event yang lewat dan belum ada daftar sesi untuk HP. Itu dikerjakan bersama klien relay di daemon dan daftar sesi di HP. Tanpa `DATABASE_URL`, relay berjalan di mode pengembangan dengan direktori memori dan tanpa pairing.
+- Bila `DATABASE_URL` diisi, relay sudah memakai **direktori database, pairing QR, dan penghapusan otomatis**. Event yang lewat disimpan dan HP membacanya lewat API baca riwayat. Tanpa `DATABASE_URL`, relay berjalan di mode pengembangan dengan direktori memori dan tanpa pairing.
 - Penyimpan event mengembalikan galat bila event berisi karakter NUL di kolom pengenal (nomor sesi, jenis event). Pemanggil harus memperlakukan kegagalan simpan sebagai tidak fatal, supaya meneruskan pesan tidak ikut terhenti.
 - Pembatasan laju per koneksi, belum per alamat IP. Pembatasan jumlah koneksi per IP diserahkan ke hosting untuk saat ini.
 - Pesan maksimum 1 MiB. Event berisi input alat yang besar (misalnya `Write` dengan isi berkas besar) bisa melebihi itu; daemon yang mengirim ke relay (issue klien relay) harus memotong atau meringkasnya.
-- Relay tidak menyimpan pesan: bila HP sedang offline, event untuknya dibuang. Riwayat disimpan di issue skema database, dan antrean offline di klien relay.
+- Tanpa database (mode pengembangan), relay tidak menyimpan pesan: bila HP sedang offline, event untuknya dibuang. Di mode database, riwayat tersimpan dan HP mengambilnya sendiri.
 - Belum ada daftar asal (`Origin`) yang diizinkan. Itu aman untuk sekarang karena autentikasi memakai token di pesan pertama (bukan cookie), sehingga situs lain tidak bisa membajak koneksi tanpa tahu token.
