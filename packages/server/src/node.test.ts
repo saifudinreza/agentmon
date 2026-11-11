@@ -91,9 +91,13 @@ async function join(port: number, role: "machine" | "device", token: string, opt
   return client;
 }
 
+// Nomor unik per event: relay mengabaikan nomor yang sama sebagai kiriman ulang.
+let eventCounter = 0;
+const nextEventId = () => `00000000-0000-4000-8000-${String(++eventCounter).padStart(12, "0")}`;
+
 const envelope = (machineId: string, extra: Record<string, unknown> = {}) => ({
   v: 1,
-  id: "11111111-1111-4111-8111-111111111111",
+  id: nextEventId(),
   machineId,
   sessionId: "sesi-1",
   seq: 0,

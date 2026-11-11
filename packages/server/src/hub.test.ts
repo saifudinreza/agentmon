@@ -68,9 +68,14 @@ async function connect(hub: RelayHub, role: "machine" | "device", token: string)
   return { fake, session };
 }
 
+// Tiap event mendapat nomor unik, seperti event sungguhan. Relay mengabaikan nomor yang sama
+// sebagai kiriman ulang, jadi test yang ingin meniru kiriman ulang harus memberi `id` yang sama.
+let eventCounter = 0;
+const nextEventId = () => `00000000-0000-4000-8000-${String(++eventCounter).padStart(12, "0")}`;
+
 const envelope = (machineId: string, extra: Record<string, unknown> = {}) => ({
   v: 1,
-  id: "11111111-1111-4111-8111-111111111111",
+  id: nextEventId(),
   machineId,
   sessionId: "sesi-1",
   seq: 0,
@@ -606,4 +611,119 @@ describe("log tidak memuat isi pesan maupun token", () => {
     for (const token of Object.values(TOKENS)) expect(text).not.toContain(token);
     expect(text.length).toBeGreaterThan(0); // memang ada yang dicatat
   });
+});
+
+describe("konfirmasi (ack) dan kiriman ulang", () => {
+  const acks = (fake: ReturnType<typeof fakeConnection>) => fake.sent.filter((f) => f.kind === "ack");
+
+  test("laptop mendapat ack berisi nomor event yang baru diterima", async () => {
+    const { hub } = setup();
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const event = envelope("m1");
+    await send(m1.session, { kind: "event", event });
+    expect(acks(m1.fake)).toEqual([{ kind: "ack", eventId: event.id }]);
+  });
+
+  test("ack dikirim juga bila tidak ada satu pun HP yang tersambung (relay sudah menerimanya)", async () => {
+    const { hub } = setup();
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const event = envelope("m1");
+    await send(m1.session, { kind: "event", event });
+    expect(acks(m1.fake)).toHaveLength(1);
+  });
+
+  test("event yang dikirim ulang (nomor sama) dikonfirmasi lagi tetapi TIDAK diteruskan dua kali", async () => {
+    const { hub } = setup();
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const d1 = await connect(hub, "device", TOKENS.d1);
+    const event = envelope("m1");
+
+    await send(m1.session, { kind: "event", event });
+    await send(m1.session, { kind: "event", event }); // kiriman ulang
+    await send(m1.session, { kind: "event", event }); // dan lagi
+
+    expect(acks(m1.fake)).toHaveLength(3); // setiap kiriman dijawab, supaya laptop berhenti mengulang
+    expect(d1.fake.events()).toHaveLength(1); // HP hanya melihat satu
+  });
+
+  test("kiriman ulang dari koneksi BARU laptop yang sama (setelah putus) juga dikenali", async () => {
+    const { hub } = setup();
+    const first = await connect(hub, "machine", TOKENS.m1);
+    const d1 = await connect(hub, "device", TOKENS.d1);
+    const event = envelope("m1");
+    await send(first.session, { kind: "event", event });
+    first.session.closed();
+
+    const second = await connect(hub, "machine", TOKENS.m1);
+    await send(second.session, { kind: "event", event });
+
+    expect(acks(second.fake)).toEqual([{ kind: "ack", eventId: event.id }]);
+    expect(d1.fake.events()).toHaveLength(1);
+  });
+
+  test("nomor event yang sama dari LAPTOP LAIN adalah event lain, bukan kiriman ulang", async () => {
+    const { hub } = setup();
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const m2 = await connect(hub, "machine", TOKENS.m2);
+    const d1 = await connect(hub, "device", TOKENS.d1);
+    const d3 = await connect(hub, "device", TOKENS.d3);
+    const shared = envelope("m1").id;
+
+    await send(m1.session, { kind: "event", event: envelope("m1", { id: shared }) });
+    await send(m2.session, { kind: "event", event: envelope("m2", { id: shared }) });
+
+    expect(d1.fake.events()).toHaveLength(1);
+    expect(d3.fake.events()).toHaveLength(1);
+  });
+
+  test("event yang DITOLAK tidak diberi ack (laptop tahu itu tidak diterima)", async () => {
+    const { hub } = setup();
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    await send(m1.session, { kind: "event", event: envelope("m2") }); // menyamar sebagai laptop lain
+    await send(m1.session, { kind: "event", event: { rusak: true } }); // bentuk salah
+    expect(acks(m1.fake)).toEqual([]);
+    expect(m1.fake.errors()).toEqual(["forbidden", "invalid_frame"]);
+  });
+
+  test("event yang ditolak tidak 'terpakai': versi yang benar dengan nomor yang sama tetap diterima", async () => {
+    const { hub } = setup();
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const d1 = await connect(hub, "device", TOKENS.d1);
+    const id = envelope("m1").id;
+    await send(m1.session, { kind: "event", event: envelope("m2", { id }) }); // ditolak
+    await send(m1.session, { kind: "event", event: envelope("m1", { id }) });
+    expect(acks(m1.fake)).toEqual([{ kind: "ack", eventId: id }]);
+    expect(d1.fake.events()).toHaveLength(1);
+  });
+
+  test("tidak ada ack bila koneksi putus saat relay masih memeriksa pemasangan", async () => {
+    const memory = makeDirectory();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const slow: RelayDirectory = { ...memory, devicesOf: async (id) => (await gate, memory.devicesOf(id)) };
+    const { hub } = setup({ directory: slow });
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+
+    const pending = send(m1.session, { kind: "event", event: envelope("m1") });
+    m1.session.closed(); // putus selagi menunggu
+    release();
+    await pending;
+    expect(acks(m1.fake)).toEqual([]);
+  });
+
+  test("ingatan nomor event dibatasi: yang sangat lama dilupakan, yang baru-baru ini tetap dikenali", async () => {
+    const { hub } = setup({ limits: { rateCapacity: 1_000_000, rateRefillPerSecond: 1_000_000 } });
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const d1 = await connect(hub, "device", TOKENS.d1);
+    const first = envelope("m1");
+    await send(m1.session, { kind: "event", event: first });
+    for (let i = 0; i < 2000; i++) await send(m1.session, { kind: "event", event: envelope("m1", { seq: i + 1 }) });
+
+    await send(m1.session, { kind: "event", event: first }); // sudah dilupakan: diteruskan lagi
+    expect(d1.fake.events()).toHaveLength(2002);
+    const recent = envelope("m1");
+    await send(m1.session, { kind: "event", event: recent });
+    await send(m1.session, { kind: "event", event: recent }); // baru saja: dikenali
+    expect(d1.fake.events()).toHaveLength(2003);
+  }, 30_000);
 });

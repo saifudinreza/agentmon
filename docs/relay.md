@@ -26,7 +26,9 @@ Bentuk bingkai didefinisikan di paket `shared` (`relay.ts`), jadi daemon dan PWA
 | `event` | laptop | `event` (amplop) | Diteruskan ke semua HP yang dipasangkan dan sedang tersambung |
 | `command` | HP | `machineId`, `body` | Diteruskan ke satu laptop yang dipasangkan |
 
-**Relay ke klien:** `welcome` (jawaban `hello` yang berhasil, berisi nomor), `event`, `command` (membawa `deviceId` pengirim), dan `error` (berisi `code` dan `message`).
+**Relay ke klien:** `welcome` (jawaban `hello` yang berhasil, berisi nomor), `event`, `command` (membawa `deviceId` pengirim), `ack` (tanda terima untuk laptop, berisi `eventId`), dan `error` (berisi `code` dan `message`).
+
+**Tanda terima (`ack`).** Setiap event dari laptop yang diterima dan diproses relay dijawab `ack`. Event yang ditolak (salah bentuk, `machineId` palsu, terlalu cepat) tidak di-`ack`. Relay mengingat 2.000 nomor event terakhir per laptop: event yang dikirim ulang dengan nomor yang sama di-`ack` lagi tetapi **tidak diteruskan dua kali** ke HP. Ingatan ini hanya di memori; setelah relay dimulai ulang, penyimpan event (unik per laptop dan nomor event) yang menjaga agar tidak ganda.
 
 Relay hanya memeriksa **amplop** event (`v`, `id`, `machineId`, `sessionId`, `seq`, `ts`, `agent`, `type`). `payload` dibiarkan apa adanya, karena mulai tahap 4 isinya terenkripsi dan relay tidak boleh membukanya. Yang diteruskan adalah **objek aslinya** setelah lolos validasi, bukan hasil parse, sehingga kolom amplop baru dari daemon versi lebih baru tidak hilang diam-diam saat lewat relay lama.
 
@@ -117,7 +119,19 @@ Perintah `pair` butuh tiga variabel lingkungan: `AGENTMON_RELAY_URL` (alamat rel
 
 **Alamat di dalam QR:** `https://<pwa>/pair#c=<kode>&r=<alamat-relay>`. Semuanya di **fragmen** (setelah `#`) yang tidak pernah dikirim browser ke server mana pun. Rahasia enkripsi ujung-ke-ujung (tahap 4) nanti ditambahkan sebagai parameter `k` di fragmen yang sama, sehingga relay tetap tidak bisa membacanya. Kode `buildPairingUrl` dan `parsePairingUrl` ada di `packages/shared/src/pairing.ts` dan dipakai bersama oleh laptop dan PWA.
 
+## Klien relay di daemon
+Daemon di laptop menyambung ke relay lewat `packages/bridge/src/relay-client.ts`. Nyalakan dengan mengisi `AGENTMON_RELAY_URL` dan `AGENTMON_RELAY_TOKEN` saat menjalankan daemon (nilai yang sama dengan perintah `pair`). Nomor laptop di relay **harus sama** dengan isi berkas `machine-id` di folder data daemon; bila berbeda, klien berhenti dengan pesan jelas karena relay pasti menolak event-nya.
+
+- **Tidak memperlambat agent.** Menitipkan event ke klien selalu seketika dan tidak pernah gagal ke pemanggilnya; koneksi, pengiriman, dan percobaan ulang berjalan di belakang layar.
+- **Tidak hilang, tidak ganda.** Event tetap di antrean sampai relay mengirim `ack`. Bila koneksi putus atau `ack` tidak datang dalam 10 detik, event dikirim ulang, dan relay mengabaikan nomor yang sama. Event dalam satu sesi disusun menurut `seq` sebelum dikirim.
+- **Penyambungan ulang** dengan jeda yang berlipat dua (0,5 detik sampai 30 detik) dan sedikit acak, supaya banyak laptop tidak menyerbu relay bersamaan saat relay pulih.
+- **Antrean ada batasnya**: 5.000 event atau 16 MiB. Bila terlampaui, event **terlama** dibuang dan dicatat di log (`relay: N event dibuang`, dirangkum maksimal tiap 5 detik). Event yang lebih besar dari batas pesan relay juga dibuang dan dicatat.
+- **Laju terkendali**: paling banyak 50 event yang belum di-`ack` sekaligus, dan klien berjeda 1 detik bila relay menjawab `rate_limited`.
+- **Keputusan dari HP**: perintah `{type: "approval.decision", approvalId, decision, comment?, hunks?}` diserahkan ke approval engine. Log hanya mencatat hasilnya, tidak pernah komentar atau isi keputusan.
+
 ## Keterbatasan saat ini
+- **Antrean klien hanya di memori.** Bila daemon dimatikan paksa selagi relay tidak terjangkau, event yang belum terkirim hilang. Penutupan normal memberi relay 2 detik untuk menerima sisa antrean.
+- **`ack` berarti relay sudah memproses event, bukan bahwa HP sudah menerimanya.** Relay belum menyimpan riwayat, jadi HP yang sedang offline tidak mendapat event tersebut. Itu dikerjakan di penyimpanan event dan daftar sesi.
 - Kode pairing yang terpakai atau kedaluwarsa dihapus oleh penghapusan otomatis (dijalankan `main.ts` di mode database: sekali saat mulai, lalu tiap 6 jam), sehingga bisa tertinggal sampai 6 jam. Itu aman, karena kode kedaluwarsa tetap ditolak walau barisnya belum terhapus.
 - Nama perangkat dari HP ditolak bila memuat karakter kontrol, dan tetap disanitasi saat dicetak di terminal laptop.
 - **Pendaftaran laptop ke relay belum ada.** Pairing mengandaikan laptop sudah punya baris dan token di relay. Alur pendaftaran otomatis dikerjakan bersama klien relay di daemon; sementara itu laptop didaftarkan lewat `createDbDirectory(...).registerMachine`.

@@ -69,3 +69,17 @@ describe("ServerFrameSchema", () => {
     expect(ServerFrameSchema.safeParse({ kind: "error", code: "forbidden", message: "" }).success).toBe(false);
   });
 });
+
+describe("ServerFrameSchema: ack", () => {
+  test("ack berisi nomor event", () => {
+    expect(ServerFrameSchema.safeParse({ kind: "ack", eventId: "11111111-1111-4111-8111-111111111111" }).success).toBe(true);
+  });
+
+  test.each([{ kind: "ack" }, { kind: "ack", eventId: "" }, { kind: "ack", eventId: 5 }])("ack tidak sah ditolak: %j", (frame) => {
+    expect(ServerFrameSchema.safeParse(frame).success).toBe(false);
+  });
+
+  test("klien tidak boleh mengirim ack ke relay (arahnya hanya dari relay ke laptop)", () => {
+    expect(ClientFrameSchema.safeParse({ kind: "ack", eventId: "x" }).success).toBe(false);
+  });
+});
