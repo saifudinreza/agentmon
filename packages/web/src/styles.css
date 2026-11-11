@@ -1,0 +1,77 @@
+/* =====================================================================================
+   FILE INI: gaya dasar = "CAT DAN PALET WARNA" aplikasi.
+   ===================================================================================== */
+@import "tailwindcss";
+
+/* Dark mode dikendalikan atribut data-theme di <html> (lihat src/theme/theme.ts), bukan hanya
+   pengaturan HP, supaya pengguna bisa memilih sendiri. Varian `dark:` aktif di bawah data-theme=dark. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* Warna dipakai lewat nama peran (bg, surface, fg, ...), bukan nilai mentah, sehingga mengganti
+   tema cukup mengganti isi variabelnya. */
+@theme inline {
+  --color-bg: var(--c-bg);
+  --color-surface: var(--c-surface);
+  --color-fg: var(--c-fg);
+  --color-muted: var(--c-muted);
+  --color-line: var(--c-line);
+  --color-accent: var(--c-accent);
+  --color-warn-bg: var(--c-warn-bg);
+  --color-warn-fg: var(--c-warn-fg);
+}
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --c-bg: #f6f7f9;
+  --c-surface: #ffffff;
+  --c-fg: #111827;
+  --c-muted: #5b6573;
+  --c-line: #dde1e7;
+  --c-accent: #0f766e;
+  --c-warn-bg: #fef3c7;
+  --c-warn-fg: #78350f;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --c-bg: #0b0f14;
+  --c-surface: #131a22;
+  --c-fg: #e6edf3;
+  --c-muted: #93a1af;
+  --c-line: #243040;
+  --c-accent: #2dd4bf;
+  --c-warn-bg: #3b2f0a;
+  --c-warn-fg: #fde68a;
+}
+
+html,
+body,
+#root {
+  min-height: 100dvh;
+}
+
+body {
+  margin: 0;
+  background: var(--c-bg);
+  color: var(--c-fg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  /* Mencegah iOS memperbesar teks sendiri saat HP diputar. */
+  -webkit-text-size-adjust: 100%;
+  /* Tidak ada tarik-untuk-segarkan bawaan browser yang mengganggu saat menggulir layar. */
+  overscroll-behavior-y: none;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  /* Hilangkan jeda 300 ms dan kilatan biru saat disentuh. */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
