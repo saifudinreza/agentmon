@@ -15,15 +15,50 @@
 //
 // MEMORI: event hanya disimpan untuk sesi yang SEDANG DIBUKA. Sesi lain cukup ringkasannya (diperbarui dari
 // event langsung), dan event-nya diambil saat sesi dibuka.
-import type { DeviceMachine, Envelope, SessionSummary } from "@agentmon/shared";
+import {
+  APPROVAL_DECISION_COMMAND,
+  ApprovalReplySchema,
+  type DeviceMachine,
+  type Envelope,
+  type FinalApprovalStatus,
+  type PendingApproval,
+  type SessionSummary,
+} from "@agentmon/shared";
+import { approvalFromEvent, approvalKey, mergeApprovals, resolutionFromEvent, type Resolution } from "../approvals/model";
 import { applyEventToSessions, mergeEvents } from "../timeline/events";
 import { RelayApiError, type RelayApi } from "./api";
 import { createDeviceConnection, type ConnectionStatus, type DeviceConnection, type DeviceConnectionOptions } from "./connection";
 
 export type SessionLoad = "loading" | "ready" | "error" | "not-found";
 
+/**
+ * Nasib sebuah keputusan yang dikirim dari HP ini:
+ *   sending    sedang dikirim lewat koneksi
+ *   sent       sudah dikirim, menunggu konfirmasi laptop
+ *   applied    keputusan ini yang berlaku (`status` = hasilnya)
+ *   conflict   perangkat lain (atau waktu habis) memutuskan lebih dulu; `status` = yang berlaku
+ *   expired    permintaan sudah lewat batas waktu atau tidak dikenal laptop lagi
+ *   failed     tidak sampai atau ditolak (`reason`): bisa dicoba lagi
+ */
+export type DecisionPhase = "sending" | "sent" | "applied" | "conflict" | "expired" | "failed";
+export type DecisionFailure = "offline" | "laptop-offline" | "not-allowed" | "rate-limited" | "invalid" | "unconfirmed";
+export type DecisionState = {
+  phase: DecisionPhase;
+  decision: "approve" | "deny";
+  commandId: string;
+  status?: Resolution;
+  reason?: DecisionFailure;
+};
+
 export type RelayState = {
   status: ConnectionStatus;
+  /** Permintaan izin yang menunggu keputusan, dari semua laptop relay ini. */
+  approvals: readonly PendingApproval[];
+  approvalsLoaded: boolean;
+  /** Hasil izin yang sudah selesai (kunci = approvalKey), untuk menjelaskan layar yang masih terbuka. */
+  resolved: Readonly<Record<string, Resolution>>;
+  /** Keputusan yang dikirim dari HP ini (kunci = approvalKey). */
+  decisions: Readonly<Record<string, DecisionState>>;
   machines: readonly DeviceMachine[];
   machinesLoaded: boolean;
   /** Ringkasan sesi per laptop. */
@@ -44,6 +79,8 @@ export type RelayStore = {
   closeSession(machineId: string, sessionId: string): void;
   /** Mengulang pemuatan sesi yang gagal. */
   retrySession(machineId: string, sessionId: string): void;
+  /** Mengirim keputusan sebuah izin ke laptop. Hasilnya tampil di `decisions`. */
+  decide(machineId: string, approvalId: string, decision: "approve" | "deny", comment?: string): void;
   reconnectNow(): void;
   /** Membuka koneksi. Aman dipanggil berulang; setelah `stop` bisa dimulai lagi. */
   start(): void;
@@ -57,7 +94,18 @@ export type RelayStoreOptions = {
   /** Hanya untuk test: pengganti pembuat koneksi WebSocket. */
   connect?: (options: DeviceConnectionOptions) => DeviceConnection;
   watchPage?: boolean;
+  /** Hanya untuk test: pembuat nomor perintah dan batas menunggu konfirmasi laptop. */
+  newId?: () => string;
+  confirmTimeoutMs?: number;
 };
+
+const MAX_RESOLVED_KEPT = 200;
+const DEFAULT_CONFIRM_TIMEOUT_MS = 20_000;
+// Galat dari relay tidak menyebut perintah mana; dikaitkan dengan keputusan yang baru saja dikirim.
+const ERROR_ATTRIBUTION_MS = 5000;
+
+// Status yang berarti keputusan setuju atau tolak berlaku persis seperti yang diminta.
+const EXPECTED_STATUS = { approve: "approved", deny: "denied" } as const;
 
 export const sessionKey = (machineId: string, sessionId: string) => `${machineId}/${sessionId}`;
 
@@ -71,9 +119,44 @@ function mergeSessions(fetched: readonly SessionSummary[], local: readonly Sessi
   return [...byId.values()].sort((a, b) => b.lastEventAt.localeCompare(a.lastEventAt));
 }
 
+// Sebuah izin selesai: keluar dari antrean, hasilnya dicatat, dan keputusan HP ini yang masih menunggu dijelaskan.
+function applyResolution(state: RelayState, machineId: string, approvalId: string, status: Resolution): RelayState {
+  const key = approvalKey(machineId, approvalId);
+  const approvals = state.approvals.filter((a) => approvalKey(a.machineId, a.approvalId) !== key);
+  let resolved: Record<string, Resolution> = { ...state.resolved, [key]: status };
+  const keys = Object.keys(resolved);
+  if (keys.length > MAX_RESOLVED_KEPT) {
+    resolved = Object.fromEntries(keys.slice(keys.length - MAX_RESOLVED_KEPT).map((k) => [k, resolved[k] as Resolution]));
+  }
+
+  let decisions = state.decisions;
+  const mine = decisions[key];
+  if (mine && (mine.phase === "sending" || mine.phase === "sent")) {
+    // Belum ada balasan laptop, tetapi hasilnya sudah terlihat dari event: cocok dengan keputusan kita atau tidak.
+    const matches = status === EXPECTED_STATUS[mine.decision];
+    decisions = { ...decisions, [key]: { ...mine, phase: matches ? "applied" : "conflict", status } };
+  }
+  return { ...state, approvals, resolved, decisions };
+}
+
 export function createRelayStore(options: RelayStoreOptions): RelayStore {
   const { api } = options;
-  let state: RelayState = { status: "connecting", machines: [], machinesLoaded: false, sessions: {}, events: {}, load: {}, syncError: false };
+  let state: RelayState = {
+    status: "connecting",
+    approvals: [],
+    approvalsLoaded: false,
+    resolved: {},
+    decisions: {},
+    machines: [],
+    machinesLoaded: false,
+    sessions: {},
+    events: {},
+    load: {},
+    syncError: false,
+  };
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  const newId = options.newId ?? (() => crypto.randomUUID());
+  const confirmTimeoutMs = options.confirmTimeoutMs ?? DEFAULT_CONFIRM_TIMEOUT_MS;
   const listeners = new Set<() => void>();
   const open = new Map<string, { machineId: string; sessionId: string; count: number }>();
   let stopped = true; // belum dimulai
@@ -147,6 +230,9 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
               set((s) => ({ ...s, sessions: { ...s.sessions, [machine.id]: mergeSessions(fetched, s.sessions[machine.id] ?? []) } }));
             }),
           );
+          // Antrean izin yang menunggu. Yang diterima langsung selagi pengambilan berjalan tidak hilang.
+          const approvals = await api.approvals();
+          set((s) => ({ ...s, approvalsLoaded: true, approvals: mergeApprovals(approvals, s.approvals, s.resolved) }));
           const caughtUp = await Promise.all([...open.values()].map((o) => catchUp(o.machineId, o.sessionId)));
           // Hanya dianggap sehat bila SEMUA berhasil: gagal menambal satu sesi tidak boleh tersembunyi.
           if (caughtUp.every(Boolean)) set((s) => (s.syncError ? { ...s, syncError: false } : s));
@@ -172,6 +258,15 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
         const updated = applyEventToSessions(current, event);
         if (updated !== current) next = { ...next, sessions: { ...next.sessions, [event.machineId]: updated } };
       }
+      // Permintaan izin baru menambah antrean; penyelesaiannya mengurangi dan menjelaskan keputusan yang sedang menunggu.
+      const requested = approvalFromEvent(event);
+      if (requested && knownMachine) {
+        const merged = mergeApprovals(next.approvals, [requested], next.resolved);
+        if (merged.length !== next.approvals.length || merged.some((a, i) => a !== next.approvals[i])) next = { ...next, approvals: merged };
+      }
+      const resolution = resolutionFromEvent(event);
+      if (resolution) next = applyResolution(next, resolution.machineId, resolution.approvalId, resolution.status);
+
       const key = sessionKey(event.machineId, event.sessionId);
       if (open.has(key)) {
         const existing = s.events[key] ?? [];
@@ -179,6 +274,46 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
         if (merged !== existing) next = { ...next, events: { ...next.events, [key]: merged } };
       }
       return next;
+    });
+  };
+
+  // Balasan laptop atas keputusan HP ini: hasil yang sebenarnya berlaku.
+  const handleReply = (machineId: string, body: Record<string, unknown>) => {
+    const parsed = ApprovalReplySchema.safeParse(body);
+    if (!parsed.success) return;
+    const reply = parsed.data;
+    const key = approvalKey(machineId, reply.approvalId);
+    set((s) => {
+      const mine = s.decisions[key];
+      if (!mine || mine.commandId !== reply.commandId) return s; // bukan balasan untuk keputusan yang kita tunggu
+      const status = reply.status as FinalApprovalStatus | undefined;
+      let phase: DecisionPhase;
+      if (reply.outcome === "applied") phase = "applied";
+      else if (reply.outcome === "already_resolved") phase = status === "timed_out" ? "expired" : "conflict";
+      else if (reply.outcome === "unknown") phase = "expired";
+      else phase = "failed";
+      const decision: DecisionState = { ...mine, phase, ...(status !== undefined ? { status } : {}), ...(phase === "failed" ? { reason: "invalid" as const } : {}) };
+      // Izin yang tidak dikenal laptop lagi tidak akan pernah selesai lewat event: keluarkan dari antrean.
+      const approvals = phase === "expired" ? s.approvals.filter((a) => approvalKey(a.machineId, a.approvalId) !== key) : s.approvals;
+      return { ...s, approvals, decisions: { ...s.decisions, [key]: decision } };
+    });
+  };
+
+  // Relay menolak sesuatu yang dikirim HP ini. Tidak menyebut perintah mana, jadi dikaitkan dengan keputusan yang
+  // baru saja dikirim dan masih menunggu.
+  const sentAtByCommand = new Map<string, number>();
+  const handleRelayError = (code: string) => {
+    const reason: DecisionFailure | undefined = code === "target_offline" ? "laptop-offline" : code === "forbidden" ? "not-allowed" : code === "rate_limited" ? "rate-limited" : undefined;
+    if (!reason) return;
+    const now = Date.now();
+    set((s) => {
+      let decisions = s.decisions;
+      for (const [key, d] of Object.entries(s.decisions)) {
+        if (d.phase === "sent" && now - (sentAtByCommand.get(d.commandId) ?? 0) < ERROR_ATTRIBUTION_MS) {
+          decisions = { ...decisions, [key]: { ...d, phase: "failed", reason } };
+        }
+      }
+      return decisions === s.decisions ? s : { ...s, decisions };
     });
   };
 
@@ -190,6 +325,8 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
       onEvent: handleEvent,
       onStatus: (status) => set((s) => (s.status === "revoked" ? s : { ...s, status })),
       onReady: () => void refresh(),
+      onReply: handleReply,
+      onError: handleRelayError,
     });
 
   return {
@@ -228,6 +365,35 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
     retrySession(machineId, sessionId) {
       void catchUp(machineId, sessionId);
     },
+    decide(machineId, approvalId, decision, comment) {
+      const key = approvalKey(machineId, approvalId);
+      const commandId = newId();
+      const trimmed = comment?.trim().slice(0, 2000);
+      set((s) => ({ ...s, decisions: { ...s.decisions, [key]: { phase: "sending", decision, commandId } } }));
+
+      const sent = connection?.send({
+        kind: "command",
+        machineId,
+        body: { type: APPROVAL_DECISION_COMMAND, commandId, approvalId, decision, ...(trimmed ? { comment: trimmed } : {}) },
+      });
+      if (!sent) {
+        set((s) => ({ ...s, decisions: { ...s.decisions, [key]: { phase: "failed", decision, commandId, reason: "offline" } } }));
+        return;
+      }
+      sentAtByCommand.set(commandId, Date.now());
+      set((s) => (s.decisions[key]?.commandId === commandId ? { ...s, decisions: { ...s.decisions, [key]: { phase: "sent", decision, commandId } } } : s));
+
+      // Tanpa balasan dalam batas waktu: jangan menggantung selamanya.
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        sentAtByCommand.delete(commandId);
+        set((s) => {
+          const mine = s.decisions[key];
+          return mine?.commandId === commandId && mine.phase === "sent" ? { ...s, decisions: { ...s.decisions, [key]: { ...mine, phase: "failed", reason: "unconfirmed" } } } : s;
+        });
+      }, confirmTimeoutMs);
+      timers.add(timer);
+    },
     reconnectNow: () => connection?.reconnectNow(),
     start() {
       if (connection) return;
@@ -236,6 +402,8 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
     },
     stop() {
       stopped = true;
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
       connection?.close();
       connection = undefined;
     },

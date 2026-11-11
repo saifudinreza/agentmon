@@ -19,6 +19,7 @@ import {
   HunkDecisionSchema,
   requireMixedHunks,
 } from "./approval";
+import { FileDiffSchema } from "./diff";
 import { PolicyResultSchema, RiskSchema } from "./risk";
 
 // Nomor "edisi formulir". Kalau nanti bentuk pesan berubah drastis, naikkan angkanya,
@@ -89,6 +90,8 @@ export const eventPayloads = {
     // Opsional dulu karena penilai risiko baru hadir di tahap berikutnya.
     risk: RiskSchema.optional(),
     summary: z.string().optional(), // ringkasan satu aksi untuk dibaca cepat
+    // Perubahan berkas yang diusulkan (dihitung daemon), untuk ditampilkan di HP sebelum memutuskan.
+    diff: FileDiffSchema.optional(),
     expiresAt: isoDate, // batas waktu menjawab
   }),
   // Izin sudah diputuskan (oleh kamu, atau waktu habis, atau dibatalkan).

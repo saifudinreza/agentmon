@@ -29,7 +29,7 @@
 //
 // KETERBATASAN: antrean hanya di memori. Bila daemon dimatikan atau macet saat relay tidak
 // terjangkau, event yang belum terkirim hilang. Menyimpannya ke disk bisa ditambahkan nanti.
-import { ServerFrameSchema, type Envelope } from "@agentmon/shared";
+import { APPROVAL_DECISION_COMMAND, APPROVAL_RESULT_REPLY, ServerFrameSchema, type Envelope } from "@agentmon/shared";
 import type { Logger } from "./logger";
 
 export type RelayClientOptions = {
@@ -301,16 +301,42 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   };
 
   // ---- Perintah dari HP ----
-  const handleCommand = (body: Record<string, unknown>) => {
-    const { type, ...rest } = body;
-    if (type !== "approval.decision") {
+  // Mengirim satu bingkai langsung bila koneksi siap. BEST-EFFORT: tidak diantrekan dan tidak diulang. Balasan
+  // yang hilang berarti HP menunggu lalu bertanya ulang; tidak ada yang rusak.
+  const sendNow = (frame: unknown) => {
+    if (state !== "ready" || !socket) return;
+    try {
+      socket.send(JSON.stringify(frame));
+    } catch {
+      // soket rusak; penanganan putus akan membereskannya
+    }
+  };
+
+  const handleCommand = (deviceId: string, body: Record<string, unknown>) => {
+    const { type, commandId, ...rest } = body;
+    if (type !== APPROVAL_DECISION_COMMAND) {
       logger?.info(`relay: perintah tidak dikenal type=${printable(String(type))}`);
       return;
     }
+    // Balasan hanya bila HP menyertakan nomor perintah (perintah lama tanpa nomor tetap diterapkan, tanpa balasan).
+    const replyTo = typeof commandId === "string" && commandId !== "" ? commandId : undefined;
+    const approvalId = typeof rest.approvalId === "string" ? rest.approvalId : "";
+    const reply = (outcome: "applied" | "already_resolved" | "unknown" | "invalid", status?: string) => {
+      if (replyTo === undefined || approvalId === "") return;
+      sendNow({
+        kind: "reply",
+        deviceId,
+        body: { type: APPROVAL_RESULT_REPLY, commandId: replyTo, approvalId, outcome, ...(status !== undefined ? { status } : {}) },
+      });
+    };
     try {
-      const result = options.decide(rest) as { ok?: boolean; reason?: string } | undefined;
+      const result = options.decide(rest) as { ok?: boolean; reason?: string; status?: string; approval?: { status?: string } } | undefined;
       // Hanya hasil dan alasannya yang dicatat, tidak pernah komentar atau isi keputusan.
       logger?.info(`relay: keputusan dari HP ${result?.ok ? "diterapkan" : `ditolak (${printable(String(result?.reason ?? "tidak diketahui"))})`}`);
+      if (result?.ok) reply("applied", result.approval?.status);
+      else if (result?.reason === "already_resolved") reply("already_resolved", result.status);
+      else if (result?.reason === "unknown") reply("unknown");
+      else reply("invalid");
     } catch (error) {
       logger?.error(`relay: gagal menerapkan keputusan: ${error instanceof Error ? printable(error.message) : "galat tak dikenal"}`);
     }
@@ -369,7 +395,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         return;
       }
       case "command":
-        handleCommand(frame.body);
+        handleCommand(frame.deviceId, frame.body);
         return;
       case "error": {
         logger?.error(`relay menolak: ${frame.code}`);

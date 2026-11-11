@@ -41,9 +41,32 @@ import type { AgentMonEvent, EventType, FileDiff } from "@agentmon/shared";
 // Dari server.ts: HookContext = bekal dari daemon (pencatat log, identitas laptop, buku antrean
 // izin, panel kontrol), HookHandler = bentuk fungsi penangan yang diminta server.
 import { computeToolDiff, type ToolDiffInput } from "../diff";
+import { summarizeDiff } from "../control";
 import type { HookContext, HookHandler } from "../server";
 // Penerjemah dari file tetangga. "./claude-code" = file claude-code di folder yang sama.
 import { buildClaudeEvent, holdCandidate, mapClaudeCodeHook, toClaudeDecision, type HoldCandidate, type Stamp } from "./claude-code";
+
+// ---- BATAS UKURAN ISI EVENT ------------------------------------------------------------
+//
+// Event izin dikirim ke relay, yang menolak pesan lebih dari 1 MiB. Bila terlalu besar, event DIBUANG dan HP
+// tidak pernah melihat permintaannya, padahal daemon tetap menahan aksi sampai batas waktu. Maka isi yang
+// berpotensi besar dipotong atau dihilangkan SEBELUM dikirim; yang ditahan daemon tetap utuh.
+const MAX_INPUT_VALUE_CHARS = 100_000; // satu nilai input (misalnya isi berkas yang ditulis)
+const MAX_DIFF_JSON_CHARS = 300_000; // seluruh diff
+const TRUNCATED_MARK = " …[dipotong: terlalu panjang untuk dikirim ke HP]";
+
+function boundToolInput(toolInput: Record<string, unknown>): Record<string, unknown> {
+  const bounded: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(toolInput)) {
+    if (typeof value === "string") bounded[key] = value.length > MAX_INPUT_VALUE_CHARS ? `${value.slice(0, MAX_INPUT_VALUE_CHARS)}${TRUNCATED_MARK}` : value;
+    else bounded[key] = JSON.stringify(value)?.length > MAX_INPUT_VALUE_CHARS ? "[terlalu besar untuk dikirim ke HP]" : value;
+  }
+  return bounded;
+}
+
+function fitsInEvent(diff: FileDiff): boolean {
+  return JSON.stringify(diff).length <= MAX_DIFF_JSON_CHARS;
+}
 
 // ---- TIPE -----------------------------------------------------------------------------
 
@@ -233,7 +256,14 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
     // Kabari timeline/HP bahwa ada permintaan baru.
     emitOwn(
       "approval.requested",
-      { approvalId: ticket.approvalId, toolName: hold.toolName, toolInput: hold.toolInput, expiresAt: ticket.expiresAt },
+      {
+        approvalId: ticket.approvalId,
+        toolName: hold.toolName,
+        toolInput: boundToolInput(hold.toolInput),
+        // Ringkasan satu baris dan perubahan berkas untuk ditampilkan di HP sebelum memutuskan.
+        ...(diff !== undefined ? { summary: summarizeDiff(diff), ...(fitsInEvent(diff) ? { diff } : {}) } : {}),
+        expiresAt: ticket.expiresAt,
+      },
       hold.sessionId,
       context,
     );

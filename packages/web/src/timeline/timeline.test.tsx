@@ -25,7 +25,7 @@ const factory: RelayStoreFactory = (pairing) => {
     api: relay.api,
     connect: (options) => {
       connection = options;
-      return { reconnectNow: vi.fn(), status: () => "online", close: vi.fn() };
+      return { reconnectNow: vi.fn(), send: vi.fn(() => true), status: () => "online", close: vi.fn() };
     },
   });
   stores.push(store);
@@ -142,7 +142,7 @@ describe("memuat dan menampilkan riwayat", () => {
 
   test("isi dari agent yang berbahaya dibersihkan: tidak ada escape, pembalik arah tulisan, atau baris palsu di layar", async () => {
     relay.data.events["m1/s1"] = [
-      ev(0, { type: "tool.requested", payload: { toolName: "Bash", toolInput: { command: "echo a\u001b[2J\nPERINTAH PALSU‮gnp.exe" } } }),
+      ev(0, { type: "tool.requested", payload: { toolName: "Bash", toolInput: { command: "echo a\u001b[2J\nPERINTAH PALSU\u202egnp.exe" } } }),
       ev(1, { type: "agent.notification", payload: { message: "<img src=x onerror=alert(1)> <script>alert(2)</script>" } }),
     ];
     const { container } = timeline();
@@ -150,7 +150,7 @@ describe("memuat dan menampilkan riwayat", () => {
     await waitLoaded();
     const text = container.textContent ?? "";
     expect(text).not.toContain("\u001b");
-    expect(text).not.toContain("‮");
+    expect(text).not.toContain("\u202e");
     expect(rows()).toHaveLength(2); // baris baru dalam perintah tidak membuat baris timeline palsu
     expect(container.querySelector("img")).toBeNull(); // markup dari agent tampil sebagai teks, bukan dijalankan
     expect(container.querySelector("script")).toBeNull();

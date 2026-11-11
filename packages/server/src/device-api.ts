@@ -20,9 +20,10 @@
 //     terdaftar.
 //   - Laju dibatasi per HP, dan ukuran halaman dibatasi (maksimal 500 event).
 //   - CORS hanya untuk asal PWA yang diizinkan.
-import { EventsResponseSchema, type DeviceMachine, type SessionSummary } from "@agentmon/shared";
+import { ApprovalsResponseSchema, EventsResponseSchema, type DeviceMachine, type PendingApproval, type SessionSummary } from "@agentmon/shared";
 import type { Context, Hono } from "hono";
 import { cors } from "hono/cors";
+import { computePendingApprovals } from "./approvals";
 import type { DbDirectory } from "./db/directory";
 import { MAX_PAGE_SIZE, type Store } from "./db/store";
 import { clientAddress } from "./client-ip";
@@ -30,7 +31,7 @@ import { createKeyedRateLimiter } from "./rate-limit";
 
 export type DeviceApiOptions = {
   directory: Pick<DbDirectory, "authenticate" | "isPaired" | "machinesOf">;
-  store: Pick<Store, "listSessions" | "listEvents">;
+  store: Pick<Store, "listSessions" | "listEvents" | "listRecentByType">;
   isMachineOnline: (machineId: string) => boolean;
   /** Asal PWA yang boleh memanggil dari browser, misalnya ["https://app.contoh.com"]. */
   allowedOrigins?: string[];
@@ -46,6 +47,9 @@ export type DeviceApiOptions = {
 export const DEFAULT_DEVICE_API_LIMITS = { burst: 60, refillPerSecond: 5 };
 // Longgar untuk pengguna sah yang sesekali salah (token basi di satu HP), ketat untuk penyerang.
 export const DEFAULT_AUTH_FAILURE_LIMITS = { burst: 30, refillPerSecond: 1 };
+
+// Permintaan izin yang lebih tua dari ini tidak mungkin masih menunggu (batas waktu bawaan 9 menit), jadi tidak perlu dibaca.
+const APPROVAL_LOOKBACK_MS = 30 * 60 * 1000;
 
 const MAX_ID_LENGTH = 200;
 const DEFAULT_EVENTS_LIMIT = 200;
@@ -119,6 +123,22 @@ export function mountDeviceApi(app: Hono, options: DeviceApiOptions): void {
     const rows = await directory.machinesOf(auth.deviceId);
     const machines: DeviceMachine[] = rows.map((m) => ({ id: m.id, name: m.name, online: options.isMachineOnline(m.id) }));
     return c.json({ machines });
+  });
+
+  // Antrean izin yang menunggu untuk SEMUA laptop yang dipasangkan dengan HP ini. Dihitung dari riwayat event.
+  app.get("/api/approvals", async (c) => {
+    const auth = await authenticate(c);
+    if (auth instanceof Response) return auth;
+    const now = new Date(options.now ? options.now() : Date.now());
+    const since = new Date(now.getTime() - APPROVAL_LOOKBACK_MS);
+    const machines = await directory.machinesOf(auth.deviceId);
+    const lists = await Promise.all(
+      machines.map(async (machine) =>
+        computePendingApprovals(await store.listRecentByType(machine.id, ["approval.requested", "approval.resolved", "approval.auto_resolved"], since), now),
+      ),
+    );
+    const approvals: PendingApproval[] = lists.flat();
+    return c.json(ApprovalsResponseSchema.parse({ approvals }));
   });
 
   app.get("/api/machines/:machineId/sessions", async (c) => {

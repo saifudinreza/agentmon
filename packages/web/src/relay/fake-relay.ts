@@ -1,6 +1,6 @@
 // Pembantu KHUSUS TEST: relay tiruan di sisi data (laptop, sesi, event yang "tersimpan") beserta API yang
 // membacanya. Dipakai test store dan test layar. Tidak dipakai kode aplikasi.
-import type { DeviceMachine, Envelope, SessionSummary } from "@agentmon/shared";
+import type { DeviceMachine, Envelope, PendingApproval, SessionSummary } from "@agentmon/shared";
 import { vi } from "vitest";
 import type { RelayApi } from "./api";
 import { sessionKey } from "./relay-store";
@@ -36,8 +36,9 @@ export function fakeRelay() {
     machines: [...MACHINES] as DeviceMachine[],
     sessions: { m1: [summary("s1", "2026-11-11T10:00:00.000Z")] } as Record<string, SessionSummary[]>,
     events: { "m1/s1": [] as Envelope[] } as Record<string, Envelope[]>,
+    approvals: [] as PendingApproval[],
   };
-  const fail: { machines?: Error; sessions?: Error; events?: Error } = {};
+  const fail: { machines?: Error; sessions?: Error; events?: Error; approvals?: Error } = {};
   const calls = { machines: 0, sessions: 0, eventsAfter: [] as number[] };
   let gate: Promise<void> | undefined;
   const api: RelayApi = {
@@ -46,6 +47,10 @@ export function fakeRelay() {
       if (gate) await gate;
       if (fail.machines) throw fail.machines;
       return [...data.machines];
+    }),
+    approvals: vi.fn(async () => {
+      if (fail.approvals) throw fail.approvals;
+      return [...data.approvals];
     }),
     sessions: vi.fn(async (machineId: string) => {
       calls.sessions++;

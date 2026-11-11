@@ -595,7 +595,7 @@ describe("diff untuk aksi yang ditahan", () => {
     expect(s.logs.join("\n")).not.toContain("RAHASIA");
   });
 
-  test("diff tidak ikut dikirim di event approval.requested (kontrak pesan tidak berubah)", async () => {
+  test("event approval.requested membawa ringkasan dan diff supaya HP bisa menampilkannya sebelum memutuskan", async () => {
     writeFileSync(join(dir, "app.ts"), "Halo\n");
     const s = setup();
     const response = s.handler(editInput(), s.context);
@@ -603,8 +603,58 @@ describe("diff untuk aksi yang ditahan", () => {
     s.decideFirst("approve");
     await response;
     await flush();
+    const payload = s.events.find((e) => e.type === "approval.requested")?.payload as { summary?: string; diff?: { path: string; change: { type: string } } };
+    expect(payload.summary).toMatch(/^\+\d+ -\d+ \(\d+ hunk\)$/);
+    expect(payload.diff?.change.type).toBe("text");
+    expect(payload.diff?.path).toContain("app.ts");
+  });
+
+  test("diff yang terlalu besar untuk dikirim dihilangkan (event tetap sampai), ringkasannya tetap ada, dan aksi tetap ditahan", async () => {
+    const lines = Array.from({ length: 6000 }, (_, i) => `baris nomor ${i} yang cukup panjang supaya diff membengkak`);
+    writeFileSync(join(dir, "app.ts"), "Halo\n");
+    const s = setup({
+      handler: {
+        computeDiff: async () => ({
+          path: "app.ts",
+          toolName: "Write",
+          sensitive: [],
+          change: {
+            type: "text" as const,
+            isNew: true,
+            added: 6000,
+            removed: 0,
+            format: { oldEol: "lf" as const, newEol: "lf" as const, oldFinalNewline: true, newFinalNewline: true },
+            hunks: [{ id: "h1", oldStart: 0, oldLines: 0, newStart: 1, newLines: 6000, lines: lines.map((text, i) => ({ type: "add" as const, text, newLine: i + 1 })) }],
+          },
+        }),
+      },
+    });
+    const response = s.handler(editInput(), s.context);
+    await s.waitPending();
+    s.decideFirst("approve");
+    await response;
+    await flush();
+    const payload = s.events.find((e) => e.type === "approval.requested")?.payload as { summary?: string; diff?: unknown };
+    expect(payload).not.toHaveProperty("diff");
+    expect(payload.summary).toBe("berkas baru +6000 -0 (1 hunk)");
+  });
+
+  test("isi input yang sangat panjang dipotong di event (supaya tidak dibuang relay), dan nilai yang kecil tidak berubah", async () => {
+    const s = setup();
+    const response = s.handler(
+      { hook_event_name: "PreToolUse", session_id: "sesi-1", cwd: dir, tool_name: "Write", tool_input: { file_path: join(dir, "besar.txt"), content: "x".repeat(250_000) } },
+      s.context,
+    );
+    await s.waitPending();
+    s.decideFirst("approve");
+    await response;
+    await flush();
     const requested = s.events.find((e) => e.type === "approval.requested");
-    expect(requested?.payload).not.toHaveProperty("diff");
+    const input = (requested?.payload as unknown as { toolInput: { file_path: string; content: string } }).toolInput;
+    expect(input.content.length).toBeLessThan(101_000);
+    expect(input.content).toContain("dipotong");
+    expect(input.file_path).toBe(join(dir, "besar.txt"));
+    expect(JSON.stringify(requested).length).toBeLessThan(1024 * 1024 - 4096);
   });
 });
 
