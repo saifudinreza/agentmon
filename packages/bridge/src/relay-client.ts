@@ -279,8 +279,8 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       try {
         socket.send(entry.text);
       } catch {
-        // Soket rusak: tutup, penutupan memicu penyambungan ulang dan pengiriman ulang.
-        socket.close();
+        // Soket rusak: lepaskan, lalu sambung ulang dan kirim ulang.
+        down(socket);
         return;
       }
       entry.sentAt = now();
@@ -339,7 +339,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
           logger?.error(
             "relay: nomor laptop di relay berbeda dari nomor laptop ini (berkas machine-id). Daftarkan laptop di relay dengan nomor yang sama. Pengiriman dihentikan.",
           );
-          socket?.close(1000, "machine id berbeda");
+          if (socket) down(socket);
           return;
         }
         state = "ready";
@@ -412,33 +412,47 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     }
     socket = current;
 
+    // Batas waktu untuk SELURUH tahap menyambung: terbuka lalu dijawab `welcome`. Perlu karena sebuah
+    // percobaan bisa menggantung tanpa kabar apa pun (jaringan yang menelan paket, firewall).
+    welcomeTimer = setTimeout(() => {
+      logger?.error("relay: tidak ada jawaban hello tepat waktu");
+      down(current);
+    }, welcomeTimeoutMs);
+    welcomeTimer.unref();
+
     current.addEventListener("open", () => {
       if (socket !== current) return;
       try {
         current.send(JSON.stringify({ kind: "hello", role: "machine", token: options.token }));
       } catch {
-        current.close();
-        return;
+        down(current);
       }
-      welcomeTimer = setTimeout(() => {
-        logger?.error("relay: tidak ada jawaban hello tepat waktu");
-        current.close();
-      }, welcomeTimeoutMs);
-      welcomeTimer.unref();
     });
     current.addEventListener("message", (message) => {
       if (socket === current) handleFrame((message as MessageEvent).data);
     });
-    // Galat selalu disusul penutupan; yang dikerjakan di penutupan saja.
-    current.addEventListener("error", () => undefined);
-    current.addEventListener("close", () => {
-      if (socket !== current) return;
-      socket = undefined;
-      clearConnectionTimers();
-      requeueInFlight();
-      if (state === "ready") logger?.info("relay: koneksi terputus, mencoba lagi");
-      scheduleReconnect();
-    });
+    // `error` dan `close` sama-sama dianggap koneksi ini sudah tidak ada. Tidak cukup menunggu
+    // `close`: WebSocket bawaan Node 22 hanya memicu `error` (tanpa `close`) untuk koneksi yang
+    // ditolak, sehingga klien menggantung selamanya di "menyambung" saat relay sedang mati.
+    // `down` aman dipanggil berkali-kali untuk koneksi yang sama.
+    current.addEventListener("error", () => down(current));
+    current.addEventListener("close", () => down(current));
+  }
+
+  // Koneksi `current` sudah tidak berguna (ditolak, putus, atau tak menjawab): bersihkan lalu jadwalkan
+  // penyambungan ulang. Hanya berlaku sekali untuk tiap koneksi.
+  function down(current: WebSocket) {
+    if (socket !== current) return;
+    socket = undefined;
+    clearConnectionTimers();
+    requeueInFlight();
+    if (state === "ready") logger?.info("relay: koneksi terputus, mencoba lagi");
+    try {
+      current.close();
+    } catch {
+      // sudah tertutup
+    }
+    scheduleReconnect();
   }
 
   connect();

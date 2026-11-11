@@ -681,6 +681,70 @@ describe("penyambungan ulang", () => {
     expect(times.slice(1).map((t, i) => t - (times[i] as number))[0]).toBe(500);
   });
 
+  // Perilaku WebSocket bawaan Node berbeda antar versi: di Node 22, koneksi yang ditolak hanya memicu
+  // `error` TANPA `close`. Soket tiruan di bawah meniru keduanya supaya test tidak bergantung pada
+  // versi Node yang menjalankannya.
+  function fakeSocketFactory(behavior: "error-only" | "hang" | "close-only") {
+    const created: number[] = [];
+    const createSocket = () => {
+      created.push(Date.now());
+      const handlers: Record<string, Array<(event?: unknown) => void>> = {};
+      queueMicrotask(() => {
+        if (behavior === "error-only") handlers.error?.forEach((fn) => fn());
+        if (behavior === "close-only") handlers.close?.forEach((fn) => fn());
+      });
+      return {
+        addEventListener: (name: string, fn: () => void) => void (handlers[name] ??= []).push(fn),
+        send: () => undefined,
+        close: () => undefined,
+      } as unknown as WebSocket;
+    };
+    return { created, createSocket };
+  }
+
+  test.each(["error-only", "close-only"] as const)("koneksi ditolak dengan sinyal '%s' tetap dicoba lagi (Node 22 tidak memicu close)", async (behavior) => {
+    const { created, createSocket } = fakeSocketFactory(behavior);
+    const { client } = connect("http://127.0.0.1:1", { createSocket });
+    await vi.waitFor(() => expect(created.length).toBeGreaterThanOrEqual(4));
+    expect(client.stats().reconnects).toBeGreaterThanOrEqual(3);
+  });
+
+  test("percobaan yang menggantung tanpa kabar apa pun dibatalkan oleh batas waktu lalu dicoba lagi", async () => {
+    const { created, createSocket } = fakeSocketFactory("hang");
+    const { client, lines } = connect("http://127.0.0.1:1", { createSocket, welcomeTimeoutMs: 30 });
+    await vi.waitFor(() => expect(created.length).toBeGreaterThanOrEqual(3));
+    expect(lines.join("\n")).toContain("tidak ada jawaban hello");
+    expect(client.stats().state).not.toBe("ready");
+  });
+
+  test("error lalu close untuk koneksi yang sama hanya menjadwalkan SATU percobaan ulang", async () => {
+    const created: number[] = [];
+    const client = createRelayClient({
+      url: "https://relay.contoh.com",
+      token: TOKEN,
+      machineId: MACHINE,
+      decide: () => undefined,
+      reconnectMinMs: 200,
+      reconnectMaxMs: 200,
+      random: () => 1,
+      createSocket: () => {
+        created.push(Date.now());
+        const handlers: Record<string, Array<() => void>> = {};
+        queueMicrotask(() => {
+          handlers.error?.forEach((fn) => fn());
+          handlers.close?.forEach((fn) => fn());
+        });
+        return { addEventListener: (n: string, fn: () => void) => void (handlers[n] ??= []).push(fn), send: () => undefined, close: () => undefined } as unknown as WebSocket;
+      },
+    });
+    clients.push(client);
+    await new Promise((r) => setTimeout(r, 450));
+    // awal + percobaan ulang di 200 dan 400 ms. Bila error dan close masing-masing menjadwalkan
+    // sendiri, jumlahnya berlipat ganda. Yang ketiga sudah terjadwal (dihitung) tetapi belum jalan.
+    expect(created.length).toBe(3);
+    expect(client.stats().reconnects).toBe(3);
+  });
+
   test("setelah berhasil tersambung, jeda kembali dari awal", async () => {
     const relay = await startFakeRelay();
     const { client } = connect(relay.url, { reconnectMinMs: 10, reconnectMaxMs: 10_000 });
