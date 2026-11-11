@@ -9,6 +9,7 @@
 // Tata letak MOBILE-FIRST: dirancang untuk layar HP dulu (satu kolom, tombol minimal 44 piksel
 // supaya nyaman disentuh satu tangan, jarak aman untuk notch iPhone), lalu dibatasi lebarnya
 // supaya tetap rapi di layar besar.
+import { Routes } from "./Home";
 import { useI18n } from "./i18n/react";
 import { useOnline } from "./hooks/useOnline";
 import { useTheme } from "./theme/useTheme";
@@ -45,12 +46,8 @@ export function App() {
         </div>
       )}
 
-      <main className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center px-4 py-8 pb-[calc(2rem+env(safe-area-inset-bottom))]">
-        <section className="rounded-2xl border border-line bg-surface p-6 text-center">
-          <h2 className="text-xl font-semibold">{t("empty.title")}</h2>
-          <p className="mt-2 text-muted">{t("empty.body")}</p>
-          <p className="mt-6 text-sm text-muted">{t("app.tagline")}</p>
-        </section>
+      <main className="mx-auto flex w-full max-w-xl flex-1 flex-col px-4 py-6 pb-[calc(2rem+env(safe-area-inset-bottom))]">
+        <Routes />
       </main>
     </div>
   );

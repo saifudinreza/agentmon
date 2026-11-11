@@ -18,6 +18,8 @@
   --color-accent: var(--c-accent);
   --color-warn-bg: var(--c-warn-bg);
   --color-warn-fg: var(--c-warn-fg);
+  --color-danger: var(--c-danger);
+  --color-on-accent: var(--c-on-accent);
 }
 
 :root,
@@ -31,6 +33,8 @@
   --c-accent: #0f766e;
   --c-warn-bg: #fef3c7;
   --c-warn-fg: #78350f;
+  --c-danger: #b91c1c;
+  --c-on-accent: #ffffff;
 }
 
 [data-theme="dark"] {
@@ -43,6 +47,8 @@
   --c-accent: #2dd4bf;
   --c-warn-bg: #3b2f0a;
   --c-warn-fg: #fde68a;
+  --c-danger: #fca5a5;
+  --c-on-accent: #06231f;
 }
 
 html,
