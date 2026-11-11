@@ -38,6 +38,35 @@ describeDirectoryContract("database", async () => {
   };
 });
 
+describe("devicesWithPush: HP yang bisa dibangunkan lewat push", () => {
+  const subscribe = (deviceId: string, endpoint: string) =>
+    query(handle.db, sql`insert into push_subscriptions (device_id, endpoint, p256dh, auth) values (${deviceId}, ${endpoint}, 'k', 'a')`);
+
+  test("hanya HP yang dipasangkan dengan laptop itu dan punya langganan; tanpa ganda walau berlangganan dua kali", async () => {
+    await directory.registerMachine({ id: "m1", name: "L1", token: MACHINE });
+    await directory.registerMachine({ id: "m2", name: "L2", token: MACHINE + "2" });
+    for (const id of ["d1", "d2", "d3"]) await directory.registerDevice({ id, name: id, token: DEVICE + id });
+    await directory.pair("m1", "d1");
+    await directory.pair("m1", "d2"); // d2 tanpa langganan
+    await directory.pair("m2", "d3");
+    await subscribe("d1", "https://push.example/1");
+    await subscribe("d1", "https://push.example/2");
+    await subscribe("d3", "https://push.example/3");
+    expect(await directory.devicesWithPush("m1")).toEqual(["d1"]);
+    expect(await directory.devicesWithPush("m2")).toEqual(["d3"]);
+    expect(await directory.devicesWithPush("tidak-ada")).toEqual([]);
+  });
+
+  test("HP yang dicabut tidak dihitung walau langganannya masih ada", async () => {
+    await directory.registerMachine({ id: "m1", name: "L1", token: MACHINE });
+    await directory.registerDevice({ id: "d1", name: "d1", token: DEVICE });
+    await directory.pair("m1", "d1");
+    await subscribe("d1", "https://push.example/1");
+    await directory.revokeDevice("d1");
+    expect(await directory.devicesWithPush("m1")).toEqual([]);
+  });
+});
+
 describe("token hanya tersimpan sebagai hash", () => {
   test("tidak ada token mentah di tabel mana pun, dan yang tersimpan adalah SHA-256-nya", async () => {
     await directory.registerMachine({ id: "m1", name: "Laptop", token: MACHINE });

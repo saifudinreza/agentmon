@@ -15,7 +15,7 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { hashToken, type RelayDirectory } from "../directory";
 import type { Database } from "./connect";
-import { devices, machines, pairings } from "./schema";
+import { devices, machines, pairings, pushSubscriptions } from "./schema";
 
 export type DbDirectory = RelayDirectory & {
   registerMachine(input: { id: string; name: string; token: string }): Promise<void>;
@@ -23,6 +23,7 @@ export type DbDirectory = RelayDirectory & {
   pair(machineId: string, deviceId: string): Promise<void>;
   unpair(machineId: string, deviceId: string): Promise<void>;
   revokeDevice(deviceId: string): Promise<void>;
+  devicesWithPush(machineId: string): Promise<readonly string[]>;
   /** Laptop yang dipasangkan dengan sebuah HP (HP yang dicabut tidak mendapat apa pun), berurutan menurut nama. */
   machinesOf(deviceId: string): Promise<Array<{ id: string; name: string }>>;
 };
@@ -69,6 +70,16 @@ export function createDbDirectory(db: Database, options: { now?: () => Date } = 
         .select({ id: devices.id })
         .from(pairings)
         .innerJoin(devices, eq(devices.id, pairings.deviceId))
+        .where(and(eq(pairings.machineId, machineId), isNull(devices.revokedAt)));
+      return rows.map((row) => row.id);
+    },
+
+    async devicesWithPush(machineId) {
+      const rows = await db
+        .selectDistinct({ id: devices.id })
+        .from(pairings)
+        .innerJoin(devices, eq(devices.id, pairings.deviceId))
+        .innerJoin(pushSubscriptions, eq(pushSubscriptions.deviceId, devices.id))
         .where(and(eq(pairings.machineId, machineId), isNull(devices.revokedAt)));
       return rows.map((row) => row.id);
     },

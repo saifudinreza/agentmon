@@ -166,7 +166,7 @@ describe("meneruskan pesan lewat soket sungguhan", () => {
     expect(d3.errors()).toEqual(["forbidden"]);
     expect(JSON.stringify(m1.messages)).not.toContain("serangan-dari-d3"); // perintah d3 tidak sampai
     expect(m1.messages.filter((m) => m.kind === "command")).toHaveLength(1); // hanya dari d1
-    expect(m2.kinds()).toEqual(["welcome"]); // laptop lain tidak menerima apa pun
+    expect(m2.kinds()).toEqual(["welcome", "presence"]); // laptop lain tidak menerima event (hanya laporan kehadiran HP-nya)
     expect(JSON.stringify(d1.messages)).not.toContain("serangan");
   });
 

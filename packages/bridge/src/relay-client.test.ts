@@ -90,6 +90,9 @@ async function startFakeRelay(options: FakeRelayOptions = {}) {
     sendCommand: (body: Record<string, unknown>) => {
       for (const socket of sockets) socket.send(JSON.stringify({ kind: "command", deviceId: "d1", body }));
     },
+    sendPresence: (reachable: number) => {
+      for (const socket of sockets) socket.send(JSON.stringify({ kind: "presence", reachable }));
+    },
     sendError: (code: string) => {
       for (const socket of sockets) socket.send(JSON.stringify({ kind: "error", code, message: "x" }));
     },
@@ -903,5 +906,66 @@ describe("flush dan close", () => {
     const { client } = connect("http://127.0.0.1:1");
     client.close();
     expect(() => client.close()).not.toThrow();
+  });
+});
+
+describe("canReachPhone: adakah HP yang bisa menjawab", () => {
+  const make = (relay: Awaited<ReturnType<typeof startFakeRelay>>) => {
+    const client = createRelayClient({ url: relay.url, token: TOKEN, machineId: MACHINE, decide: () => ({ ok: true }), reconnectMinMs: 10 });
+    clients.push(client);
+    return client;
+  };
+
+  test("tersambung tetapi relay belum melapor: tidak ada yang bisa dihubungi (aman: prompt terminal)", async () => {
+    const relay = await startFakeRelay();
+    const client = make(relay);
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    expect(client.canReachPhone()).toBe(false);
+  });
+
+  test("relay melapor ada HP: benar; melapor 0: salah; lalu ada lagi: benar", async () => {
+    const relay = await startFakeRelay();
+    const client = make(relay);
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    relay.sendPresence(1);
+    await vi.waitFor(() => expect(client.canReachPhone()).toBe(true));
+    relay.sendPresence(0);
+    await vi.waitFor(() => expect(client.canReachPhone()).toBe(false));
+    relay.sendPresence(2);
+    await vi.waitFor(() => expect(client.canReachPhone()).toBe(true));
+  });
+
+  test("koneksi putus: laporan lama dilupakan, jadi salah sampai relay melapor lagi", async () => {
+    const relay = await startFakeRelay();
+    const client = make(relay);
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    relay.sendPresence(1);
+    await vi.waitFor(() => expect(client.canReachPhone()).toBe(true));
+    relay.dropConnections();
+    await vi.waitFor(() => expect(client.canReachPhone()).toBe(false));
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    expect(client.canReachPhone()).toBe(false); // sudah tersambung ulang tetapi belum ada laporan baru
+    relay.sendPresence(1);
+    await vi.waitFor(() => expect(client.canReachPhone()).toBe(true));
+  });
+
+  test("relay tidak terjangkau sejak awal: salah", async () => {
+    const relay = await startFakeRelay();
+    const url = relay.url;
+    await relay.stop();
+    const client = createRelayClient({ url, token: TOKEN, machineId: MACHINE, decide: () => ({ ok: true }), reconnectMinMs: 10 });
+    clients.push(client);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(client.canReachPhone()).toBe(false);
+  });
+
+  test("ditutup: salah", async () => {
+    const relay = await startFakeRelay();
+    const client = make(relay);
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    relay.sendPresence(1);
+    await vi.waitFor(() => expect(client.canReachPhone()).toBe(true));
+    client.close();
+    expect(client.canReachPhone()).toBe(false);
   });
 });

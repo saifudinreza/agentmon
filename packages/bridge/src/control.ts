@@ -68,8 +68,14 @@ export function summarizeDiff(diff: FileDiff): string {
   }
 }
 
-export function createDaemonControl(options: { holdEnabled: boolean; approvals: ApprovalEngine }): DaemonControl {
+export function createDaemonControl(options: {
+  holdEnabled: boolean;
+  approvals: ApprovalEngine;
+  /** Adakah yang bisa menjawab? Bila salah, aksi tidak ditahan. Bawaan: selalu ada (jawaban lewat CLI atau halaman lokal). */
+  canAnswer?: () => boolean;
+}): DaemonControl {
   const { holdEnabled, approvals } = options;
+  const canAnswer = options.canAnswer ?? (() => true);
   let paused = false;
 
   // Kalimat status dalam bahasa manusia. Urutannya dari yang paling menentukan.
@@ -79,6 +85,9 @@ export function createDaemonControl(options: { holdEnabled: boolean; approvals: 
     }
     if (!holdEnabled) {
       return "Menahan aksi dimatikan, jadi agent berjalan seperti tanpa AgentMon. Nyalakan dengan AGENTMON_HOLD=1 saat menjalankan daemon.";
+    }
+    if (!canAnswer()) {
+      return "Tidak ada HP yang bisa dihubungi (belum dipasangkan, relay tidak terjangkau, atau tidak ada yang online). Agent berjalan seperti tanpa AgentMon: jawab di terminal.";
     }
     if (pendingToolNames.length > 0) {
       const count = pendingToolNames.length;
@@ -90,7 +99,7 @@ export function createDaemonControl(options: { holdEnabled: boolean; approvals: 
   return {
     holdEnabled,
     isPaused: () => paused,
-    canHold: () => holdEnabled && !paused,
+    canHold: () => holdEnabled && !paused && canAnswer(),
     pause() {
       paused = true;
       // Izin yang sedang menunggu dilepas: hook-nya dijawab "tanpa keputusan", sehingga
