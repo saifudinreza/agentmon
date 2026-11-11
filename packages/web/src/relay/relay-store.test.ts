@@ -7,7 +7,7 @@ import { createRelayStore, type RelayStore } from "./relay-store";
 
 function setup(relay = fakeRelay()) {
   let options!: DeviceConnectionOptions;
-  const connection = { reconnectNow: vi.fn(), status: vi.fn(() => "online" as const), close: vi.fn() };
+  const connection = { reconnectNow: vi.fn(), send: vi.fn(() => true), status: vi.fn(() => "online" as const), close: vi.fn() };
   const store: RelayStore = createRelayStore({
     relayUrl: "https://relay.contoh.com",
     token: "t".repeat(64),
@@ -387,7 +387,7 @@ describe("start dan stop (aman dijalankan ulang, seperti StrictMode di mode peng
       connect: (options) => {
         const close = vi.fn();
         opened.push({ close, options });
-        return { reconnectNow: vi.fn(), status: () => "online" as const, close };
+        return { reconnectNow: vi.fn(), send: vi.fn(() => true), status: () => "online" as const, close };
       },
     });
     return { store, opened, relay };

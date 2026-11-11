@@ -11,6 +11,7 @@ export const PROJECT_NAME = "AgentMon";
 
 // "export * from" = teruskan SEMUA yang di-export file itu lewat pintu ini.
 export * from "./approval"; // status dan keputusan approval
+export * from "./commands"; // perintah keputusan dari HP dan balasannya
 export * from "./device-api"; // jawaban API baca riwayat untuk HP
 export * from "./diff"; // bentuk perubahan sebuah berkas (diff, hunk)
 export * from "./events"; // amplop dan jenis event

@@ -27,6 +27,7 @@ async function startFakeRelay(options: FakeRelayOptions = {}) {
   const port = (wss.address() as { port: number }).port;
   const sockets = new Set<ServerSocket>();
   const hellos: unknown[] = [];
+  const replies: unknown[] = []; // bingkai `reply` yang dikirim klien (balasan hasil keputusan)
   const raw: Array<{ conn: number; id: string; seq: number; sessionId: string; at: number }> = []; // setiap kiriman, termasuk ulangan
   let limited = 0; // berapa kali relay menolak karena terlalu cepat
   const applied: Envelope[] = []; // event unik yang "diterapkan" (dedupe per id, seperti relay sungguhan)
@@ -49,6 +50,7 @@ async function startFakeRelay(options: FakeRelayOptions = {}) {
         if (options.answerHello !== false) socket.send(JSON.stringify({ kind: "welcome", role: "machine", id: options.welcomeId ?? MACHINE }));
         return;
       }
+      if (frame.kind === "reply") return void replies.push(frame);
       if (frame.kind !== "event" || !frame.event) return;
       const event = frame.event;
       if (options.rate) {
@@ -80,6 +82,7 @@ async function startFakeRelay(options: FakeRelayOptions = {}) {
     port,
     url: `http://127.0.0.1:${port}`,
     hellos,
+    replies,
     raw,
     applied,
     connections: () => connections,
@@ -589,6 +592,108 @@ describe("keputusan dari HP diteruskan ke approval engine", () => {
     client.send(event(0));
     await settled(client);
     expect(decisions).toEqual([]);
+  });
+});
+
+describe("balasan hasil keputusan ke HP yang memutuskan", () => {
+  const COMMAND_ID = "11111111-1111-4111-8111-111111111111";
+  const decisionBody = (extra: Record<string, unknown> = {}) => ({ type: "approval.decision", commandId: COMMAND_ID, approvalId: "a1", decision: "approve", ...extra });
+
+  function withDecide(decide: (input: unknown) => unknown, relay: Awaited<ReturnType<typeof startFakeRelay>>) {
+    const log = makeLogger();
+    const client = createRelayClient({ url: relay.url, token: TOKEN, machineId: MACHINE, decide, logger: log.logger, reconnectMinMs: 10 });
+    clients.push(client);
+    return { client, ...log };
+  }
+
+  test("keputusan yang berlaku: balasan 'applied' dengan status sebenarnya, ke HP yang mengirimnya", async () => {
+    const relay = await startFakeRelay();
+    const { client } = withDecide(() => ({ ok: true, approval: { status: "approved" } }), relay);
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    relay.sendCommand(decisionBody());
+    await vi.waitFor(() => expect(relay.replies).toHaveLength(1));
+    expect(relay.replies[0]).toEqual({
+      kind: "reply",
+      deviceId: "d1",
+      body: { type: "approval.result", commandId: COMMAND_ID, approvalId: "a1", outcome: "applied", status: "approved" },
+    });
+  });
+
+  test("HP kalah balapan: 'already_resolved' beserta status yang menang, supaya HP bisa menjelaskannya", async () => {
+    const relay = await startFakeRelay();
+    const { client } = withDecide(() => ({ ok: false, reason: "already_resolved", status: "denied" }), relay);
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    relay.sendCommand(decisionBody());
+    await vi.waitFor(() => expect(relay.replies).toHaveLength(1));
+    expect((relay.replies[0] as { body: unknown }).body).toMatchObject({ outcome: "already_resolved", status: "denied" });
+  });
+
+  test.each([
+    ["unknown", { ok: false, reason: "unknown" }, "unknown"],
+    ["bentuk salah", { ok: false, reason: "invalid", message: "x" }, "invalid"],
+    ["alasan tak dikenal", { ok: false, reason: "aneh" }, "invalid"],
+    ["hasil kosong", undefined, "invalid"],
+  ])("hasil engine '%s' dibalas sebagai %s", async (_name, result, outcome) => {
+    const relay = await startFakeRelay();
+    const { client } = withDecide(() => result, relay);
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    relay.sendCommand(decisionBody());
+    await vi.waitFor(() => expect(relay.replies).toHaveLength(1));
+    expect((relay.replies[0] as { body: { outcome: string } }).body.outcome).toBe(outcome);
+  });
+
+  test("perintah TANPA nomor perintah tetap diterapkan tetapi tidak dibalas (kompatibel dengan HP lama)", async () => {
+    const relay = await startFakeRelay();
+    const decisions: unknown[] = [];
+    const { client } = withDecide((input) => (decisions.push(input), { ok: true }), relay);
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    relay.sendCommand({ type: "approval.decision", approvalId: "a1", decision: "approve" });
+    await vi.waitFor(() => expect(decisions).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(relay.replies).toEqual([]);
+  });
+
+  test("nomor perintah tidak diteruskan ke approval engine (hanya isi keputusan)", async () => {
+    const relay = await startFakeRelay();
+    const decisions: unknown[] = [];
+    const { client } = withDecide((input) => (decisions.push(input), { ok: true }), relay);
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    relay.sendCommand(decisionBody({ comment: "jangan" }));
+    await vi.waitFor(() => expect(decisions).toHaveLength(1));
+    expect(decisions[0]).toEqual({ approvalId: "a1", decision: "approve", comment: "jangan" });
+  });
+
+  test("engine yang melempar galat: tidak ada balasan palsu 'applied', dan klien tetap hidup", async () => {
+    const relay = await startFakeRelay();
+    const { client, lines } = withDecide(() => {
+      throw new Error("mesin rusak");
+    }, relay);
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    relay.sendCommand(decisionBody());
+    await vi.waitFor(() => expect(lines.join("\n")).toContain("gagal menerapkan keputusan"));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(relay.replies).toEqual([]);
+    expect(client.stats().state).toBe("ready");
+  });
+
+  test("balasan tidak memuat komentar pengguna, dan log tidak memuat isi keputusan", async () => {
+    const relay = await startFakeRelay();
+    const { client, lines } = withDecide(() => ({ ok: true, approval: { status: "denied" } }), relay);
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    relay.sendCommand(decisionBody({ decision: "deny", comment: "KOMENTAR-RAHASIA" }));
+    await vi.waitFor(() => expect(relay.replies).toHaveLength(1));
+    expect(JSON.stringify(relay.replies)).not.toContain("KOMENTAR-RAHASIA");
+    expect(lines.join("\n")).not.toContain("KOMENTAR-RAHASIA");
+  });
+
+  test("balasan tidak diantrekan: bila koneksi sudah putus saat engine selesai, balasan dibuang tanpa galat", async () => {
+    const relay = await startFakeRelay();
+    const { client } = withDecide(() => ({ ok: true, approval: { status: "approved" } }), relay);
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    client.close(); // koneksi tertutup sebelum perintah sempat diproses
+    relay.sendCommand(decisionBody());
+    await new Promise((r) => setTimeout(r, 100));
+    expect(relay.replies).toEqual([]);
   });
 });
 

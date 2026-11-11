@@ -2,6 +2,8 @@
 // Memilih layar menurut alamat juga ada di sini (Routes).
 import { useEffect, useRef } from "react";
 import type { PairingLink } from "@agentmon/shared";
+import { ApprovalList } from "./approvals/ApprovalList";
+import { ApprovalScreen } from "./approvals/ApprovalScreen";
 import { useI18n } from "./i18n/react";
 import { PairScreen } from "./pairing/PairScreen";
 import { setPendingLink } from "./pairing/pending";
@@ -48,6 +50,7 @@ function RelaySection({ entry }: { entry: RelayEntry }) {
 
   return (
     <>
+      <ApprovalList entry={entry} />
       {state.syncError && (
         <p role="status" className="rounded-lg bg-warn-bg px-3 py-2 text-sm text-warn-fg">
           {t("sync.error")}
@@ -139,6 +142,17 @@ function parseTimelinePath(path: string): { machineId: string; sessionId: string
   }
 }
 
+// Alamat /a/<laptop>/<izin> menjadi layar keputusan.
+function parseApprovalPath(path: string): { machineId: string; approvalId: string } | undefined {
+  const match = /^\/a\/([^/]+)\/([^/]+)$/.exec(path);
+  if (!match) return undefined;
+  try {
+    return { machineId: decodeURIComponent(match[1] as string), approvalId: decodeURIComponent(match[2] as string) };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Memilih layar menurut alamat. */
 export function Routes() {
   const path = usePath();
@@ -150,6 +164,8 @@ export function Routes() {
   }, []);
 
   if (path === "/pair") return <PairScreen key="pair" focusHeading={focusHeading} />;
+  const approval = parseApprovalPath(path);
+  if (approval) return <ApprovalScreen key={`a/${approval.machineId}/${approval.approvalId}`} {...approval} focusHeading={focusHeading} />;
   const timeline = parseTimelinePath(path);
   if (timeline) return <TimelineScreen key={`s/${timeline.machineId}/${timeline.sessionId}`} {...timeline} focusHeading={focusHeading} />;
   return <Home key="home" focusHeading={focusHeading} />;

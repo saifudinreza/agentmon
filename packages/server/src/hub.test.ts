@@ -880,3 +880,57 @@ describe("isMachineOnline", () => {
     expect(hub.isMachineOnline("d1")).toBe(false);
   });
 });
+
+describe("balasan dari laptop ke HP (reply)", () => {
+  const reply = (deviceId: string, body: Record<string, unknown> = { type: "approval.result" }) => ({ kind: "reply", deviceId, body });
+  const replies = (fake: ReturnType<typeof fakeConnection>) => fake.sent.filter((f) => f.kind === "reply");
+
+  test("diteruskan ke HP yang dituju, dengan nomor laptop pengirim", async () => {
+    const { hub } = setup();
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const d1 = await connect(hub, "device", TOKENS.d1);
+    const d2 = await connect(hub, "device", TOKENS.d2);
+    await send(m1.session, reply("d1", { type: "approval.result", outcome: "applied" }));
+    expect(replies(d1.fake)).toEqual([{ kind: "reply", machineId: "m1", body: { type: "approval.result", outcome: "applied" } }]);
+    expect(replies(d2.fake)).toEqual([]); // HP lain yang dipasangkan tidak ikut menerima
+  });
+
+  test("HP yang TIDAK dipasangkan dengan laptop itu tidak menerima apa pun, dan laptop tidak mendapat galat (tidak bisa mengintai)", async () => {
+    const { hub } = setup();
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const d3 = await connect(hub, "device", TOKENS.d3); // dipasangkan dengan m2, bukan m1
+    await send(m1.session, reply("d3"));
+    expect(replies(d3.fake)).toEqual([]);
+    expect(m1.fake.errors()).toEqual([]);
+  });
+
+  test("HP yang tidak sedang tersambung: dibuang diam-diam", async () => {
+    const { hub } = setup();
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    await send(m1.session, reply("d1"));
+    expect(m1.fake.errors()).toEqual([]);
+  });
+
+  test("HP tidak boleh membalas (hanya laptop)", async () => {
+    const { hub } = setup();
+    const d1 = await connect(hub, "device", TOKENS.d1);
+    await send(d1.session, reply("d2"));
+    expect(d1.fake.errors()).toEqual(["forbidden"]);
+  });
+
+  test("HP yang pairing-nya dicabut sesudah tersambung tidak menerima balasan lagi", async () => {
+    const { hub, directory } = setup();
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    const d1 = await connect(hub, "device", TOKENS.d1);
+    directory.unpair("m1", "d1");
+    await send(m1.session, reply("d1"));
+    expect(replies(d1.fake)).toEqual([]);
+  });
+
+  test("bentuk balasan yang salah ditolak sebagai bingkai tidak sah", async () => {
+    const { hub } = setup();
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    await send(m1.session, { kind: "reply", body: {} });
+    expect(m1.fake.errors()).toEqual(["invalid_frame"]);
+  });
+});

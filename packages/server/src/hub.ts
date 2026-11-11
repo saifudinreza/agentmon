@@ -265,6 +265,19 @@ export function createRelayHub(options: RelayHubOptions) {
         return;
       }
 
+      case "reply": {
+        // Balasan atas perintah HP (mis. hasil keputusan). Hanya laptop yang boleh, dan hanya ke HP yang
+        // dipasangkan dengannya: tanpa pemeriksaan ini, satu laptop bisa mengirim apa saja ke HP orang lain.
+        if (session.role !== "machine") return reject(session, "forbidden", "hanya laptop yang boleh membalas");
+        const allowed = await directory.isPaired(session.id as string, frame.deviceId);
+        if (session.closed) return;
+        // Tidak dipasangkan: dibuang diam-diam (tanpa galat), supaya laptop tidak bisa mencari tahu HP mana yang ada.
+        if (!allowed) return;
+        const target = devices.get(frame.deviceId);
+        if (target) deliver(target, JSON.stringify({ kind: "reply", machineId: session.id as string, body: frame.body } satisfies ServerFrame));
+        return;
+      }
+
       case "command": {
         // Hanya HP yang boleh mengirim perintah.
         if (session.role !== "device") return reject(session, "forbidden", "hanya HP yang boleh mengirim perintah");

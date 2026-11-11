@@ -13,7 +13,7 @@
 // Yang disimpan adalah AMPLOP event apa adanya. `payload` sampai tahap 3 berupa objek, sejak
 // tahap 4 berupa teks terenkripsi; relay tidak membukanya, dan kolom jsonb menerima keduanya.
 import type { Agent, Envelope } from "@agentmon/shared";
-import { and, asc, desc, eq, gt, lt, isNotNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, lt, isNotNull, or, sql } from "drizzle-orm";
 import type { Logger } from "../logger";
 import { silentLogger } from "../logger";
 import type { Database } from "./connect";
@@ -48,6 +48,21 @@ async function deleteInBatches(batch: number, deleteOne: () => Promise<number>):
     total += removed;
     if (removed < batch) return total;
   }
+}
+
+// Baris database menjadi amplop event. Isi disimpan sebagai teks JSON (lihat schema.ts).
+function toEnvelope(row: typeof events.$inferSelect): Envelope {
+  return {
+    v: 1,
+    id: row.id,
+    machineId: row.machineId,
+    sessionId: row.sessionId,
+    seq: row.seq,
+    ts: row.ts.toISOString(),
+    agent: row.agent as Agent,
+    type: row.type,
+    payload: JSON.parse(row.payload) as unknown,
+  };
 }
 
 export type StoredSession = {
@@ -138,19 +153,23 @@ export function createStore(db: Database, options: { now?: () => Date } = {}) {
         .orderBy(asc(events.seq), asc(events.receivedAt))
         .limit(limit);
 
-      return rows.map(
-        (row): Envelope => ({
-          v: 1,
-          id: row.id,
-          machineId: row.machineId,
-          sessionId: row.sessionId,
-          seq: row.seq,
-          ts: row.ts.toISOString(),
-          agent: row.agent as Agent,
-          type: row.type,
-          payload: JSON.parse(row.payload) as unknown,
-        }),
-      );
+      return rows.map(toEnvelope);
+    },
+
+    /**
+     * Event dari jenis tertentu yang DITERIMA relay sejak `since`, berurutan menurut waktu diterima. Dipakai untuk
+     * menghitung antrean izin yang menunggu (approvals.ts). Dibatasi supaya tidak menarik ribuan baris.
+     */
+    async listRecentByType(machineId: string, types: readonly string[], since: Date, limit = 2000): Promise<Envelope[]> {
+      if (types.length === 0) return [];
+      const rows = await db
+        .select()
+        .from(events)
+        .where(and(eq(events.machineId, machineId), inArray(events.type, [...types]), gte(events.receivedAt, since)))
+        .orderBy(desc(events.receivedAt), desc(events.seq))
+        .limit(Math.min(Math.max(1, finiteInt(limit, 2000)), 5000));
+      // Bila batas tercapai, yang terpotong adalah yang paling LAMA; urutan dikembalikan menaik.
+      return rows.reverse().map(toEnvelope);
     },
 
     /** Sesi sebuah laptop, dari yang paling baru aktif. */

@@ -38,6 +38,10 @@ export const ClientFrameSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("event"), event: EnvelopeSchema }),
   // HP mengirim perintah (keputusan, rollback, dan seterusnya) ke satu laptop yang dipasangkan.
   z.object({ kind: z.literal("command"), machineId: nonEmpty, body }),
+  // Laptop membalas SATU HP tertentu atas perintahnya (misalnya hasil sebuah keputusan). Tidak disimpan dan
+  // tidak di-ack: balasan hilang berarti HP menunggu lalu bertanya ulang. Hanya diteruskan bila HP itu
+  // dipasangkan dengan laptop pengirim dan sedang tersambung.
+  z.object({ kind: z.literal("reply"), deviceId: nonEmpty, body }),
 ]);
 export type ClientFrame = z.infer<typeof ClientFrameSchema>;
 
@@ -68,6 +72,8 @@ export const ServerFrameSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("event"), event: EnvelopeSchema }),
   // Perintah dari HP yang dipasangkan. `deviceId` = HP yang mengirim.
   z.object({ kind: z.literal("command"), deviceId: nonEmpty, body }),
+  // Balasan dari laptop atas perintah HP ini. `machineId` = laptop yang membalas.
+  z.object({ kind: z.literal("reply"), machineId: nonEmpty, body }),
   // Konfirmasi ke LAPTOP: event dengan `eventId` ini sudah diterima dan diproses relay, jadi aman
   // dihapus dari antrean laptop. Tanpa konfirmasi, laptop tidak bisa membedakan "terkirim" dari
   // "benar-benar sampai" saat koneksi putus di tengah jalan, dan harus memilih antara kehilangan

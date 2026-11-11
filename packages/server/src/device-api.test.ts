@@ -1,4 +1,4 @@
-import { EventsResponseSchema, MachinesResponseSchema, SessionsResponseSchema, type Envelope } from "@agentmon/shared";
+import { ApprovalsResponseSchema, EventsResponseSchema, MachinesResponseSchema, SessionsResponseSchema, type Envelope } from "@agentmon/shared";
 import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import WebSocket from "ws";
@@ -325,6 +325,64 @@ describe("permintaan bertoken salah dibatasi per alamat IP", () => {
     const statuses = [];
     for (let i = 0; i < 4; i++) statuses.push((await api(base, "/api/machines", null)).status);
     expect(statuses).toEqual([401, 401, 429, 429]);
+  });
+});
+
+describe("GET /api/approvals (antrean izin yang menunggu)", () => {
+  const future = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
+  const nowIso = () => new Date().toISOString();
+  const requested = (approvalId: string, extra: Partial<Envelope> = {}, payload: Record<string, unknown> = {}) =>
+    event({ type: "approval.requested", ts: nowIso(), payload: { approvalId, toolName: "Bash", toolInput: { command: "rm -rf build" }, expiresAt: future(5), ...payload }, ...extra });
+  const getApprovals = async (base: string, token: string | null = TOKEN.d1) => ApprovalsResponseSchema.parse(await (await api(base, "/api/approvals", token)).json()).approvals;
+
+  test("memuat permintaan yang menunggu dari laptop yang dipasangkan, lengkap dengan perintah utuhnya", async () => {
+    const base = await start();
+    await store.saveEvent(requested("a1", { seq: 0 }, { summary: "hapus folder build" }));
+    const [item] = await getApprovals(base);
+    expect(item).toMatchObject({ machineId: "m1", sessionId: "s1", approvalId: "a1", toolName: "Bash", summary: "hapus folder build" });
+    expect(item?.toolInput).toEqual({ command: "rm -rf build" });
+  });
+
+  test("yang sudah diputuskan, dan yang sudah kedaluwarsa, tidak ikut", async () => {
+    const base = await start();
+    await store.saveEvent(requested("selesai", { seq: 0 }));
+    await store.saveEvent(event({ seq: 1, type: "approval.resolved", ts: nowIso(), payload: { approvalId: "selesai", status: "approved" } }));
+    await store.saveEvent(requested("basi", { seq: 2 }, { expiresAt: new Date(Date.now() - 60_000).toISOString() }));
+    await store.saveEvent(requested("menunggu", { seq: 3 }));
+    expect((await getApprovals(base)).map((a) => a.approvalId)).toEqual(["menunggu"]);
+  });
+
+  test("hanya laptop yang dipasangkan dengan HP ini; HP lain tidak melihatnya", async () => {
+    const base = await start();
+    await store.saveEvent(requested("milik-m2", { machineId: "m2", seq: 0 }));
+    await store.saveEvent(requested("milik-m1", { seq: 0 }));
+    expect((await getApprovals(base, TOKEN.d1)).map((a) => a.approvalId)).toEqual(["milik-m1"]);
+    expect((await getApprovals(base, TOKEN.d2)).map((a) => a.approvalId)).toEqual(["milik-m2"]);
+  });
+
+  test("HP dengan beberapa laptop mendapat semuanya", async () => {
+    const base = await start();
+    await directory.pair("m2", "d1");
+    await store.saveEvent(requested("a-m1", { seq: 0 }));
+    await store.saveEvent(requested("a-m2", { machineId: "m2", seq: 0 }));
+    expect((await getApprovals(base)).map((a) => a.approvalId).sort()).toEqual(["a-m1", "a-m2"]);
+  });
+
+  test("permintaan yang diterima relay lebih dari 30 menit lalu tidak dibaca (tidak mungkin masih menunggu)", async () => {
+    const base = await start();
+    await store.saveEvent(requested("a1", { seq: 0 }, { expiresAt: future(120) }));
+    await handle.db.execute(sql`update events set received_at = now() - interval '40 minutes'`);
+    expect(await getApprovals(base)).toEqual([]);
+  });
+
+  test("tanpa token: 401", async () => {
+    const base = await start();
+    expect((await api(base, "/api/approvals", null)).status).toBe(401);
+  });
+
+  test("tanpa antrean: daftar kosong", async () => {
+    const base = await start();
+    expect(await getApprovals(base)).toEqual([]);
   });
 });
 

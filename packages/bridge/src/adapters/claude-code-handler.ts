@@ -41,9 +41,43 @@ import type { AgentMonEvent, EventType, FileDiff } from "@agentmon/shared";
 // Dari server.ts: HookContext = bekal dari daemon (pencatat log, identitas laptop, buku antrean
 // izin, panel kontrol), HookHandler = bentuk fungsi penangan yang diminta server.
 import { computeToolDiff, type ToolDiffInput } from "../diff";
+import { summarizeDiff } from "../control";
 import type { HookContext, HookHandler } from "../server";
 // Penerjemah dari file tetangga. "./claude-code" = file claude-code di folder yang sama.
 import { buildClaudeEvent, holdCandidate, mapClaudeCodeHook, toClaudeDecision, type HoldCandidate, type Stamp } from "./claude-code";
+
+// ---- BATAS UKURAN ISI EVENT ------------------------------------------------------------
+//
+// Event izin dikirim ke relay, yang menolak pesan lebih dari 1 MiB. Bila terlalu besar, event DIBUANG dan HP
+// tidak pernah melihat permintaannya, padahal daemon tetap menahan aksi sampai batas waktu. Maka isi yang
+// berpotensi besar dipotong atau dihilangkan SEBELUM dikirim; yang ditahan daemon tetap utuh.
+// Batas dihitung dalam BYTE (bukan karakter): teks multibyte bisa jauh lebih besar dari jumlah karakternya.
+const MAX_INPUT_VALUE_BYTES = 150_000; // satu nilai input (misalnya isi berkas yang ditulis)
+const MAX_DIFF_JSON_BYTES = 300_000; // seluruh diff
+const byteLength = (text: string) => Buffer.byteLength(text, "utf8");
+const TRUNCATED_MARK = " …[dipotong: terlalu panjang untuk dikirim ke HP]";
+
+// `truncated` = ada isi yang TIDAK sampai ke HP. HP lalu menolak menyetujui (yang disetujui harus sama dengan yang terlihat).
+function boundToolInput(toolInput: Record<string, unknown>): { input: Record<string, unknown>; truncated: boolean } {
+  const input: Record<string, unknown> = {};
+  let truncated = false;
+  for (const [key, value] of Object.entries(toolInput)) {
+    if (typeof value === "string") {
+      if (byteLength(value) > MAX_INPUT_VALUE_BYTES) {
+        input[key] = `${Buffer.from(value, "utf8").subarray(0, MAX_INPUT_VALUE_BYTES).toString("utf8")}${TRUNCATED_MARK}`;
+        truncated = true;
+      } else input[key] = value;
+    } else if (byteLength(JSON.stringify(value) ?? "") > MAX_INPUT_VALUE_BYTES) {
+      input[key] = "[terlalu besar untuk dikirim ke HP]";
+      truncated = true;
+    } else input[key] = value;
+  }
+  return { input, truncated };
+}
+
+function fitsInEvent(diff: FileDiff): boolean {
+  return byteLength(JSON.stringify(diff)) <= MAX_DIFF_JSON_BYTES;
+}
 
 // ---- TIPE -----------------------------------------------------------------------------
 
@@ -223,6 +257,8 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
     const { logger, approvals } = context;
 
     const diff = await diffFor(hold, logger);
+    const bounded = boundToolInput(hold.toolInput);
+    const diffOmitted = diff !== undefined && !fitsInEvent(diff);
     const ticket = approvals.request({
       sessionId: hold.sessionId,
       toolName: hold.toolName,
@@ -233,7 +269,15 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
     // Kabari timeline/HP bahwa ada permintaan baru.
     emitOwn(
       "approval.requested",
-      { approvalId: ticket.approvalId, toolName: hold.toolName, toolInput: hold.toolInput, expiresAt: ticket.expiresAt },
+      {
+        approvalId: ticket.approvalId,
+        toolName: hold.toolName,
+        toolInput: bounded.input,
+        ...(bounded.truncated || diffOmitted ? { truncated: true } : {}),
+        // Ringkasan satu baris dan perubahan berkas untuk ditampilkan di HP sebelum memutuskan.
+        ...(diff !== undefined ? { summary: summarizeDiff(diff), ...(diffOmitted ? {} : { diff }) } : {}),
+        expiresAt: ticket.expiresAt,
+      },
       hold.sessionId,
       context,
     );

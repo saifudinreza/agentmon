@@ -9,11 +9,13 @@
 // Galat dikelompokkan dalam beberapa jenis supaya tampilan bisa memilih pesan yang tepat, dan tidak
 // pernah memuat token maupun isi jawaban.
 import {
+  ApprovalsResponseSchema,
   EventsResponseSchema,
   MachinesResponseSchema,
   SessionsResponseSchema,
   type DeviceMachine,
   type Envelope,
+  type PendingApproval,
   type SessionSummary,
 } from "@agentmon/shared";
 
@@ -34,6 +36,8 @@ export class RelayApiError extends Error {
 
 export type RelayApi = {
   machines(): Promise<DeviceMachine[]>;
+  /** Permintaan izin yang masih menunggu, dari semua laptop yang dipasangkan. */
+  approvals(): Promise<PendingApproval[]>;
   sessions(machineId: string): Promise<SessionSummary[]>;
   events(machineId: string, sessionId: string, afterSeq: number, limit?: number): Promise<{ events: Envelope[]; hasMore: boolean }>;
   /** Semua event sesudah `afterSeq`, mengikuti halaman sampai habis. `onPage` dipanggil tiap halaman supaya layar bisa terisi bertahap. */
@@ -83,6 +87,7 @@ export function createRelayApi(options: RelayApiOptions): RelayApi {
 
   return {
     machines: () => get("/api/machines", (json) => MachinesResponseSchema.parse(json).machines),
+    approvals: () => get("/api/approvals", (json) => ApprovalsResponseSchema.parse(json).approvals),
     sessions: (machineId) => get(`/api/machines/${encodeURIComponent(machineId)}/sessions`, (json) => SessionsResponseSchema.parse(json).sessions),
     events,
     async eventsAfter(machineId, sessionId, afterSeq, onPage) {

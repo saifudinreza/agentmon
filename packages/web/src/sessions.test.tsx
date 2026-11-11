@@ -28,7 +28,7 @@ const factory: RelayStoreFactory = (pairing) => {
     api: relay.api,
     connect: (options) => {
       connection = options;
-      return { reconnectNow: vi.fn(), status: () => "online", close: vi.fn() };
+      return { reconnectNow: vi.fn(), send: vi.fn(() => true), status: () => "online", close: vi.fn() };
     },
   });
   stores.push(store);

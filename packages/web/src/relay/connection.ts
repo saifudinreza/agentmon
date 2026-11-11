@@ -28,6 +28,10 @@ export type DeviceConnectionOptions = {
   onStatus: (status: ConnectionStatus) => void;
   /** Dipanggil setiap kali koneksi siap (pertama kali dan setiap sambung ulang). */
   onReady: () => void;
+  /** Balasan dari laptop atas perintah HP ini (mis. hasil sebuah keputusan). */
+  onReply?: (machineId: string, body: Record<string, unknown>) => void;
+  /** Relay menolak sesuatu yang dikirim HP ini (laptop offline, tidak dipasangkan, terlalu cepat). */
+  onError?: (code: string) => void;
   reconnectMinMs?: number;
   reconnectMaxMs?: number;
   helloTimeoutMs?: number;
@@ -41,6 +45,8 @@ export type DeviceConnectionOptions = {
 export type DeviceConnection = {
   /** Membuka ulang sambungan sekarang juga (tanpa menunggu jeda), walau kelihatannya masih tersambung. */
   reconnectNow(): void;
+  /** Mengirim satu bingkai bila sedang tersambung. Mengembalikan false bila tidak terkirim (offline). */
+  send(frame: unknown): boolean;
   status(): ConnectionStatus;
   close(): void;
 };
@@ -174,6 +180,9 @@ export function createDeviceConnection(options: DeviceConnectionOptions): Device
           if (event.success) options.onEvent(event.data);
           return;
         }
+        case "reply":
+          options.onReply?.(frame.data.machineId, frame.data.body);
+          return;
         case "error":
           // Token ditolak: perangkat dicabut atau tidak dikenal. Mencoba lagi tidak akan menolong.
           if (frame.data.code === "unauthorized") {
@@ -181,6 +190,7 @@ export function createDeviceConnection(options: DeviceConnectionOptions): Device
             dropSocket();
             setStatus("revoked");
           }
+          options.onError?.(frame.data.code);
           return;
         default:
           return; // ack dan command tidak ditujukan ke HP
@@ -211,6 +221,16 @@ export function createDeviceConnection(options: DeviceConnectionOptions): Device
   return {
     reconnectNow,
     status: () => status,
+    send(frame) {
+      // Hanya bila sudah tersambung dan dikenali relay (welcome): bingkai yang dikirim sebelum itu ditolak.
+      if (status !== "online" || !socket) return false;
+      try {
+        socket.send(JSON.stringify(frame));
+        return true;
+      } catch {
+        return false;
+      }
+    },
     close() {
       closed = true;
       clearTimers();

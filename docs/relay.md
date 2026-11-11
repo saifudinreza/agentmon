@@ -156,3 +156,9 @@ HP hanya boleh membaca laptop yang dipasangkan dengannya. Laptop yang tidak dipa
 - Pesan maksimum 1 MiB. Event berisi input alat yang besar (misalnya `Write` dengan isi berkas besar) bisa melebihi itu; daemon yang mengirim ke relay (issue klien relay) harus memotong atau meringkasnya.
 - Tanpa database (mode pengembangan), relay tidak menyimpan pesan: bila HP sedang offline, event untuknya dibuang. Di mode database, riwayat tersimpan dan HP mengambilnya sendiri.
 - Belum ada daftar asal (`Origin`) yang diizinkan. Itu aman untuk sekarang karena autentikasi memakai token di pesan pertama (bukan cookie), sehingga situs lain tidak bisa membajak koneksi tanpa tahu token.
+
+## Keputusan izin dari HP
+
+- **`GET /api/approvals`**: izin yang masih menunggu di semua laptop yang dipasangkan dengan HP ini (dihitung dari event `approval.requested` 30 menit terakhir, dikurangi yang sudah `resolved`/`auto_resolved` atau kedaluwarsa; berisiko tinggi di atas). Dipakai HP untuk mengisi antrean saat dibuka.
+- **Frame `command`** (HP ke laptop) membawa `approval.decision` (`approve` atau `deny`, alasan opsional). Laptop menjawab lewat frame **`reply`** (laptop ke relay, diteruskan hanya ke HP yang memutuskan) berisi `approval.result` dengan hasil `applied`, `already_resolved` (kalah dari perangkat lain atau sudah kedaluwarsa), `unknown`, atau `invalid`. Keputusan pertama yang sah menang; relay tidak memutuskan apa pun.
+- Event `approval.requested` membawa `diff` (perubahan berkas yang diusulkan). Input alat yang terlalu besar dipotong dengan penanda di sisi laptop supaya tetap muat dalam satu pesan.
