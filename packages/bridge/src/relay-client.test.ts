@@ -15,6 +15,9 @@ type FakeRelayOptions = {
   answerHello?: boolean;
   // Menentukan nasib tiap event yang masuk. `n` = urutan penerimaan (mulai 1) di seluruh relay.
   onEvent?: (n: number, event: Envelope) => Verdict;
+  // Batas laju seperti relay sungguhan: ember berlubang per koneksi, dan koneksi diputus setelah
+  // `maxViolations` kali melanggar. Pesan yang melanggar ditolak (tidak diproses dan tidak di-ack).
+  rate?: { capacity: number; refillPerSecond: number; maxViolations: number };
 };
 const relays: Array<{ stop(): Promise<void> }> = [];
 
@@ -24,7 +27,8 @@ async function startFakeRelay(options: FakeRelayOptions = {}) {
   const port = (wss.address() as { port: number }).port;
   const sockets = new Set<ServerSocket>();
   const hellos: unknown[] = [];
-  const raw: Array<{ conn: number; id: string; seq: number; sessionId: string }> = []; // setiap kiriman, termasuk ulangan
+  const raw: Array<{ conn: number; id: string; seq: number; sessionId: string; at: number }> = []; // setiap kiriman, termasuk ulangan
+  let limited = 0; // berapa kali relay menolak karena terlalu cepat
   const applied: Envelope[] = []; // event unik yang "diterapkan" (dedupe per id, seperti relay sungguhan)
   const seen = new Set<string>();
   let connections = 0;
@@ -33,6 +37,10 @@ async function startFakeRelay(options: FakeRelayOptions = {}) {
   wss.on("connection", (socket) => {
     const conn = ++connections;
     sockets.add(socket);
+    // Ember berlubang milik koneksi ini (hanya bila `rate` diberikan).
+    let tokens = options.rate?.capacity ?? 0;
+    let refilledAt = Date.now();
+    let violations = 0;
     socket.on("close", () => sockets.delete(socket));
     socket.on("message", (data) => {
       const frame = JSON.parse(String(data)) as { kind: string; event?: Envelope };
@@ -43,7 +51,19 @@ async function startFakeRelay(options: FakeRelayOptions = {}) {
       }
       if (frame.kind !== "event" || !frame.event) return;
       const event = frame.event;
-      raw.push({ conn, id: event.id, seq: event.seq, sessionId: event.sessionId });
+      if (options.rate) {
+        const t = Date.now();
+        tokens = Math.min(options.rate.capacity, tokens + ((t - refilledAt) / 1000) * options.rate.refillPerSecond);
+        refilledAt = t;
+        if (tokens < 1) {
+          limited++;
+          socket.send(JSON.stringify({ kind: "error", code: "rate_limited", message: "terlalu cepat" }));
+          if (++violations >= options.rate.maxViolations) socket.terminate();
+          return;
+        }
+        tokens -= 1;
+      }
+      raw.push({ conn, id: event.id, seq: event.seq, sessionId: event.sessionId, at: Date.now() });
       const verdict = options.onEvent?.(++received, event) ?? "ack";
       if (verdict === "ignore") return;
       if (verdict === "close") return socket.terminate();
@@ -63,6 +83,7 @@ async function startFakeRelay(options: FakeRelayOptions = {}) {
     raw,
     applied,
     connections: () => connections,
+    limited: () => limited,
     sendCommand: (body: Record<string, unknown>) => {
       for (const socket of sockets) socket.send(JSON.stringify({ kind: "command", deviceId: "d1", body }));
     },
@@ -131,15 +152,47 @@ const settled = (client: RelayClient) => vi.waitFor(() => expect(client.stats())
 
 describe("toWebSocketUrl", () => {
   test.each([
-    ["http://relay.contoh.com", "ws://relay.contoh.com/ws"],
     ["https://relay.contoh.com", "wss://relay.contoh.com/ws"],
     ["https://relay.contoh.com/", "wss://relay.contoh.com/ws"],
-    ["http://127.0.0.1:8787/awalan/", "ws://127.0.0.1:8787/awalan/ws"],
     ["wss://relay.contoh.com?x=1#y", "wss://relay.contoh.com/ws"],
+    // Sambungan tanpa enkripsi diizinkan hanya ke komputer ini sendiri.
+    ["http://127.0.0.1:8787/awalan/", "ws://127.0.0.1:8787/awalan/ws"],
+    ["http://localhost:8787", "ws://localhost:8787/ws"],
+    ["ws://LOCALHOST:8787", "ws://localhost:8787/ws"],
+    ["http://127.5.6.7", "ws://127.5.6.7/ws"],
+    ["http://[::1]:8787", "ws://[::1]:8787/ws"],
   ])("%s -> %s", (input, expected) => expect(toWebSocketUrl(input)).toBe(expected));
 
   test.each(["bukan-alamat", "ftp://x.com", "javascript:alert(1)", ""])("menolak: %s", (input) => {
     expect(() => toWebSocketUrl(input)).toThrow(RangeError);
+  });
+
+  test.each([
+    "http://relay.contoh.com",
+    "ws://relay.contoh.com",
+    "http://192.168.1.5:8787",
+    "http://10.0.0.2",
+    "http://127.0.0.1.evil.com", // bukan loopback walau diawali 127.0.0.1
+    "http://localhost.evil.com",
+    "http://127.0.0.1@evil.com",
+  ])("menolak sambungan TANPA enkripsi ke host selain komputer ini (token akan terkirim sebagai teks biasa): %s", (input) => {
+    expect(() => toWebSocketUrl(input)).toThrow(/tidak memakai enkripsi/);
+  });
+
+  test("pesan galat tidak memuat token dan menyebut cara mengizinkannya dengan sadar", () => {
+    expect(() => toWebSocketUrl("http://relay.contoh.com")).toThrow(/AGENTMON_RELAY_INSECURE=1/);
+  });
+
+  test("allowInsecure mengizinkan sambungan tanpa enkripsi ke jaringan tepercaya", () => {
+    expect(toWebSocketUrl("http://192.168.1.5:8787", true)).toBe("ws://192.168.1.5:8787/ws");
+  });
+
+  test("createRelayClient menolak alamat tanpa enkripsi sejak awal, kecuali diizinkan", () => {
+    const options = { url: "http://relay.contoh.com", token: TOKEN, machineId: MACHINE, decide: () => undefined };
+    expect(() => createRelayClient(options)).toThrow(RangeError);
+    const client = createRelayClient({ ...options, allowInsecure: true, createSocket: () => ({ addEventListener: () => undefined, send: () => undefined, close: () => undefined }) as unknown as WebSocket });
+    clients.push(client);
+    expect(client.stats().state).toBe("connecting");
   });
 });
 
@@ -294,6 +347,73 @@ describe("putus-sambung: tidak ada event yang hilang atau ganda", () => {
     await new Promise((r) => setTimeout(r, 100));
     expect(relay.raw).toHaveLength(5);
     expect(client.stats()).toMatchObject({ inFlight: 5, queued: 25 });
+  });
+});
+
+describe("antrean besar tidak membuat relay menolak atau memutus klien", () => {
+  // Relay yang menerapkan batas laju seperti aslinya: lonjakan 20, lalu 100 per detik, putus setelah 5 pelanggaran.
+  const strict = { capacity: 20, refillPerSecond: 100, maxViolations: 5 };
+
+  test("antrean ratusan event yang menumpuk selagi terputus terkuras habis tanpa satu pun penolakan", async () => {
+    const relay = await startFakeRelay({ rate: strict });
+    const port = relay.port;
+    await relay.stop();
+    const { client } = connect(`http://127.0.0.1:${port}`, { maxEventsPerSecond: 80, sendBurst: 15 });
+    const sent = Array.from({ length: 300 }, (_, i) => event(i));
+    for (const e of sent) client.send(e);
+
+    const back = await startFakeRelay({ port, rate: strict });
+    await vi.waitFor(() => expect(client.stats()).toMatchObject({ queued: 0, inFlight: 0, acked: 300 }), { timeout: 15_000 });
+    expect(back.limited()).toBe(0); // klien mengatur lajunya sendiri sehingga tidak pernah terlalu cepat
+    expect(back.applied).toHaveLength(300);
+    expect(back.connections()).toBe(1); // dan tidak pernah diputus
+  }, 20_000);
+
+  test("laju kirim benar-benar dibatasi: lonjakan awal, lalu sesuai laju yang diatur", async () => {
+    const relay = await startFakeRelay();
+    const { client } = connect(relay.url, { maxEventsPerSecond: 50, sendBurst: 5 });
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    for (let i = 0; i < 30; i++) client.send(event(i));
+    await settled(client);
+
+    const times = relay.raw.map((r) => r.at);
+    const span = (times.at(-1) as number) - (times[0] as number);
+    // 30 event dengan lonjakan 5 dan 50 per detik: sisa 25 event butuh sekitar 0,5 detik.
+    expect(span).toBeGreaterThan(350);
+    expect(relay.raw.slice(0, 5).every((r) => r.at - (times[0] as number) < 100)).toBe(true); // lonjakan awal seketika
+  });
+
+  test("REGRESI: klien tanpa pembatas laju yang diputus relay karena terlalu cepat tetap menguras seluruh antrean (tidak macet)", async () => {
+    // Pembatas klien dimatikan (laju sangat tinggi) agar relay sungguh menolak dan memutus koneksi,
+    // seperti yang terjadi sebelum klien punya pembatas. Dulu klien tersambung tetapi berhenti mengirim.
+    const relay = await startFakeRelay({ rate: { capacity: 20, refillPerSecond: 200, maxViolations: 3 } });
+    const port = relay.port;
+    await relay.stop();
+    const { client } = connect(`http://127.0.0.1:${port}`, { maxEventsPerSecond: 1_000_000, sendBurst: 1_000_000, ackTimeoutMs: 300 });
+    for (let i = 0; i < 150; i++) client.send(event(i));
+
+    const back = await startFakeRelay({ port, rate: { capacity: 20, refillPerSecond: 200, maxViolations: 3 } });
+    await vi.waitFor(() => expect(client.stats()).toMatchObject({ queued: 0, inFlight: 0, acked: 150 }), { timeout: 30_000 });
+    expect(back.limited()).toBeGreaterThan(0); // memang sempat ditolak dan diputus
+    expect(back.connections()).toBeGreaterThan(1);
+    expect(back.applied).toHaveLength(150); // tetapi tetap sampai semua
+  }, 40_000);
+
+  test("jeda karena rate_limited yang masih tersisa saat tersambung ulang tidak membuat pengiriman berhenti selamanya", async () => {
+    // Relay menjawab rate_limited lalu memutus koneksi; klien tersambung ulang saat jeda masih berlaku.
+    let n = 0;
+    const relay = await startFakeRelay({
+      onEvent: () => {
+        n++;
+        return n === 1 ? "rate_limited" : "ack";
+      },
+    });
+    const { client } = connect(relay.url, { ackTimeoutMs: 200 });
+    for (let i = 0; i < 5; i++) client.send(event(i));
+    await vi.waitFor(() => expect(relay.raw.length).toBeGreaterThan(0));
+    relay.dropConnections();
+    await vi.waitFor(() => expect(client.stats()).toMatchObject({ queued: 0, inFlight: 0, acked: 5 }), { timeout: 8000 });
+    expect(relay.applied).toHaveLength(5);
   });
 });
 
@@ -511,7 +631,7 @@ describe("penyambungan ulang", () => {
     const attemptTimes: number[] = [];
     const log = makeLogger();
     const client = createRelayClient({
-      url: "http://relay.contoh.com",
+      url: "https://relay.contoh.com",
       token: TOKEN,
       machineId: MACHINE,
       decide: () => undefined,
@@ -542,7 +662,7 @@ describe("penyambungan ulang", () => {
     vi.useFakeTimers();
     const times: number[] = [];
     const client = createRelayClient({
-      url: "http://relay.contoh.com",
+      url: "https://relay.contoh.com",
       token: TOKEN,
       machineId: MACHINE,
       decide: () => undefined,

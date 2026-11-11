@@ -48,8 +48,17 @@ export type RelayClientOptions = {
   maxQueuedBytes?: number;
   /** Event yang lebih besar dari ini tidak akan diterima relay, jadi langsung dibuang. */
   maxEventBytes?: number;
-  /** Jumlah event yang boleh dikirim tanpa menunggu ack. Menjaga laju kirim tetap di bawah batas relay. */
+  /** Jumlah event yang boleh dikirim tanpa menunggu ack. */
   maxInFlight?: number;
+  /**
+   * Laju kirim klien sendiri: lonjakan `sendBurst` event, lalu `maxEventsPerSecond` per detik.
+   * Bawaannya sedikit di bawah batas relay (lonjakan 100, 50 per detik) supaya antrean besar
+   * yang menumpuk selagi terputus terkuras tanpa memicu pemutusan karena terlalu cepat.
+   */
+  maxEventsPerSecond?: number;
+  sendBurst?: number;
+  /** Izinkan ws:// atau http:// ke host selain komputer ini. Token dikirim tanpa enkripsi; hanya untuk jaringan tepercaya. */
+  allowInsecure?: boolean;
   /** Event yang tidak di-ack selama ini dikirim ulang. */
   ackTimeoutMs?: number;
   /** Batas menunggu `welcome` setelah `hello`. */
@@ -96,11 +105,24 @@ export const DEFAULT_MAX_QUEUED_BYTES = 16 * 1024 * 1024;
 // Sedikit di bawah batas pesan relay (1 MiB) supaya bingkai pembungkusnya tetap muat.
 export const DEFAULT_MAX_EVENT_BYTES = 1024 * 1024 - 4096;
 export const DEFAULT_MAX_IN_FLIGHT = 50;
+export const DEFAULT_EVENTS_PER_SECOND = 40;
+export const DEFAULT_SEND_BURST = 50;
 const DROP_LOG_WINDOW_MS = 5000;
 const RATE_LIMIT_PAUSE_MS = 1000;
 
-/** Mengubah alamat relay menjadi alamat WebSocket. Melempar RangeError bila bukan http(s) atau ws(s). */
-export function toWebSocketUrl(base: string): string {
+// Alamat yang menunjuk ke komputer ini sendiri: lalu lintasnya tidak keluar ke jaringan.
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return host === "localhost" || host === "::1" || /^127(\.\d{1,3}){3}$/.test(host);
+}
+
+/**
+ * Mengubah alamat relay menjadi alamat WebSocket. Melempar RangeError bila bukan http(s) atau ws(s),
+ * atau bila memakai sambungan tanpa enkripsi (http/ws) ke host selain komputer ini kecuali
+ * `allowInsecure`: token laptop dikirim di pesan pertama, dan tidak boleh berjalan sebagai teks biasa
+ * melewati internet hanya karena salah ketik `http://` di alamat relay.
+ */
+export function toWebSocketUrl(base: string, allowInsecure = false): string {
   let url: URL;
   try {
     url = new URL(base);
@@ -110,6 +132,11 @@ export function toWebSocketUrl(base: string): string {
   if (url.protocol === "https:") url.protocol = "wss:";
   else if (url.protocol === "http:") url.protocol = "ws:";
   else if (url.protocol !== "wss:" && url.protocol !== "ws:") throw new RangeError("Alamat relay harus http(s) atau ws(s)");
+  if (url.protocol === "ws:" && !allowInsecure && !isLoopbackHost(url.hostname)) {
+    throw new RangeError(
+      `Alamat relay ${url.hostname} tidak memakai enkripsi (http/ws), sehingga token laptop akan terkirim sebagai teks biasa. Pakai https:// atau wss://. Hanya untuk jaringan tepercaya, izinkan dengan AGENTMON_RELAY_INSECURE=1.`,
+    );
+  }
   url.pathname = `${url.pathname.replace(/\/+$/, "")}/ws`;
   url.search = "";
   url.hash = "";
@@ -120,7 +147,7 @@ export function toWebSocketUrl(base: string): string {
 const printable = (text: string) => text.replace(/[^\x20-\x7e]/g, "?").slice(0, 80);
 
 export function createRelayClient(options: RelayClientOptions): RelayClient {
-  const wsUrl = toWebSocketUrl(options.url);
+  const wsUrl = toWebSocketUrl(options.url, options.allowInsecure ?? false);
   const logger = options.logger;
   const now = options.now ?? (() => Date.now());
   const random = options.random ?? Math.random;
@@ -128,6 +155,8 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   const maxBytes = options.maxQueuedBytes ?? DEFAULT_MAX_QUEUED_BYTES;
   const maxEventBytes = options.maxEventBytes ?? DEFAULT_MAX_EVENT_BYTES;
   const maxInFlight = options.maxInFlight ?? DEFAULT_MAX_IN_FLIGHT;
+  const eventsPerSecond = options.maxEventsPerSecond ?? DEFAULT_EVENTS_PER_SECOND;
+  const sendBurst = options.sendBurst ?? DEFAULT_SEND_BURST;
   const ackTimeoutMs = options.ackTimeoutMs ?? 10_000;
   const welcomeTimeoutMs = options.welcomeTimeoutMs ?? 10_000;
   const reconnectMin = options.reconnectMinMs ?? 500;
@@ -149,8 +178,13 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let welcomeTimer: ReturnType<typeof setTimeout> | undefined;
   let ackTimer: ReturnType<typeof setInterval> | undefined;
-  let pauseTimer: ReturnType<typeof setTimeout> | undefined;
+  // Pewaktu untuk melanjutkan pengiriman yang tertunda (jatah laju habis, atau jeda karena relay
+  // menjawab rate_limited). Hanya satu; pump() yang menjadwalkannya lagi bila masih perlu.
+  let pumpTimer: ReturnType<typeof setTimeout> | undefined;
   let misconfigured = false;
+  // Ember berlubang untuk laju kirim sendiri.
+  let tokens = sendBurst;
+  let tokensAt = now();
 
   // ---- Pencatatan pembuangan: tidak membanjiri log saat ribuan event dibuang beruntun ----
   let dropWindowOpen = false;
@@ -206,12 +240,42 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   };
 
   // ---- Mengirim ----
-  const pump = () => {
-    if (state !== "ready" || !socket || now() < pausedUntil) return;
+  // Menjadwalkan pump() nanti. Bila sudah ada jadwal, yang ada dipertahankan (pump() sendiri akan
+  // menjadwalkan ulang bila setelah dijalankan masih ada yang tertunda).
+  const schedulePump = (delayMs: number) => {
+    if (pumpTimer !== undefined) return;
+    pumpTimer = setTimeout(
+      () => {
+        pumpTimer = undefined;
+        pump();
+      },
+      Math.max(1, Math.ceil(delayMs)),
+    );
+    pumpTimer.unref();
+  };
+
+  // Mengambil satu jatah kirim. Mengembalikan 0 bila dapat, atau berapa milidetik lagi jatah berikutnya ada.
+  const takeSendToken = (): number => {
+    const current = now();
+    tokens = Math.min(sendBurst, tokens + (Math.max(0, current - tokensAt) / 1000) * eventsPerSecond);
+    tokensAt = current;
+    if (tokens >= 1) {
+      tokens -= 1;
+      return 0;
+    }
+    return ((1 - tokens) / eventsPerSecond) * 1000;
+  };
+
+  function pump() {
+    if (state !== "ready" || !socket) return;
+    // Sedang dijeda relay (rate_limited): lanjutkan setelah jeda, jangan ditinggalkan begitu saja.
+    if (now() < pausedUntil) return schedulePump(pausedUntil - now());
     let inFlight = queue.filter((entry) => entry.sentAt !== undefined).length;
     for (const entry of queue) {
       if (inFlight >= maxInFlight) break;
       if (entry.sentAt !== undefined) continue;
+      const wait = takeSendToken();
+      if (wait > 0) return schedulePump(wait);
       try {
         socket.send(entry.text);
       } catch {
@@ -222,7 +286,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       entry.sentAt = now();
       inFlight++;
     }
-  };
+  }
 
   // Semua yang sedang menunggu ack dikembalikan ke "belum terkirim" (koneksi putus, atau ack tak datang).
   const requeueInFlight = () => {
@@ -232,8 +296,8 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   const clearConnectionTimers = () => {
     clearTimeout(welcomeTimer);
     clearInterval(ackTimer);
-    clearTimeout(pauseTimer);
-    welcomeTimer = ackTimer = pauseTimer = undefined;
+    clearTimeout(pumpTimer);
+    welcomeTimer = ackTimer = pumpTimer = undefined;
   };
 
   // ---- Perintah dari HP ----
@@ -312,9 +376,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         if (frame.code === "rate_limited") {
           // Terlalu cepat: berhenti sebentar. Yang ditolak tidak di-ack, jadi dikirim ulang setelah batas ack.
           pausedUntil = now() + RATE_LIMIT_PAUSE_MS;
-          clearTimeout(pauseTimer);
-          pauseTimer = setTimeout(pump, RATE_LIMIT_PAUSE_MS);
-          pauseTimer.unref();
+          schedulePump(RATE_LIMIT_PAUSE_MS);
         }
         return;
       }

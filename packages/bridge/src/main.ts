@@ -52,15 +52,23 @@ async function main() {
     const relayUrl = process.env.AGENTMON_RELAY_URL;
     const relayToken = process.env.AGENTMON_RELAY_TOKEN;
     if (relayUrl && relayToken) {
-      relay = createRelayClient({
-        url: relayUrl,
-        token: relayToken,
-        machineId: loadOrCreateMachineId(daemon.home),
-        // Keputusan dari HP diserahkan ke approval engine yang sama dengan perintah `approve` dan `deny`.
-        decide: (input) => daemon.approvals.decide(input),
-        logger: createLogger(paths(daemon.home).log),
-      });
-      console.log(`Relay: menyambung ke ${relayUrl} (nomor laptop ini: ${loadOrCreateMachineId(daemon.home)})`);
+      try {
+        relay = createRelayClient({
+          url: relayUrl,
+          token: relayToken,
+          machineId: loadOrCreateMachineId(daemon.home),
+          // Keputusan dari HP diserahkan ke approval engine yang sama dengan perintah `approve` dan `deny`.
+          decide: (input) => daemon.approvals.decide(input),
+          logger: createLogger(paths(daemon.home).log),
+          // Sambungan tanpa enkripsi ke host selain komputer ini ditolak kecuali dinyalakan dengan sadar.
+          allowInsecure: process.env.AGENTMON_RELAY_INSECURE === "1",
+        });
+        console.log(`Relay: menyambung ke ${relayUrl} (nomor laptop ini: ${loadOrCreateMachineId(daemon.home)})`);
+      } catch (error) {
+        // Alamat relay yang salah hanya mematikan relay. Daemon tetap jalan, karena relay tidak
+        // boleh menjadi alasan agent berhenti bekerja.
+        console.error(`Relay TIDAK dipakai: ${error instanceof Error ? error.message : String(error)}`);
+      }
     } else {
       console.log("Relay: tidak dipakai (isi AGENTMON_RELAY_URL dan AGENTMON_RELAY_TOKEN untuk menyambung)");
     }

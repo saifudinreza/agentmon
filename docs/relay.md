@@ -126,7 +126,8 @@ Daemon di laptop menyambung ke relay lewat `packages/bridge/src/relay-client.ts`
 - **Tidak hilang, tidak ganda.** Event tetap di antrean sampai relay mengirim `ack`. Bila koneksi putus atau `ack` tidak datang dalam 10 detik, event dikirim ulang, dan relay mengabaikan nomor yang sama. Event dalam satu sesi disusun menurut `seq` sebelum dikirim.
 - **Penyambungan ulang** dengan jeda yang berlipat dua (0,5 detik sampai 30 detik) dan sedikit acak, supaya banyak laptop tidak menyerbu relay bersamaan saat relay pulih.
 - **Antrean ada batasnya**: 5.000 event atau 16 MiB. Bila terlampaui, event **terlama** dibuang dan dicatat di log (`relay: N event dibuang`, dirangkum maksimal tiap 5 detik). Event yang lebih besar dari batas pesan relay juga dibuang dan dicatat.
-- **Laju terkendali**: paling banyak 50 event yang belum di-`ack` sekaligus, dan klien berjeda 1 detik bila relay menjawab `rate_limited`.
+- **Laju terkendali**: klien membatasi lajunya sendiri (lonjakan 50, lalu 40 event per detik, sedikit di bawah batas relay) dan paling banyak 50 event yang belum di-`ack` sekaligus. Antrean yang menumpuk selama relay mati terkuras tanpa memicu penolakan atau pemutusan (1.000 event sekitar 25 detik). Bila relay tetap menjawab `rate_limited`, klien berjeda 1 detik lalu melanjutkan sendiri.
+- **Sambungan harus terenkripsi.** Token laptop dikirim di pesan pertama, jadi `http://` dan `ws://` hanya diterima untuk komputer ini sendiri (`localhost`, `127.x.x.x`, `::1`). Ke host lain pakai `https://` atau `wss://`; untuk jaringan tepercaya, izinkan dengan sadar lewat `AGENTMON_RELAY_INSECURE=1`. Alamat yang ditolak hanya mematikan relay, daemon tetap berjalan.
 - **Keputusan dari HP**: perintah `{type: "approval.decision", approvalId, decision, comment?, hunks?}` diserahkan ke approval engine. Log hanya mencatat hasilnya, tidak pernah komentar atau isi keputusan.
 
 ## Keterbatasan saat ini
