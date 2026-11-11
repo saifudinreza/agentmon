@@ -21,6 +21,30 @@ export type RateLimiterOptions = {
   now?: () => number; // pembaca jam dalam milidetik
 };
 
+/**
+ * Satu ember per KUNCI (misalnya alamat IP atau nomor laptop). Jumlah kunci dibatasi supaya
+ * memorinya tidak bisa dibengkakkan: bila penuh, kunci yang paling lama dilihat dibuang.
+ */
+export type KeyedRateLimiter = { take(key: string): boolean };
+
+export function createKeyedRateLimiter(options: RateLimiterOptions & { maxKeys?: number }): KeyedRateLimiter {
+  const maxKeys = options.maxKeys ?? 10_000;
+  const buckets = new Map<string, RateLimiter>();
+  return {
+    take(key) {
+      let bucket = buckets.get(key);
+      if (bucket) {
+        buckets.delete(key); // dimasukkan ulang di bawah supaya urutannya "terbaru dipakai"
+      } else {
+        if (buckets.size >= maxKeys) buckets.delete(buckets.keys().next().value as string);
+        bucket = createRateLimiter(options);
+      }
+      buckets.set(key, bucket);
+      return bucket.take();
+    },
+  };
+}
+
 export function createRateLimiter(options: RateLimiterOptions): RateLimiter {
   const now = options.now ?? (() => Date.now());
   let tokens = options.capacity;

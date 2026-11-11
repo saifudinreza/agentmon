@@ -16,6 +16,7 @@ import { WebSocketServer } from "ws";
 import type { RelayDirectory } from "./directory";
 import { createRelayHub, DEFAULT_LIMITS, type RelayHub, type RelayLimits } from "./hub";
 import { silentLogger, type Logger } from "./logger";
+import { mountPairingRoutes, type PairingRoutesOptions } from "./pairing-http";
 
 export type RelayServerOptions = {
   directory: RelayDirectory;
@@ -26,6 +27,8 @@ export type RelayServerOptions = {
   // Jarak ping dan penyapuan. Hub menganggap koneksi mati bila tak ada tanda hidup selama
   // `limits.idleTimeoutMs`, jadi nilai ini harus jauh lebih kecil darinya.
   heartbeatMs?: number;
+  // Pairing lewat QR (HTTP). Tanpa ini endpoint /pair/* tidak ada (404).
+  pairing?: PairingRoutesOptions;
 };
 
 export type RunningRelay = {
@@ -56,6 +59,13 @@ export async function startRelayServer(options: RelayServerOptions): Promise<Run
   // Hanya "ok". Jumlah laptop dan HP yang tersambung adalah bahan pengintaian yang tidak dibutuhkan
   // pemeriksaan hosting; statistik tetap bisa dibaca di dalam proses lewat hub.stats().
   app.get("/health", (c) => c.json({ status: "ok" }));
+  if (options.pairing) mountPairingRoutes(app, options.pairing);
+  // Galat tak terduga (misalnya database sesaat tidak terjangkau): jawab 500 yang polos dan catat.
+  // Tidak ada rincian ke klien, dan pairing tetap gagal tertutup (tidak ada kredensial yang keluar).
+  app.onError((error, c) => {
+    logger.error(`galat HTTP: ${error.message}`);
+    return c.json({ error: "internal" }, 500);
+  });
   const server = createAdaptorServer({ fetch: app.fetch }) as Server;
 
   // ---- WebSocket ----

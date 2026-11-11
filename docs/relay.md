@@ -94,8 +94,37 @@ Setelah mengubah `src/db/schema.ts`, hasilkan migrasinya dengan `pnpm --filter @
 
 **Test memakai PGlite**, yaitu mesin Postgres asli yang berjalan di dalam proses Node. CI di Windows, macOS, dan Linux menguji perilaku Postgres yang sebenarnya (batasan, kunci asing, `ON CONFLICT`) tanpa perlu memasang server database.
 
+## Pairing lewat QR
+Menghubungkan sebuah HP dengan sebuah laptop. Aktif bila relay dijalankan dengan `DATABASE_URL` (mode pengembangan tanpa database tidak punya pairing).
+
+**Alur.** Laptop menjalankan `pnpm --filter @agentmon/bridge cli pair`, yang meminta kode sekali pakai ke relay dan menampilkannya sebagai QR di terminal (beserta alamat tertulis untuk jaga-jaga). HP memindai QR, membuka PWA, dan PWA menukar kode itu menjadi kredensial HP. Terminal laptop lalu menulis `Perangkat baru terpasang: <nama>`.
+
+Perintah `pair` butuh tiga variabel lingkungan: `AGENTMON_RELAY_URL` (alamat relay), `AGENTMON_RELAY_TOKEN` (token laptop di relay), dan `AGENTMON_APP_URL` (alamat PWA).
+
+| Endpoint | Siapa | Fungsi |
+|---|---|---|
+| `POST /pair/code` | laptop (Bearer token laptop) | minta kode; jawaban `201 {code, expiresAt}` |
+| `GET /pair/devices` | laptop | daftar HP yang terpasang (dipakai untuk memberi tahu ada perangkat baru) |
+| `POST /pair/redeem` | HP | tukar kode: isi `{code, name}`, jawaban `{deviceId, machineId, machineName, deviceToken?}` |
+
+**Aturan keamanan:**
+- Kode acak 192 bit, berlaku **5 menit**, hanya bisa dipakai **sekali**. Yang disimpan relay hanya hash-nya.
+- Kode yang tidak dikenal, sudah terpakai, dan kedaluwarsa dijawab **sama persis** (`400 invalid-code`).
+- Menandai kode terpakai adalah satu pernyataan atomik di database, jadi dua HP yang menukar kode yang sama bersamaan tidak mungkin keduanya berhasil.
+- Penukaran dibatasi lajunya per alamat IP (10 percobaan beruntun, lalu 1 per 10 detik) dan secara keseluruhan; permintaan kode dibatasi per laptop, dan satu laptop paling banyak punya 5 kode aktif. Di belakang proxy hosting nyalakan `TRUST_PROXY=1` supaya IP dibaca dari `X-Forwarded-For` (entri paling kanan).
+- `PAIRING_ALLOWED_ORIGINS` (dipisah koma) menentukan asal PWA yang boleh memanggil `/pair/redeem` dari browser.
+- **Satu HP, beberapa laptop:** HP yang sudah punya kredensial mengirimnya di header `Authorization` saat menukar kode laptop kedua. Ia dipasangkan tanpa dibuatkan perangkat baru.
+
+**Alamat di dalam QR:** `https://<pwa>/pair#c=<kode>&r=<alamat-relay>`. Semuanya di **fragmen** (setelah `#`) yang tidak pernah dikirim browser ke server mana pun. Rahasia enkripsi ujung-ke-ujung (tahap 4) nanti ditambahkan sebagai parameter `k` di fragmen yang sama, sehingga relay tetap tidak bisa membacanya. Kode `buildPairingUrl` dan `parsePairingUrl` ada di `packages/shared/src/pairing.ts` dan dipakai bersama oleh laptop dan PWA.
+
 ## Keterbatasan saat ini
-- Penyimpan event dan direktori database sudah ada, **tetapi belum disambungkan ke relay yang berjalan**: `main.ts` masih memakai direktori memori, dan hub belum menyimpan event yang lewat. Penyambungannya dikerjakan bersama klien relay di daemon dan daftar sesi di HP. Pairing lewat QR (yang mengisi tabel pairing) juga di issue terpisah.
+- Kode pairing yang terpakai atau kedaluwarsa dihapus oleh penghapusan otomatis (dijalankan `main.ts` di mode database: sekali saat mulai, lalu tiap 6 jam), sehingga bisa tertinggal sampai 6 jam. Itu aman, karena kode kedaluwarsa tetap ditolak walau barisnya belum terhapus.
+- Nama perangkat dari HP ditolak bila memuat karakter kontrol, dan tetap disanitasi saat dicetak di terminal laptop.
+- **Pendaftaran laptop ke relay belum ada.** Pairing mengandaikan laptop sudah punya baris dan token di relay. Alur pendaftaran otomatis dikerjakan bersama klien relay di daemon; sementara itu laptop didaftarkan lewat `createDbDirectory(...).registerMachine`.
+- **Layar pairing di PWA belum ada** (issue PWA). Sampai saat itu penukaran bisa dicoba dengan `POST /pair/redeem` langsung.
+- **Pemberitahuan "perangkat baru" memakai pertanyaan berkala** (tiap 2 detik selama perintah `pair` berjalan), bukan dorongan lewat WebSocket. Notifikasi ke daemon yang sedang berjalan menunggu klien relay.
+- QR dicetak dengan kode warna ANSI (hitam di atas putih). Terminal yang tidak mendukung ANSI menampilkan karakter aneh; alamat tertulis di bawah QR tetap bisa dipakai.
+- Bila `DATABASE_URL` diisi, relay sudah memakai **direktori database, pairing QR, dan penghapusan otomatis**. Yang **belum tersambung** adalah penyimpanan event: hub belum menyimpan event yang lewat dan belum ada daftar sesi untuk HP. Itu dikerjakan bersama klien relay di daemon dan daftar sesi di HP. Tanpa `DATABASE_URL`, relay berjalan di mode pengembangan dengan direktori memori dan tanpa pairing.
 - Penyimpan event mengembalikan galat bila event berisi karakter NUL di kolom pengenal (nomor sesi, jenis event). Pemanggil harus memperlakukan kegagalan simpan sebagai tidak fatal, supaya meneruskan pesan tidak ikut terhenti.
 - Pembatasan laju per koneksi, belum per alamat IP. Pembatasan jumlah koneksi per IP diserahkan ke hosting untuk saat ini.
 - Pesan maksimum 1 MiB. Event berisi input alat yang besar (misalnya `Write` dengan isi berkas besar) bisa melebihi itu; daemon yang mengirim ke relay (issue klien relay) harus memotong atau meringkasnya.
