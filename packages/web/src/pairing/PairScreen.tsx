@@ -20,6 +20,7 @@
 import { buildPairingUrl, PairRedeemRequestSchema, parsePairingUrl, type PairingLink } from "@agentmon/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../i18n/react";
+import { Heading } from "../ui/Heading";
 import type { MessageKey } from "../i18n/id";
 import { navigate } from "../router";
 import { clearPendingLink, peekPendingLink } from "./pending";
@@ -50,7 +51,7 @@ function safeLocalStorage(): Storage | undefined {
   }
 }
 
-export function PairScreen() {
+export function PairScreen({ focusHeading = false }: { focusHeading?: boolean }) {
   const { t } = useI18n();
   const platform = useMemo(currentPlatform, []);
 
@@ -63,6 +64,8 @@ export function PairScreen() {
   const [browserOnly, setBrowserOnly] = useState(false);
   const [copy, setCopy] = useState<"idle" | "copied" | "failed">("idle");
   const inFlight = useRef(false);
+  // Fokus dipindahkan ke judul layar baru hanya setelah ada perpindahan (bukan saat halaman pertama dibuka).
+  const announce = useRef(focusHeading);
 
   // Hapus kode dari alamat dan dari titipan di memori, secepat mungkin setelah dibaca.
   useEffect(() => {
@@ -82,6 +85,7 @@ export function PairScreen() {
       const next = parsePairingUrl(window.location.href);
       stripFragment();
       if (!next) return;
+      announce.current = true;
       setLink(next);
       setPhase({ name: "confirm" });
       setCopy("idle");
@@ -98,6 +102,7 @@ export function PairScreen() {
   async function pair() {
     if (!link || !nameValid || inFlight.current) return;
     inFlight.current = true;
+    announce.current = true;
     setPhase({ name: "working" });
     try {
       const outcome = await redeemPairing(link, nameCheck.data ?? name, { storage: safeLocalStorage() });
@@ -128,11 +133,14 @@ export function PairScreen() {
   if (!link && phase.name !== "success" && phase.name !== "error") {
     return (
       <Card>
-        <h2 className="text-xl font-semibold">{t("pair.missing.title")}</h2>
+        <Heading key="missing" focus={announce.current} className="text-xl font-semibold">
+          {t("pair.missing.title")}
+        </Heading>
         <p className="mt-2 text-muted">{t("pair.missing.body")}</p>
         <div className="mt-4 text-left">
           <PasteLinkForm
             onLink={(next) => {
+              announce.current = true;
               setLink(next);
               setPhase({ name: "confirm" });
             }}
@@ -146,7 +154,9 @@ export function PairScreen() {
   if (phase.name === "success") {
     return (
       <Card>
-        <h2 className="text-xl font-semibold">{t("pair.success.title", { name: phase.machineName })}</h2>
+        <Heading key="success" focus={announce.current} className="text-xl font-semibold">
+          {t("pair.success.title", { name: phase.machineName })}
+        </Heading>
         <p className="mt-2 text-muted">{t("pair.success.body")}</p>
         <button
           type="button"
@@ -163,14 +173,19 @@ export function PairScreen() {
     const retryable = phase.outcome.status === "unreachable" || phase.outcome.status === "rate-limited";
     return (
       <Card>
-        <h2 className="text-xl font-semibold">{t("pair.error.title")}</h2>
+        <Heading key="error" focus={announce.current} className="text-xl font-semibold">
+          {t("pair.error.title")}
+        </Heading>
         <p role="alert" className="mt-2 text-muted">
           {t(ERROR_KEY[phase.outcome.status], phase.outcome.status === "not-saved" ? { name: phase.outcome.machineName } : undefined)}
         </p>
         {retryable && link && (
           <button
             type="button"
-            onClick={() => setPhase({ name: "confirm" })}
+            onClick={() => {
+              announce.current = true;
+              setPhase({ name: "confirm" });
+            }}
             className="mt-6 min-h-11 w-full rounded-lg bg-accent px-4 font-semibold text-on-accent active:opacity-80"
           >
             {t("pair.retry")}
@@ -186,7 +201,9 @@ export function PairScreen() {
     const shareable = buildPairingUrl(window.location.origin, link);
     return (
       <Card>
-        <h2 className="text-xl font-semibold">{t("pair.ios.title")}</h2>
+        <Heading key="ios" focus={announce.current} className="text-xl font-semibold">
+          {t("pair.ios.title")}
+        </Heading>
         <p className="mt-2 text-muted">{t("pair.ios.body")}</p>
         <ol className="mt-4 list-decimal space-y-1 pl-5 text-left text-sm">
           <li>{t("pair.ios.step1")}</li>
@@ -213,7 +230,12 @@ export function PairScreen() {
             <textarea readOnly value={shareable} rows={4} className="mt-2 w-full rounded-lg border border-line bg-bg p-2 text-xs" aria-label={t("pair.ios.copy")} />
           </>
         )}
-        <button type="button" onClick={() => setBrowserOnly(true)} className="mt-4 min-h-11 w-full rounded-lg border border-line bg-surface px-4 text-sm">
+        <button
+          type="button"
+          onClick={() => {
+            announce.current = true;
+            setBrowserOnly(true);
+          }} className="mt-4 min-h-11 w-full rounded-lg border border-line bg-surface px-4 text-sm">
           {t("pair.ios.browserOnly")}
         </button>
         <p className="mt-1 text-xs text-muted">{t("pair.ios.browserOnlyWarning")}</p>
@@ -233,7 +255,9 @@ export function PairScreen() {
 
   return (
     <Card>
-      <h2 className="text-xl font-semibold">{t("pair.title")}</h2>
+      <Heading key="confirm" focus={announce.current} className="text-xl font-semibold">
+        {t("pair.title")}
+      </Heading>
       <p className="mt-2 text-muted">{t("pair.relay", { host })}</p>
       <p className="mt-2 rounded-lg bg-warn-bg px-3 py-2 text-sm text-warn-fg">{t("pair.warning")}</p>
 

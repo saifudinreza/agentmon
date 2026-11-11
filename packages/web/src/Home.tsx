@@ -1,6 +1,6 @@
 // Beranda: daftar laptop yang sudah terpasang, dan cara memasangkan laptop baru.
 // Daftar sesi dan timeline masuk ke sini di issue berikutnya.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useI18n } from "./i18n/react";
 import type { PairingLink } from "@agentmon/shared";
 import { PairScreen } from "./pairing/PairScreen";
@@ -8,6 +8,7 @@ import { setPendingLink } from "./pairing/pending";
 import { PasteLinkForm } from "./pairing/PasteLinkForm";
 import { loadPairings } from "./pairing/storage";
 import { navigate, usePath } from "./router";
+import { Heading } from "./ui/Heading";
 
 // Menitipkan tautan hasil tempel (hanya di memori), lalu pindah ke layar pairing.
 function startPairing(link: PairingLink) {
@@ -23,7 +24,7 @@ function readPairings() {
   }
 }
 
-export function Home() {
+export function Home({ focusHeading = false }: { focusHeading?: boolean }) {
   const { t } = useI18n();
   // Dibaca sekali saat layar dibuka. Layar pairing mengarahkan kembali ke sini setelah berhasil,
   // yang membuat komponen ini dibuat ulang dengan data terbaru.
@@ -34,7 +35,9 @@ export function Home() {
     <div className="flex flex-col gap-4">
       {machines.length > 0 ? (
         <section className="rounded-2xl border border-line bg-surface p-4">
-          <h2 className="text-lg font-semibold">{t("home.machines.title")}</h2>
+          <Heading focus={focusHeading} className="text-lg font-semibold">
+            {t("home.machines.title")}
+          </Heading>
           <ul className="mt-3 divide-y divide-line">
             {machines.map((machine) => (
               <li key={`${machine.host}/${machine.id}`} className="py-3">
@@ -46,7 +49,9 @@ export function Home() {
         </section>
       ) : (
         <section className="rounded-2xl border border-line bg-surface p-6 text-center">
-          <h2 className="text-xl font-semibold">{t("empty.title")}</h2>
+          <Heading focus={focusHeading} className="text-xl font-semibold">
+            {t("empty.title")}
+          </Heading>
           <p className="mt-2 text-muted">{t("empty.body")}</p>
         </section>
       )}
@@ -71,5 +76,11 @@ function safeHost(relayUrl: string): string {
 /** Memilih layar menurut alamat. */
 export function Routes() {
   const path = usePath();
-  return path === "/pair" ? <PairScreen /> : <Home />;
+  // Fokus dipindahkan ke judul layar baru hanya untuk perpindahan setelah halaman terbuka, bukan saat pertama dimuat.
+  const rendered = useRef(false);
+  const focusHeading = rendered.current;
+  useEffect(() => {
+    rendered.current = true;
+  }, []);
+  return path === "/pair" ? <PairScreen key="pair" focusHeading={focusHeading} /> : <Home key="home" focusHeading={focusHeading} />;
 }

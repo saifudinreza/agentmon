@@ -95,6 +95,101 @@ describe("kode tidak tertinggal di alamat", () => {
   });
 });
 
+describe("fokus dan pengumuman untuk pembaca layar dan keyboard", () => {
+  const focusedHeading = () => (document.activeElement?.tagName === "H2" ? document.activeElement.textContent : `(${document.activeElement?.tagName})`);
+
+  test("saat halaman pertama dibuka, fokus TIDAK direbut", () => {
+    renderPair();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  test("setelah berhasil, fokus pindah ke judul layar sukses (sehingga pembaca layar membacakannya)", async () => {
+    renderPair();
+    const button = pairButton();
+    button.focus();
+    fireEvent.click(button);
+    await screen.findByText("Terhubung dengan Laptop Kantor");
+    expect(focusedHeading()).toBe("Terhubung dengan Laptop Kantor");
+    expect(document.activeElement?.getAttribute("tabindex")).toBe("-1"); // bisa difokuskan lewat kode, bukan perhentian Tab
+  });
+
+  test("setelah galat, fokus pindah ke judul layar galat", async () => {
+    mockFetch(reply(400));
+    renderPair();
+    fireEvent.click(pairButton());
+    await screen.findByRole("alert");
+    expect(focusedHeading()).toBe("Pairing belum berhasil");
+  });
+
+  test("tombol Coba lagi memindahkan fokus ke judul konfirmasi", async () => {
+    mockFetch(reply(429));
+    renderPair();
+    fireEvent.click(pairButton());
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Coba lagi" }));
+    expect(focusedHeading()).toBe("Pasangkan dengan laptop");
+  });
+
+  test("selama bekerja (menunggu relay), fokus tidak berpindah-pindah", async () => {
+    let release!: (response: Response) => void;
+    fetchMock = vi.fn(() => new Promise<Response>((resolve) => (release = resolve)));
+    vi.stubGlobal("fetch", fetchMock);
+    renderPair();
+    fireEvent.submit(pairButton().closest("form") as HTMLFormElement);
+    expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Pasangkan dengan laptop");
+    expect(document.activeElement).toBe(document.body); // judul yang sama tetap di tempatnya; tidak ada loncatan
+    await act(async () => release(okReply()));
+    await screen.findByText(/Terhubung dengan/);
+  });
+
+  test("dari panduan iOS ke 'pasangkan di browser saja': fokus ke judul konfirmasi", () => {
+    platform(USER_AGENTS.iphoneSafari, { standalone: false });
+    renderPair();
+    fireEvent.click(screen.getByRole("button", { name: "Pasangkan di browser ini saja" }));
+    expect(focusedHeading()).toBe("Pasangkan dengan laptop");
+  });
+
+  test("menempelkan tautan di layar 'tidak ditemukan': fokus ke judul konfirmasi", () => {
+    open("/pair");
+    renderPair();
+    fireEvent.change(screen.getByLabelText("Tempel tautan pairing"), { target: { value: `https://app.contoh.com/pair#${FRAGMENT}` } });
+    fireEvent.click(screen.getByRole("button", { name: "Lanjut" }));
+    expect(focusedHeading()).toBe("Pasangkan dengan laptop");
+  });
+
+  test("QR baru saat layar terbuka (hashchange): fokus ke judul konfirmasi yang baru", async () => {
+    renderPair();
+    fireEvent.click(pairButton());
+    await screen.findByText(/Terhubung dengan/);
+    window.location.hash = `c=${"Q".repeat(32)}&r=${encodeURIComponent(RELAY)}`;
+    act(() => void window.dispatchEvent(new HashChangeEvent("hashchange")));
+    expect(focusedHeading()).toBe("Pasangkan dengan laptop");
+  });
+
+  test("berpindah antar-layar dalam aplikasi (Selesai -> beranda): fokus ke judul beranda", async () => {
+    render(
+      <I18nProvider>
+        <App />
+      </I18nProvider>,
+    );
+    fireEvent.click(pairButton());
+    await screen.findByText("Terhubung dengan Laptop Kantor");
+    fireEvent.click(screen.getByRole("button", { name: "Selesai" }));
+    await screen.findByRole("heading", { level: 2, name: "Laptop terpasang" });
+    expect(focusedHeading()).toBe("Laptop terpasang");
+  });
+
+  test("membuka aplikasi langsung di beranda tidak merebut fokus", () => {
+    open("/");
+    render(
+      <I18nProvider>
+        <App />
+      </I18nProvider>,
+    );
+    expect(document.activeElement).toBe(document.body);
+  });
+});
+
 describe("memindai QR lain saat layar pairing sudah terbuka (hanya fragmen alamat yang berubah)", () => {
   const NEXT_CODE = "ZZZzzz9999999999_-ZZZzzz9999999999";
   const scanAnother = (relay = RELAY) => {
@@ -222,7 +317,8 @@ describe("hasil penukaran", () => {
   test("berhasil: menyimpan di perangkat, menampilkan nama laptop, dan 'Selesai' kembali ke beranda", async () => {
     renderPair();
     fireEvent.click(pairButton());
-    expect((await screen.findByRole("heading", { level: 2 })).textContent).toBe("Terhubung dengan Laptop Kantor");
+    await screen.findByText("Terhubung dengan Laptop Kantor"); // menunggu layar sukses, bukan judul konfirmasi yang masih ada
+    expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Terhubung dengan Laptop Kantor");
 
     expect(loadPairings(window.localStorage)).toEqual([
       { relayUrl: RELAY, deviceId: "d1", deviceToken: TOKEN, machines: [expect.objectContaining({ id: "m1", name: "Laptop Kantor" })] },
