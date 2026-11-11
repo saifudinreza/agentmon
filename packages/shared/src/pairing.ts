@@ -26,7 +26,15 @@ import { z } from "zod";
 // Kode sekali pakai: acak, panjang, dan hanya berisi karakter aman untuk alamat web.
 export const PAIRING_CODE_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 
-export const PairCodeSchema = z.string().regex(PAIRING_CODE_PATTERN);
+// \p{Cc} = karakter kontrol C0, DEL, dan C1; \p{Zl}\p{Zp} = pemisah baris dan paragraf Unicode.
+export const CONTROL_CHARACTERS = /[\p{Cc}\p{Zl}\p{Zp}]/u;
+
+/** Mengganti karakter kontrol dengan "?" supaya aman dicetak ke terminal (untuk data lama atau dari sumber lain). */
+export function sanitizeForTerminal(text: string): string {
+  return text.replace(new RegExp(CONTROL_CHARACTERS.source, "gu"), "?");
+}
+
+export const PairCodeSchema =z.string().regex(PAIRING_CODE_PATTERN);
 
 // ---- Laptop meminta kode ---------------------------------------------------------------
 export const PairCodeResponseSchema = z.object({
@@ -39,7 +47,15 @@ export type PairCodeResponse = z.infer<typeof PairCodeResponseSchema>;
 export const PairRedeemRequestSchema = z.object({
   code: PairCodeSchema,
   // Nama yang tampil di laptop ("iPhone Budi"). Dipangkas spasinya, tidak boleh kosong.
-  name: z.string().trim().min(1).max(64),
+  // Tanpa karakter kontrol (termasuk ESC yang membuka urutan ANSI), pemisah baris, dan karakter
+  // kontrol C1: nama ini dikirim dari HP, tidak tepercaya, dan dicetak di terminal laptop. Nama
+  // yang memuatnya bisa menghapus layar atau menyamarkan tulisan lain.
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .refine((name) => !CONTROL_CHARACTERS.test(name), "Nama tidak boleh memuat karakter kontrol"),
 });
 export type PairRedeemRequest = z.infer<typeof PairRedeemRequestSchema>;
 

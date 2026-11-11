@@ -130,6 +130,8 @@ describe("POST /pair/redeem", () => {
     ["tanpa nama", { code: "a".repeat(32) }],
     ["nama kosong", { code: "a".repeat(32), name: "  " }],
     ["kode terlalu pendek", { code: "pendek", name: "HP" }],
+    ["nama berisi escape ANSI", { code: "a".repeat(32), name: "HP\u001b[2J" }],
+    ["nama berisi baris baru", { code: "a".repeat(32), name: "HP\nresmi" }],
     ["kode berisi karakter berbahaya", { code: "a'; drop table devices;--aaaaaaaa", name: "HP" }],
   ])("masukan tidak sah ditolak 400: %s", async (_name, body) => {
     const base = await start();

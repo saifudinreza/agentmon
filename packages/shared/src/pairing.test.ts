@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildPairingUrl, PairRedeemRequestSchema, PairRedeemResponseSchema, parsePairingUrl } from "./pairing";
+import { buildPairingUrl, PairRedeemRequestSchema, PairRedeemResponseSchema, parsePairingUrl, sanitizeForTerminal } from "./pairing";
 
 const CODE = "abcDEF0123456789_-abcDEF0123456789";
 const APP = "https://app.contoh.com";
@@ -77,6 +77,33 @@ describe("skema permintaan dan jawaban", () => {
     expect(PairRedeemRequestSchema.safeParse({ code: CODE, name: "   " }).success).toBe(false);
     expect(PairRedeemRequestSchema.safeParse({ code: CODE, name: "x".repeat(65) }).success).toBe(false);
     expect(PairRedeemRequestSchema.safeParse({ code: "pendek", name: "HP" }).success).toBe(false);
+  });
+
+  test.each([
+    ["ESC (urutan ANSI penghapus layar)", "HP\u001b[2J"],
+    ["ESC di awal", "\u001b]0;judul palsu\u0007HP"],
+    ["baris baru", "HP\nPerangkat resmi"],
+    ["carriage return", "HP\rpalsu"],
+    ["NUL", "HP\u0000"],
+    ["DEL", "HP\u007f"],
+    ["kontrol C1 (CSI 8-bit)", "HP\u009b2J"],
+    ["pemisah baris Unicode", "HP lain"],
+    ["pemisah paragraf Unicode", "HP lain"],
+    ["tab", "HP\tlain"],
+  ])("nama perangkat dengan karakter kontrol ditolak: %s", (_label, name) => {
+    expect(PairRedeemRequestSchema.safeParse({ code: CODE, name }).success).toBe(false);
+  });
+
+  test("nama biasa tetap diterima, termasuk huruf non-Latin dan emoji", () => {
+    for (const name of ["iPhone Budi", "Pixel 8 (kantor)", "Ponsel Ani 📱", "手机", "Müller's iPad"]) {
+      expect(PairRedeemRequestSchema.safeParse({ code: CODE, name }).success).toBe(true);
+    }
+  });
+
+  test("sanitizeForTerminal mengganti karakter kontrol dan membiarkan sisanya", () => {
+    expect(sanitizeForTerminal("HP\u001b[2Jbaru\n\u009b")).toBe("HP?[2Jbaru??");
+    expect(sanitizeForTerminal("Ponsel Ani 📱")).toBe("Ponsel Ani 📱");
+    expect(sanitizeForTerminal("a b")).toBe("a?b");
   });
 
   test("jawaban: deviceToken boleh tidak ada, tetapi bila ada minimal 16 karakter", () => {

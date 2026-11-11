@@ -11,6 +11,7 @@ const CODE = "abcDEF0123456789_-abcDEF0123456789";
 type Fake = {
   devices: Array<{ id: string; name: string; pairedAt: string }>;
   codeStatus: number;
+  codeError?: string | undefined;
   devicesStatus: number;
   expiresAt: () => string;
   seen: Array<{ method: string; path: string; auth: string | undefined }>;
@@ -34,7 +35,7 @@ async function startFakeRelay(fake: Fake): Promise<string> {
       res.end(JSON.stringify({ devices: fake.devices }));
     } else if (req.url === "/pair/code") {
       res.statusCode = fake.codeStatus;
-      res.end(JSON.stringify({ code: CODE, expiresAt: fake.expiresAt() }));
+      res.end(JSON.stringify(fake.codeStatus === 201 ? { code: CODE, expiresAt: fake.expiresAt() } : fake.codeError ? { error: fake.codeError } : {}));
     } else {
       res.statusCode = 404;
       res.end("{}");
@@ -155,10 +156,38 @@ describe("runPair", () => {
     expect(t.fake.seen.some((r) => r.path === "/pair/code")).toBe(false);
   });
 
-  test("terlalu banyak kode aktif (429): saran yang bisa ditindaklanjuti", async () => {
-    const t = setup({ codeStatus: 429 });
+  test("429 karena terlalu banyak kode aktif: saran menunggu kode lama kedaluwarsa", async () => {
+    const t = setup({ codeStatus: 429, codeError: "too-many-codes" });
     expect(await runPair(t.options(await startFakeRelay(t.fake)))).toBe(1);
-    expect(t.err.join("\n")).toContain("Terlalu banyak kode");
+    expect(t.err.join("\n")).toContain("Terlalu banyak kode yang masih berlaku");
+    expect(t.err.join("\n")).not.toContain("Terlalu sering");
+  });
+
+  test("429 karena terlalu sering meminta (rate-limited): pesannya berbeda dan tidak menyalahkan kode aktif", async () => {
+    const t = setup({ codeStatus: 429, codeError: "rate-limited" });
+    expect(await runPair(t.options(await startFakeRelay(t.fake)))).toBe(1);
+    expect(t.err.join("\n")).toContain("Terlalu sering meminta kode");
+    expect(t.err.join("\n")).not.toContain("masih berlaku");
+  });
+
+  test("429 dengan jawaban yang tak terbaca tetap memberi pesan yang masuk akal", async () => {
+    const t = setup({ codeStatus: 429, codeError: undefined });
+    expect(await runPair(t.options(await startFakeRelay(t.fake)))).toBe(1);
+    expect(t.err.join("\n")).toContain("Terlalu sering meminta kode");
+  });
+
+  test("nama perangkat berisi escape ANSI tidak sampai mentah ke terminal", async () => {
+    const hostile = "HP\u001b[2J\u001b[31mPALSU\u001b[0m\nPerangkat resmi\u009b";
+    const t = setup({
+      onDevicesPoll: (n) => {
+        if (n === 2) t.fake.devices.push({ id: "d1", name: hostile, pairedAt: "2026-11-11T00:00:01Z" });
+      },
+    });
+    expect(await runPair(t.options(await startFakeRelay(t.fake)))).toBe(0);
+    const printed = t.out.join("\n");
+    expect(printed).not.toContain("\u001b");
+    expect(printed).not.toContain("\u009b");
+    expect(printed).toContain("Perangkat baru terpasang: HP?[2J?[31mPALSU?[0m?Perangkat resmi?");
   });
 
   test("relay tidak terjangkau: pesan jelas, tidak menggantung", async () => {

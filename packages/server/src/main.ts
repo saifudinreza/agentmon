@@ -12,7 +12,7 @@
 //   2. MODE PENGEMBANGAN (tanpa database): direktori hanya di memori dengan satu laptop dan satu HP
 //      yang tokennya diambil dari variabel lingkungan. Untuk mencoba relay secara manual.
 //      Pairing TIDAK tersedia di mode ini.
-import { createDbDirectory, createPairingService, openPostgres, type DatabaseHandle } from "./db";
+import { createDbDirectory, createPairingService, createStore, openPostgres, startRetention, type DatabaseHandle } from "./db";
 import { createMemoryDirectory, type RelayDirectory } from "./directory";
 import { createConsoleLogger } from "./logger";
 import { startRelayServer, type RelayServerOptions } from "./node";
@@ -28,10 +28,14 @@ if (!Number.isInteger(port) || port < 0 || port > 65535) {
 let directory: RelayDirectory;
 let database: DatabaseHandle | undefined;
 let pairing: RelayServerOptions["pairing"];
+let retention: ReturnType<typeof startRetention> | undefined;
 
 if (process.env.DATABASE_URL) {
   database = openPostgres(process.env.DATABASE_URL, { logger });
   await database.migrate();
+  // Penghapusan otomatis (sekali saat mulai, lalu tiap 6 jam): riwayat lebih dari 30 hari serta
+  // kode pairing yang sudah terpakai atau kedaluwarsa. Tanpa ini kode pairing menumpuk selamanya.
+  retention = startRetention({ store: createStore(database.db), logger });
   const dbDirectory = createDbDirectory(database.db);
   directory = dbDirectory;
   pairing = {
@@ -76,6 +80,7 @@ console.log(
 );
 
 const shutdown = () => {
+  retention?.stop();
   void relay
     .stop()
     .then(() => database?.close())

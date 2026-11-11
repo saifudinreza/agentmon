@@ -1,7 +1,7 @@
 import { buildPairingUrl } from "@agentmon/shared";
 import jsQR from "jsqr";
 import { describe, expect, test } from "vitest";
-import { qrMatrix, renderQrForTerminal } from "./qr";
+import { QUIET_ZONE, qrMatrix, renderQrForTerminal } from "./qr";
 
 const ESC = String.fromCharCode(27);
 const ANSI = new RegExp(`${ESC}\\[[0-9;]*m`, "g");
@@ -71,11 +71,21 @@ describe("QR untuk terminal", () => {
     expect(printed.slice(matrix.length).every((row) => row.every((cell) => !cell))).toBe(true);
   });
 
-  test("ada tepi terang di sekeliling supaya pemindai bisa menemukan QR", () => {
+  test("tepi terang di keempat sisi minimal 4 modul (ukuran yang diminta spesifikasi QR)", () => {
+    expect(QUIET_ZONE).toBeGreaterThanOrEqual(4);
     const matrix = qrMatrix(REALISTIC);
-    expect(matrix[0]?.every((cell) => !cell)).toBe(true);
-    expect(matrix[matrix.length - 1]?.every((cell) => !cell)).toBe(true);
-    expect(matrix.every((row) => !row[0] && !row[row.length - 1])).toBe(true);
+    const last = matrix.length - 1;
+    for (let i = 0; i < 4; i++) {
+      expect(matrix[i]?.every((cell) => !cell)).toBe(true); // atas
+      expect(matrix[last - i]?.every((cell) => !cell)).toBe(true); // bawah
+      expect(matrix.every((row) => !row[i] && !row[last - i])).toBe(true); // kiri dan kanan
+    }
+    // Tepat di balik tepi itu ada modul gelap (pola sudut QR), jadi tepinya tidak lebih lebar dari 4.
+    expect(matrix[4]?.some((cell) => cell)).toBe(true);
+  });
+
+  test("QR tetap terbaca dari TEKS terminal dengan tepi 4 modul", () => {
+    expect(scan(parseTerminalText(renderQrForTerminal(REALISTIC)))).toBe(REALISTIC);
   });
 
   test("dicetak hitam di atas putih secara eksplisit dan tiap baris dikembalikan ke warna semula", () => {

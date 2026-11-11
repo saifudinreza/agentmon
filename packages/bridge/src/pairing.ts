@@ -20,6 +20,7 @@ import {
   buildPairingUrl,
   PairCodeResponseSchema,
   PairedDevicesResponseSchema,
+  sanitizeForTerminal,
   type PairedDevice,
 } from "@agentmon/shared";
 import { renderQrForTerminal } from "./qr";
@@ -108,7 +109,13 @@ export async function runPair(options: PairOptions): Promise<number> {
   const created = await call("POST", "/pair/code");
   if (!created) return unreachable();
   if (created.status === 429) {
-    err("Terlalu banyak kode yang masih berlaku. Tunggu beberapa menit sampai kode lama kedaluwarsa, lalu coba lagi.");
+    // Relay memakai 429 untuk dua sebab yang saran perbaikannya berbeda, jadi dibedakan.
+    const reason = (created.body as { error?: unknown }).error;
+    err(
+      reason === "too-many-codes"
+        ? "Terlalu banyak kode yang masih berlaku. Tunggu beberapa menit sampai kode lama kedaluwarsa, lalu coba lagi."
+        : "Terlalu sering meminta kode. Tunggu sebentar (sekitar setengah menit), lalu coba lagi.",
+    );
     return 1;
   }
   if (created.status !== 201) return rejected(created.status);
@@ -136,7 +143,9 @@ export async function runPair(options: PairOptions): Promise<number> {
     if (!parsed.success) continue;
     const fresh: PairedDevice[] = parsed.data.devices.filter((device) => !known.has(device.id));
     if (fresh.length > 0) {
-      for (const device of fresh) out(`Perangkat baru terpasang: ${device.name}`);
+      // Nama datang dari HP (tidak tepercaya). Karakter kontrol diganti supaya tidak bisa
+      // menghapus layar atau menyamarkan tulisan lain di terminal.
+      for (const device of fresh) out(`Perangkat baru terpasang: ${sanitizeForTerminal(device.name)}`);
       return 0;
     }
   }

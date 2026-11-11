@@ -22,7 +22,9 @@
 // terminal Linux umum.
 import QRCode from "qrcode";
 
-const QUIET_ZONE = 2; // lebar tepi terang di sekeliling, dalam modul
+// Lebar tepi terang di sekeliling, dalam modul. 4 adalah ukuran yang diminta spesifikasi QR; kamera
+// HP lebih sering gagal membaca bila tepinya lebih sempit, terutama di layar terminal yang gelap.
+export const QUIET_ZONE = 4;
 const BLACK_ON_WHITE = "\u001b[47m\u001b[30m";
 const RESET = "\u001b[0m";
 
