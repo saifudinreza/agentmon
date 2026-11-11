@@ -54,8 +54,40 @@ describe("tampilan dasar", () => {
   test("tombol dapat disentuh dengan nyaman (tinggi minimal 44 piksel) dan punya nama yang terbaca pembaca layar", () => {
     stubMatchMedia(true);
     renderApp();
-    const button = screen.getByRole("button", { name: "Ganti tema" });
+    const button = screen.getByRole("button", { name: /Ganti tema/ });
     expect(button.className).toContain("min-h-11"); // 2,75 rem = 44 piksel
+  });
+});
+
+describe("aksesibilitas tombol tema", () => {
+  // Nama aksesibel = yang dibaca pembaca layar dan dicari kontrol suara. Harus memuat teks yang terlihat (WCAG 2.5.3).
+  test("nama aksesibel memuat teks yang terlihat, sehingga tema aktif ikut dibacakan", () => {
+    stubMatchMedia(true);
+    renderApp();
+    const button = screen.getByRole("button", { name: /Ganti tema/ });
+    expect(button.textContent).toBe("Tema: Otomatis");
+    expect(button.getAttribute("aria-label")).toContain(button.textContent as string);
+    // Pencarian dengan teks yang terlihat (seperti kontrol suara) menemukan tombolnya.
+    expect(screen.getByRole("button", { name: /Tema: Otomatis/ })).toBe(button);
+  });
+
+  test("nama aksesibel ikut berubah setiap kali tema diputar, dan selalu memuat teks yang terlihat", () => {
+    stubMatchMedia(true);
+    renderApp();
+    for (const mode of ["Terang", "Gelap", "Otomatis"]) {
+      fireEvent.click(screen.getByRole("button", { name: /Ganti tema/ }));
+      const button = screen.getByRole("button", { name: new RegExp(`Tema: ${mode}`) });
+      expect(button.textContent).toBe(`Tema: ${mode}`);
+      expect(button.getAttribute("aria-label")).toBe(`Ganti tema. Tema: ${mode}`);
+    }
+  });
+
+  test("di bahasa Inggris juga memuat teks yang terlihat", () => {
+    stubMatchMedia(true);
+    renderApp("en");
+    const button = screen.getByRole("button", { name: /Change theme/ });
+    expect(button.textContent).toBe("Theme: Automatic");
+    expect(button.getAttribute("aria-label")).toBe("Change theme. Theme: Automatic");
   });
 });
 
@@ -105,7 +137,7 @@ describe("tema", () => {
   test("tombol memutar pilihan: otomatis -> terang -> gelap -> otomatis, dan menyimpannya", () => {
     stubMatchMedia(true);
     renderApp();
-    const button = () => screen.getByRole("button", { name: "Ganti tema" });
+    const button = () => screen.getByRole("button", { name: /Ganti tema/ });
     expect(button().textContent).toBe("Tema: Otomatis");
 
     fireEvent.click(button());
@@ -149,8 +181,8 @@ describe("tema", () => {
     const media = stubMatchMedia(true);
     const { unmount } = renderApp();
     expect(media.listenerCount()).toBe(1);
-    fireEvent.click(screen.getByRole("button", { name: "Ganti tema" }));
-    fireEvent.click(screen.getByRole("button", { name: "Ganti tema" }));
+    fireEvent.click(screen.getByRole("button", { name: /Ganti tema/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Ganti tema/ }));
     expect(media.listenerCount()).toBe(1);
     unmount();
     expect(media.listenerCount()).toBe(0);
@@ -167,7 +199,7 @@ describe("tema", () => {
     });
     try {
       renderApp();
-      fireEvent.click(screen.getByRole("button", { name: "Ganti tema" }));
+      fireEvent.click(screen.getByRole("button", { name: /Ganti tema/ }));
       expect(document.documentElement.getAttribute("data-theme")).toBe("light");
     } finally {
       Object.defineProperty(window, "localStorage", original);

@@ -17,6 +17,8 @@ export function App() {
   const { t } = useI18n();
   const online = useOnline();
   const { mode, cycle } = useTheme();
+  // Teks yang terlihat di tombol, misalnya "Tema: Otomatis".
+  const themeLabel = t("theme.label", { mode: t(`theme.${mode}`) });
 
   return (
     <div className="flex min-h-dvh flex-col bg-bg text-fg pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
@@ -26,10 +28,13 @@ export function App() {
           <button
             type="button"
             onClick={cycle}
-            aria-label={t("theme.toggle")}
+            // Nama aksesibel (yang dibaca pembaca layar dan dicari kontrol suara) HARUS memuat teks yang
+            // terlihat (WCAG 2.5.3). Kalau hanya "Ganti tema", pengguna tidak pernah mendengar tema
+            // yang sedang aktif, dan ucapan "ketuk Tema Otomatis" tidak menemukan tombolnya.
+            aria-label={`${t("theme.toggle")}. ${themeLabel}`}
             className="min-h-11 rounded-lg border border-line bg-surface px-3 text-sm text-muted active:opacity-70"
           >
-            {t("theme.label", { mode: t(`theme.${mode}`) })}
+            {themeLabel}
           </button>
         </div>
       </header>
