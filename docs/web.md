@@ -1,6 +1,6 @@
 # Aplikasi HP (PWA)
 
-Kodenya di `packages/web/`. Aplikasi ini berjalan sepenuhnya di HP (React, Vite, Tailwind CSS) dan bisa dipasang ke layar utama seperti aplikasi biasa. Sekarang isinya: kerangka (bilah atas, pita offline, tombol tema), beranda yang mendaftar laptop terpasang, dan layar pairing. Daftar sesi dan timeline diisi di issue berikutnya.
+Kodenya di `packages/web/`. Aplikasi ini berjalan sepenuhnya di HP (React, Vite, Tailwind CSS) dan bisa dipasang ke layar utama seperti aplikasi biasa. Sekarang isinya: kerangka (bilah atas, pita offline, tombol tema), beranda yang mendaftar laptop terpasang, dan layar pairing. Beranda mendaftar laptop beserta sesinya, dan tiap sesi membuka timeline real-time.
 
 ## Menjalankan
 
@@ -58,9 +58,19 @@ Aplikasi yang ditambahkan ke layar utama iOS menyimpan data **terpisah** dari Sa
 
 Kode berlaku sekitar 5 menit sejak QR dibuat, jadi langkah memasang lalu menempelkan harus selesai dalam waktu itu; bila lewat, jalankan `pair` lagi di laptop. Solusi tanpa menyalin tautan (misalnya memindai QR dari dalam aplikasi lewat kamera) bisa ditambahkan nanti.
 
+## Daftar sesi dan timeline real-time
+
+- **Beranda** mendaftar laptop terpasang (online atau offline) beserta sesinya (agent, aktif atau selesai, waktu). Sesi baru dari event langsung muncul di atas tanpa memuat ulang. Tiap sesi adalah tautan ke `/s/<laptop>/<sesi>`.
+- **Timeline** menampilkan event sesi berurutan, dengan tampilan per jenis event (permintaan izin menonjol, kegagalan merah, rekap, dan seterusnya) dalam Bahasa Indonesia atau Inggris. Jenis event yang belum dikenal (dari daemon yang lebih baru) tampil secara umum, tidak membuat layar gagal. Isi event dari agent dibersihkan dari karakter kontrol dan pembalik arah tulisan, dijadikan satu baris, dan dipotong.
+- **Real-time**: HP membuka WebSocket ke relay (`src/relay/connection.ts`) dan menerima event begitu laptop mengirimnya. Sambung ulang otomatis; saat halaman terlihat lagi (HP dibuka dari kunci) atau jaringan kembali, sambungan **dibuka ulang langsung**, karena soket bisa sudah mati diam-diam selama HP terkunci.
+- **Menambal yang terlewat** (`src/relay/relay-store.ts`): setiap kali koneksi siap, daftar laptop dan sesi diambil ulang, dan event sesi yang terbuka diambil mulai dari titik "sudah sinkron dari riwayat". Titik itu sengaja TERPISAH dari event langsung: event langsung bernomor tinggi yang tiba lebih dulu tidak boleh membuat event yang terlewat di bawahnya dilompati. Event dari dua jalur digabung tanpa ganda dan berurutan menurut `seq`.
+- **Status koneksi** di header: Tersambung, Menyambung, Terputus, atau Perangkat dicabut (token ditolak relay; tidak mencoba lagi). Perubahannya diumumkan ke pembaca layar.
+- **Sesi besar**: hanya 150 event terbaru yang digambar; sisanya dimuat bertahap lewat tombol, dengan posisi baca dijaga. Bila pengguna di bagian bawah, layar mengikuti event baru; bila membaca ke atas, muncul tombol "N event baru". Event hanya disimpan di memori untuk sesi yang sedang dibuka.
+
 ## Yang sudah dan belum diuji
 
 - Diuji otomatis: logika tema dan bahasa, tampilan (jsdom), manifest dan ikon, serta hasil build sungguhan (manifest, daftar berkas yang disimpan service worker, ukuran bundle).
 - Diuji manual di Microsoft Edge (Chromium) dengan emulasi HP: service worker aktif dan mengendalikan halaman, semua berkas tersimpan, tidak ada galat manifest atau installability, kerangka terbuka saat offline termasuk di alamat `/pair`, dan pilihan tema bertahan setelah muat ulang.
+- Daftar sesi dan timeline diuji ujung-ke-ujung di Edge dengan viewport HP, relay sungguhan (PGlite), dan **klien daemon sungguhan** dari paket bridge: latensi dari daemon ke layar median 10 ms dan p95 19 ms (target PRD: p95 di bawah 2 detik), 40 event yang terlewat saat HP offline muncul lengkap, berurutan, dan tanpa ganda setelah HP dibuka, dan sesi 1.500 event membuat hanya sekitar 790 elemen DOM dengan gulir stabil di 10 ms per bingkai.
 - Diuji ujung-ke-ujung di Edge dengan relay sungguhan (PGlite) dan viewport HP: QR sampai terhubung, token hasil pairing diterima relay sebagai HP, kode terpakai ditolak, laptop kedua dengan perangkat yang sama, bekerjanya alur iOS (panduan, salin tautan, tempel di aplikasi dengan penyimpanan kosong), dan alamat selalu bersih dari kode.
 - **Belum diuji di perangkat nyata** (Android dan iOS): proses "Tambahkan ke layar utama", tampilan ikon, perilaku offline di sana, dan terutama **pemisahan penyimpanan iOS**, yang di sini hanya disimulasikan lewat penyimpanan kosong dan `navigator.standalone`. Kriteria "pengguna iOS tidak kehilangan pairing setelah menambahkan ke layar utama" perlu dicoba di iPhone sungguhan. Di iOS, PWA hanya bisa dipasang dari Safari (iOS 16.4 ke atas). Panduan install sesuai perangkat (FR-54) dikerjakan di issue lain.

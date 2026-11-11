@@ -28,6 +28,8 @@ if (!Number.isInteger(port) || port < 0 || port > 65535) {
 let directory: RelayDirectory;
 let database: DatabaseHandle | undefined;
 let pairing: RelayServerOptions["pairing"];
+let persist: RelayServerOptions["persist"];
+let deviceApi: RelayServerOptions["deviceApi"];
 let retention: ReturnType<typeof startRetention> | undefined;
 
 if (process.env.DATABASE_URL) {
@@ -35,18 +37,24 @@ if (process.env.DATABASE_URL) {
   await database.migrate();
   // Penghapusan otomatis (sekali saat mulai, lalu tiap 6 jam): riwayat lebih dari 30 hari serta
   // kode pairing yang sudah terpakai atau kedaluwarsa. Tanpa ini kode pairing menumpuk selamanya.
-  retention = startRetention({ store: createStore(database.db), logger });
+  const eventStore = createStore(database.db);
+  retention = startRetention({ store: eventStore, logger });
   const dbDirectory = createDbDirectory(database.db);
   directory = dbDirectory;
+  // Asal PWA yang boleh memanggil relay dari browser (pairing dan API baca riwayat).
+  const allowedOrigins = (process.env.PAIRING_ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter((origin) => origin !== "");
   pairing = {
     pairing: createPairingService(database.db),
     directory: dbDirectory,
-    allowedOrigins: (process.env.PAIRING_ALLOWED_ORIGINS ?? "")
-      .split(",")
-      .map((origin) => origin.trim())
-      .filter((origin) => origin !== ""),
+    allowedOrigins,
     trustProxy: process.env.TRUST_PROXY === "1",
   };
+  // Event dari laptop disimpan sebelum diteruskan dan di-ack, dan HP membaca riwayatnya lewat /api/*.
+  persist = (event) => eventStore.saveEvent(event);
+  deviceApi = { directory: dbDirectory, store: eventStore, allowedOrigins, trustProxy: process.env.TRUST_PROXY === "1" };
 } else {
   const machineToken = process.env.RELAY_DEV_MACHINE_TOKEN;
   const deviceToken = process.env.RELAY_DEV_DEVICE_TOKEN;
@@ -72,7 +80,14 @@ if (process.env.DATABASE_URL) {
   directory = memory;
 }
 
-const relay = await startRelayServer({ directory, port, logger, ...(pairing ? { pairing } : {}) });
+const relay = await startRelayServer({
+  directory,
+  port,
+  logger,
+  ...(pairing ? { pairing } : {}),
+  ...(persist ? { persist } : {}),
+  ...(deviceApi ? { deviceApi } : {}),
+});
 console.log(
   database
     ? `Relay (database, pairing QR menyala) berjalan di port ${relay.port}. Alamat WebSocket: /ws`

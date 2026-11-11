@@ -109,7 +109,7 @@ describe("fokus dan pengumuman untuk pembaca layar dan keyboard", () => {
     button.focus();
     fireEvent.click(button);
     await screen.findByText("Terhubung dengan Laptop Kantor");
-    expect(focusedHeading()).toBe("Terhubung dengan Laptop Kantor");
+    await waitFor(() => expect(focusedHeading()).toBe("Terhubung dengan Laptop Kantor"));
     expect(document.activeElement?.getAttribute("tabindex")).toBe("-1"); // bisa difokuskan lewat kode, bukan perhentian Tab
   });
 
@@ -118,7 +118,7 @@ describe("fokus dan pengumuman untuk pembaca layar dan keyboard", () => {
     renderPair();
     fireEvent.click(pairButton());
     await screen.findByRole("alert");
-    expect(focusedHeading()).toBe("Pairing belum berhasil");
+    await waitFor(() => expect(focusedHeading()).toBe("Pairing belum berhasil"));
   });
 
   test("tombol Coba lagi memindahkan fokus ke judul konfirmasi", async () => {
@@ -127,7 +127,7 @@ describe("fokus dan pengumuman untuk pembaca layar dan keyboard", () => {
     fireEvent.click(pairButton());
     await screen.findByRole("alert");
     fireEvent.click(screen.getByRole("button", { name: "Coba lagi" }));
-    expect(focusedHeading()).toBe("Pasangkan dengan laptop");
+    await waitFor(() => expect(focusedHeading()).toBe("Pasangkan dengan laptop"));
   });
 
   test("selama bekerja (menunggu relay), fokus tidak berpindah-pindah", async () => {
@@ -142,19 +142,19 @@ describe("fokus dan pengumuman untuk pembaca layar dan keyboard", () => {
     await screen.findByText(/Terhubung dengan/);
   });
 
-  test("dari panduan iOS ke 'pasangkan di browser saja': fokus ke judul konfirmasi", () => {
+  test("dari panduan iOS ke 'pasangkan di browser saja': fokus ke judul konfirmasi", async () => {
     platform(USER_AGENTS.iphoneSafari, { standalone: false });
     renderPair();
     fireEvent.click(screen.getByRole("button", { name: "Pasangkan di browser ini saja" }));
-    expect(focusedHeading()).toBe("Pasangkan dengan laptop");
+    await waitFor(() => expect(focusedHeading()).toBe("Pasangkan dengan laptop"));
   });
 
-  test("menempelkan tautan di layar 'tidak ditemukan': fokus ke judul konfirmasi", () => {
+  test("menempelkan tautan di layar 'tidak ditemukan': fokus ke judul konfirmasi", async () => {
     open("/pair");
     renderPair();
     fireEvent.change(screen.getByLabelText("Tempel tautan pairing"), { target: { value: `https://app.contoh.com/pair#${FRAGMENT}` } });
     fireEvent.click(screen.getByRole("button", { name: "Lanjut" }));
-    expect(focusedHeading()).toBe("Pasangkan dengan laptop");
+    await waitFor(() => expect(focusedHeading()).toBe("Pasangkan dengan laptop"));
   });
 
   test("QR baru saat layar terbuka (hashchange): fokus ke judul konfirmasi yang baru", async () => {
@@ -163,7 +163,7 @@ describe("fokus dan pengumuman untuk pembaca layar dan keyboard", () => {
     await screen.findByText(/Terhubung dengan/);
     window.location.hash = `c=${"Q".repeat(32)}&r=${encodeURIComponent(RELAY)}`;
     act(() => void window.dispatchEvent(new HashChangeEvent("hashchange")));
-    expect(focusedHeading()).toBe("Pasangkan dengan laptop");
+    await waitFor(() => expect(focusedHeading()).toBe("Pasangkan dengan laptop"));
   });
 
   test("berpindah antar-layar dalam aplikasi (Selesai -> beranda): fokus ke judul beranda", async () => {
@@ -176,7 +176,7 @@ describe("fokus dan pengumuman untuk pembaca layar dan keyboard", () => {
     await screen.findByText("Terhubung dengan Laptop Kantor");
     fireEvent.click(screen.getByRole("button", { name: "Selesai" }));
     await screen.findByRole("heading", { level: 2, name: "Laptop terpasang" });
-    expect(focusedHeading()).toBe("Laptop terpasang");
+    await waitFor(() => expect(focusedHeading()).toBe("Laptop terpasang"));
   });
 
   test("membuka aplikasi langsung di beranda tidak merebut fokus", () => {

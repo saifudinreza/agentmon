@@ -12,7 +12,7 @@
 //
 // PERANGKAT YANG DICABUT: baris HP tetap ada (jejaknya terjaga) tetapi `revokedAt` terisi, dan sejak
 // itu HP tersebut tidak bisa tersambung dan tidak dianggap dipasangkan dengan siapa pun.
-import { and, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import { hashToken, type RelayDirectory } from "../directory";
 import type { Database } from "./connect";
 import { devices, machines, pairings } from "./schema";
@@ -23,6 +23,8 @@ export type DbDirectory = RelayDirectory & {
   pair(machineId: string, deviceId: string): Promise<void>;
   unpair(machineId: string, deviceId: string): Promise<void>;
   revokeDevice(deviceId: string): Promise<void>;
+  /** Laptop yang dipasangkan dengan sebuah HP (HP yang dicabut tidak mendapat apa pun), berurutan menurut nama. */
+  machinesOf(deviceId: string): Promise<Array<{ id: string; name: string }>>;
 };
 
 // Sama dengan batas minimum token di bingkai `hello`. Token yang lebih pendek tidak mungkin dipakai
@@ -69,6 +71,17 @@ export function createDbDirectory(db: Database, options: { now?: () => Date } = 
         .innerJoin(devices, eq(devices.id, pairings.deviceId))
         .where(and(eq(pairings.machineId, machineId), isNull(devices.revokedAt)));
       return rows.map((row) => row.id);
+    },
+
+    async machinesOf(deviceId) {
+      const rows = await db
+        .select({ id: machines.id, name: machines.name })
+        .from(pairings)
+        .innerJoin(machines, eq(machines.id, pairings.machineId))
+        .innerJoin(devices, eq(devices.id, pairings.deviceId))
+        .where(and(eq(pairings.deviceId, deviceId), isNull(devices.revokedAt)))
+        .orderBy(asc(machines.name), asc(machines.id));
+      return rows;
     },
 
     async isPaired(machineId, deviceId) {
