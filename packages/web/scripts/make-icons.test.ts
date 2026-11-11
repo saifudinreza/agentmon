@@ -119,5 +119,6 @@ describe("ikon yang di-commit", () => {
       const committed = readFileSync(join(__dirname, "..", "public", "icons", icon.file));
       expect(Buffer.from(readFileSync(join(dir, icon.file))).equals(committed), icon.file).toBe(true);
     }
-  });
+    // Merender empat ikon dengan supersampling cukup berat; saat mesin sibuk bisa melewati batas 5 detik bawaan.
+  }, 60_000);
 });

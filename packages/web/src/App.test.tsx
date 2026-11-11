@@ -27,14 +27,14 @@ describe("tampilan dasar", () => {
     stubMatchMedia(true);
     renderApp();
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("AgentMon");
-    expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Belum ada laptop terpasang");
+    expect(screen.getByRole("heading", { level: 2, name: "Belum ada laptop terpasang" })).toBeTruthy();
     expect(document.documentElement.lang).toBe("id");
   });
 
   test("bahasa Inggris tersedia lewat i18n dan mengubah lang halaman", () => {
     stubMatchMedia(true);
     renderApp("en");
-    expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("No laptop paired yet");
+    expect(screen.getByRole("heading", { level: 2, name: "No laptop paired yet" })).toBeTruthy();
     expect(document.documentElement.lang).toBe("en");
   });
 
@@ -42,7 +42,7 @@ describe("tampilan dasar", () => {
     stubMatchMedia(true);
     window.localStorage.setItem("agentmon.locale", "en");
     renderApp();
-    expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("No laptop paired yet");
+    expect(screen.getByRole("heading", { level: 2, name: "No laptop paired yet" })).toBeTruthy();
   });
 
   test("tidak ada teks Indonesia yang tertinggal saat bahasa Inggris dipilih", () => {
