@@ -74,3 +74,31 @@ describe("createKeyedRateLimiter", () => {
     expect(limiter.take("b")).toBe(true); // b dilupakan, mulai dari ember penuh
   });
 });
+
+describe("peek dan canTake (melihat jatah tanpa menghabiskannya)", () => {
+  test("peek tidak mengambil token", () => {
+    const limiter = createRateLimiter({ capacity: 1, refillPerSecond: 0, now: () => 0 });
+    expect(limiter.peek()).toBe(true);
+    expect(limiter.peek()).toBe(true);
+    expect(limiter.take()).toBe(true);
+    expect(limiter.peek()).toBe(false);
+  });
+
+  test("peek memperhitungkan isi ulang oleh waktu", () => {
+    const clock = { ms: 0 };
+    const limiter = createRateLimiter({ capacity: 1, refillPerSecond: 1, now: () => clock.ms });
+    limiter.take();
+    expect(limiter.peek()).toBe(false);
+    clock.ms = 1000;
+    expect(limiter.peek()).toBe(true);
+  });
+
+  test("canTake per kunci: kunci baru selalu boleh, yang habis tidak, dan melihat tidak menghabiskan", () => {
+    const limiter = createKeyedRateLimiter({ capacity: 1, refillPerSecond: 0, now: () => 0 });
+    expect(limiter.canTake("a")).toBe(true);
+    expect(limiter.canTake("a")).toBe(true);
+    limiter.take("a");
+    expect(limiter.canTake("a")).toBe(false);
+    expect(limiter.canTake("b")).toBe(true);
+  });
+});

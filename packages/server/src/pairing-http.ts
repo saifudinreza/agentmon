@@ -21,13 +21,13 @@
 //   - Isi permintaan dibatasi 4 KiB.
 //   - CORS hanya untuk asal (origin) yang diizinkan, karena PWA biasanya dihosting di alamat
 //     berbeda dari relay. Tanpa daftar, tidak ada asal lain yang diizinkan.
-import { getConnInfo } from "@hono/node-server/conninfo";
 import { PairRedeemRequestSchema, type PairCodeResponse, type PairedDevicesResponse, type PairRedeemResponse } from "@agentmon/shared";
 import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import type { PairingService } from "./db/pairing";
 import type { RelayDirectory } from "./directory";
+import { clientAddress } from "./client-ip";
 import { createKeyedRateLimiter, createRateLimiter } from "./rate-limit";
 
 export type PairingRoutesOptions = {
@@ -86,14 +86,7 @@ export function mountPairingRoutes(app: Hono, options: PairingRoutesOptions): vo
     ...clock,
   });
 
-  const clientKey = (c: Context): string => {
-    if (options.trustProxy) {
-      // Entri TERKANAN ditambahkan oleh proxy kita sendiri; entri di kirinya bisa dipalsukan klien.
-      const forwarded = c.req.header("x-forwarded-for")?.split(",").at(-1)?.trim();
-      if (forwarded) return forwarded;
-    }
-    return getConnInfo(c).remote.address ?? "tidak-diketahui";
-  };
+  const clientKey = (c: Context): string => clientAddress(c, options.trustProxy);
 
   // Laptop: token wajib. Mengembalikan nomor laptop, atau undefined bila ditolak.
   const machineOf = async (c: Context): Promise<string | undefined> => {

@@ -19,7 +19,27 @@ function compare(a: Envelope, b: Envelope): number {
 
 export function mergeEvents(existing: readonly Envelope[], incoming: readonly Envelope[]): readonly Envelope[] {
   if (incoming.length === 0) return existing;
+  const last = existing[existing.length - 1];
 
+  // JALUR CEPAT, kasus yang paling sering (satu event langsung tiba berurutan di ujung): semua yang masuk
+  // lebih besar dari event terakhir. Id yang sama selalu membawa nomor urut dan cap waktu yang sama, jadi
+  // event yang sudah ada tidak mungkin lebih besar dari yang terakhir; tidak ada yang perlu dicocokkan dengan
+  // daftar yang ada. Hanya duplikat di dalam kiriman itu sendiri yang dibuang. Biayanya sebanding dengan
+  // jumlah event masuk, bukan panjang sesi (membangun himpunan id seluruh sesi tiap event membuat sesi
+  // 40.000 event memakan sekitar 8 ms per event langsung).
+  if (!last || incoming.every((event) => compare(last, event) < 0)) {
+    const inside = new Set<string>();
+    const fresh: Envelope[] = [];
+    for (const event of incoming) {
+      if (inside.has(event.id)) continue;
+      inside.add(event.id);
+      fresh.push(event);
+    }
+    return [...existing, ...fresh.sort(compare)];
+  }
+
+  // JALUR UMUM: ada yang bisa menyelip di tengah atau sudah ada (event terlambat, atau hasil pengambilan
+  // riwayat yang tumpang tindih dengan event langsung). Cocokkan dengan id yang ada, lalu gabung.
   const known = new Set(existing.map((e) => e.id));
   const fresh: Envelope[] = [];
   for (const event of incoming) {
@@ -28,11 +48,7 @@ export function mergeEvents(existing: readonly Envelope[], incoming: readonly En
     fresh.push(event);
   }
   if (fresh.length === 0) return existing;
-
   fresh.sort(compare);
-  const last = existing[existing.length - 1];
-  // Jalur cepat: semuanya datang SETELAH yang terakhir, cukup ditempel.
-  if (!last || compare(last, fresh[0] as Envelope) < 0) return [...existing, ...fresh];
 
   // Jalur umum: ada yang menyelip di tengah (datang terlambat). Gabung dua daftar yang sudah terurut.
   const merged: Envelope[] = [];

@@ -131,7 +131,7 @@ Daemon di laptop menyambung ke relay lewat `packages/bridge/src/relay-client.ts`
 - **Keputusan dari HP**: perintah `{type: "approval.decision", approvalId, decision, comment?, hunks?}` diserahkan ke approval engine. Log hanya mencatat hasilnya, tidak pernah komentar atau isi keputusan.
 
 ## API baca riwayat untuk HP
-Aktif di mode database (`PAIRING_ALLOWED_ORIGINS` juga berlaku untuk CORS). Semua jalur butuh token HP (`Authorization: Bearer`); laju dibatasi per HP.
+Aktif di mode database (`PAIRING_ALLOWED_ORIGINS` juga berlaku untuk CORS). Semua jalur butuh token HP (`Authorization: Bearer`); laju dibatasi per HP. Permintaan bertoken salah (atau tanpa token) juga dibatasi **per alamat IP** (lonjakan 30, lalu 1 per detik) dan ditolak `429` sebelum menyentuh database; di belakang proxy hosting nyalakan `TRUST_PROXY=1` supaya alamat dibaca dari `X-Forwarded-For`.
 
 | Endpoint | Fungsi |
 |---|---|

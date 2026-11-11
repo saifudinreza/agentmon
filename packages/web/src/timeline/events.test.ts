@@ -139,3 +139,62 @@ describe("applyEventToSessions", () => {
     expect(() => applyEventToSessions(existing, ev(1, { ts: "2026-11-11T12:00:00.000Z" }))).not.toThrow();
   });
 });
+
+describe("mergeEvents: jalur cepat untuk event berurutan di ujung", () => {
+  test("hasilnya sama persis dengan jalur umum untuk semua kombinasi (dibandingkan dengan acuan yang sederhana)", () => {
+    // Acuan lambat tetapi jelas: gabung semua, buang id ganda, urutkan.
+    const reference = (a: readonly Envelope[], b: readonly Envelope[]) => {
+      const byId = new Map<string, Envelope>();
+      for (const e of [...a, ...b]) if (!byId.has(e.id)) byId.set(e.id, e);
+      return [...byId.values()].sort((x, y) => x.seq - y.seq || x.ts.localeCompare(y.ts) || x.id.localeCompare(y.id));
+    };
+    const all = Array.from({ length: 30 }, (_, i) => ev(i));
+    for (let trial = 0; trial < 300; trial++) {
+      const pick = () => all.filter(() => Math.random() < 0.5);
+      const a = [...pick()].sort((x, y) => x.seq - y.seq);
+      const b = pick().sort(() => Math.random() - 0.5);
+      expect(mergeEvents(a, b).map((e) => e.id)).toEqual(reference(a, b).map((e) => e.id));
+    }
+  });
+
+  test("event dengan seq SAMA dengan yang terakhir (id sama) dianggap sudah ada, bukan ditempel lagi", () => {
+    const last = ev(5);
+    const base = [ev(3), ev(4), last];
+    expect(mergeEvents(base, [last])).toBe(base);
+    expect(mergeEvents(base, [{ ...last }])).toBe(base);
+  });
+
+  test("event dengan seq yang sama tetapi id berbeda adalah event lain dan ikut masuk, urutan pasti", () => {
+    const a = ev(5, { ts: "2026-11-11T10:00:01.000Z" });
+    const b = ev(5, { ts: "2026-11-11T10:00:02.000Z" });
+    expect(mergeEvents([a], [b])).toEqual([a, b]);
+  });
+
+  test("duplikat di dalam kiriman yang sama pada jalur cepat dibuang", () => {
+    const e = ev(10);
+    expect(mergeEvents([ev(0)], [e, e, { ...e }])).toHaveLength(2);
+  });
+
+  test("campuran: sebagian lebih besar dari yang terakhir dan sebagian yang sudah ada tidak memakai jalur cepat, dan tetap benar", () => {
+    const base = [ev(0), ev(1), ev(2)];
+    const merged = mergeEvents(base, [base[2] as Envelope, ev(3)]);
+    expect(seqs(merged)).toEqual([0, 1, 2, 3]);
+  });
+
+  test("tidak mengubah array masukan pada jalur cepat", () => {
+    const base = Object.freeze([ev(0), ev(1)]);
+    expect(() => mergeEvents(base, Object.freeze([ev(2)]))).not.toThrow();
+    expect(seqs(base)).toEqual([0, 1]);
+  });
+
+  test("sesi 40.000 event: 200 event langsung beruntun selesai jauh di bawah satu detik (biaya tidak naik menurut panjang sesi)", () => {
+    let list: readonly Envelope[] = Array.from({ length: 40_000 }, (_, i) => ev(i));
+    const started = performance.now();
+    for (let i = 0; i < 200; i++) list = mergeEvents(list, [ev(40_000 + i)]);
+    const elapsed = performance.now() - started;
+    expect(list).toHaveLength(40_200);
+    expect(seqs(list.slice(-3))).toEqual([40_197, 40_198, 40_199]);
+    // Sebelumnya sekitar 7,8 ms per event (1,5 detik untuk 200). Batas longgar agar tidak rapuh di mesin sibuk.
+    expect(elapsed).toBeLessThan(800);
+  });
+});

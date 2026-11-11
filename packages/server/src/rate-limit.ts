@@ -13,6 +13,8 @@
 export type RateLimiter = {
   // Mencoba mengambil satu token. true = boleh, false = ember kosong.
   take(): boolean;
+  // Apakah ada token SAAT INI, tanpa mengambilnya.
+  peek(): boolean;
 };
 
 export type RateLimiterOptions = {
@@ -25,7 +27,11 @@ export type RateLimiterOptions = {
  * Satu ember per KUNCI (misalnya alamat IP atau nomor laptop). Jumlah kunci dibatasi supaya
  * memorinya tidak bisa dibengkakkan: bila penuh, kunci yang paling lama dilihat dibuang.
  */
-export type KeyedRateLimiter = { take(key: string): boolean };
+export type KeyedRateLimiter = {
+  take(key: string): boolean;
+  /** Apakah kunci ini masih punya jatah, tanpa menghabiskannya. Kunci yang belum pernah terlihat selalu punya. */
+  canTake(key: string): boolean;
+};
 
 export function createKeyedRateLimiter(options: RateLimiterOptions & { maxKeys?: number }): KeyedRateLimiter {
   const maxKeys = options.maxKeys ?? 10_000;
@@ -42,6 +48,7 @@ export function createKeyedRateLimiter(options: RateLimiterOptions & { maxKeys?:
       buckets.set(key, bucket);
       return bucket.take();
     },
+    canTake: (key) => buckets.get(key)?.peek() ?? true,
   };
 }
 
@@ -61,6 +68,11 @@ export function createRateLimiter(options: RateLimiterOptions): RateLimiter {
       if (tokens < 1) return false;
       tokens -= 1;
       return true;
+    },
+
+    peek() {
+      const elapsedSeconds = Math.max(0, now() - last) / 1000;
+      return Math.min(options.capacity, tokens + elapsedSeconds * options.refillPerSecond) >= 1;
     },
   };
 }

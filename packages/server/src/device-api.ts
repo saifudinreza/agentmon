@@ -25,6 +25,7 @@ import type { Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import type { DbDirectory } from "./db/directory";
 import { MAX_PAGE_SIZE, type Store } from "./db/store";
+import { clientAddress } from "./client-ip";
 import { createKeyedRateLimiter } from "./rate-limit";
 
 export type DeviceApiOptions = {
@@ -33,12 +34,18 @@ export type DeviceApiOptions = {
   isMachineOnline: (machineId: string) => boolean;
   /** Asal PWA yang boleh memanggil dari browser, misalnya ["https://app.contoh.com"]. */
   allowedOrigins?: string[];
-  /** Batas laju per HP. */
+  /** Batas laju per HP (permintaan yang sah). */
   limits?: { burst: number; refillPerSecond: number };
+  /** Batas permintaan yang GAGAL autentikasi per alamat IP (lihat `authenticate`). */
+  authFailureLimits?: { burst: number; refillPerSecond: number };
+  /** Relay di belakang proxy hosting: alamat IP dibaca dari X-Forwarded-For (lihat client-ip.ts). */
+  trustProxy?: boolean;
   now?: () => number;
 };
 
 export const DEFAULT_DEVICE_API_LIMITS = { burst: 60, refillPerSecond: 5 };
+// Longgar untuk pengguna sah yang sesekali salah (token basi di satu HP), ketat untuk penyerang.
+export const DEFAULT_AUTH_FAILURE_LIMITS = { burst: 30, refillPerSecond: 1 };
 
 const MAX_ID_LENGTH = 200;
 const DEFAULT_EVENTS_LIMIT = 200;
@@ -63,6 +70,16 @@ export function mountDeviceApi(app: Hono, options: DeviceApiOptions): void {
     ...(options.now ? { now: options.now } : {}),
   });
 
+  // Permintaan bertoken salah dihitung per alamat IP. Token 256 bit tidak bisa ditebak, tetapi tiap permintaan
+  // bertoken salah tetap menjalankan satu kueri database; tanpa batas, satu klien bisa membebani database
+  // dengan token acak. Batas ini sama dengan yang dipakai endpoint pairing (per IP).
+  const failureLimits = options.authFailureLimits ?? DEFAULT_AUTH_FAILURE_LIMITS;
+  const failures = createKeyedRateLimiter({
+    capacity: failureLimits.burst,
+    refillPerSecond: failureLimits.refillPerSecond,
+    ...(options.now ? { now: options.now } : {}),
+  });
+
   const allowed = new Set(options.allowedOrigins ?? []);
   app.use(
     "/api/*",
@@ -76,9 +93,16 @@ export function mountDeviceApi(app: Hono, options: DeviceApiOptions): void {
 
   // Memeriksa HP: token sah dan belum melewati batas laju. Mengembalikan nomor HP, atau Response penolakan.
   const authenticate = async (c: Context): Promise<{ deviceId: string } | Response> => {
+    const address = clientAddress(c, options.trustProxy);
+    // Alamat yang sudah menghabiskan jatah kegagalannya ditolak SEBELUM menyentuh database. Pengguna sah di
+    // balik alamat yang sama (satu jaringan) ikut tertahan sampai jatahnya pulih; HP mencoba lagi sendiri.
+    if (!failures.canTake(address)) return c.json({ error: "rate-limited" }, 429);
     const token = bearer(c);
     const deviceId = token ? await directory.authenticate("device", token) : undefined;
-    if (!deviceId) return c.json({ error: "unauthorized" }, 401);
+    if (!deviceId) {
+      failures.take(address);
+      return c.json({ error: "unauthorized" }, 401);
+    }
     if (!limiter.take(deviceId)) return c.json({ error: "rate-limited" }, 429);
     return { deviceId };
   };

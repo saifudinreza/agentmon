@@ -274,6 +274,60 @@ describe("GET /api/machines/:id/sessions/:id/events", () => {
   });
 });
 
+describe("permintaan bertoken salah dibatasi per alamat IP", () => {
+  const bad = (base: string, ip?: string) => api(base, "/api/machines", "token-salah-0000000000000000", ip ? { "x-forwarded-for": ip } : {});
+
+  test("setelah jatah kegagalan habis, permintaan berikutnya ditolak 429 SEBELUM menyentuh database", async () => {
+    const authenticate = vi.spyOn(directory, "authenticate");
+    const base = await start({ authFailureLimits: { burst: 3, refillPerSecond: 0 } });
+    const statuses = [];
+    for (let i = 0; i < 6; i++) statuses.push((await bad(base)).status);
+    expect(statuses).toEqual([401, 401, 401, 429, 429, 429]);
+    expect(authenticate).toHaveBeenCalledTimes(3); // yang ditolak 429 tidak membebani database
+  });
+
+  test("jatah pulih seiring waktu", async () => {
+    const clock = { ms: 0 };
+    const base = await start({ authFailureLimits: { burst: 1, refillPerSecond: 1 }, now: () => clock.ms });
+    expect((await bad(base)).status).toBe(401);
+    expect((await bad(base)).status).toBe(429);
+    clock.ms += 1500;
+    expect((await bad(base)).status).toBe(401);
+  });
+
+  test("HP yang sah dari alamat LAIN tetap terlayani walau satu alamat sedang membanjiri (dengan trustProxy)", async () => {
+    const base = await start({ trustProxy: true, authFailureLimits: { burst: 2, refillPerSecond: 0 } });
+    for (let i = 0; i < 5; i++) await bad(base, "9.9.9.9");
+    expect((await bad(base, "9.9.9.9")).status).toBe(429);
+    expect((await api(base, "/api/machines", TOKEN.d1, { "x-forwarded-for": "8.8.8.8" })).status).toBe(200);
+  });
+
+  test("alamat yang sedang diblokir ditolak walau memakai token yang sah (penyerang tidak bisa menyelipkan lewat token sah)", async () => {
+    const base = await start({ trustProxy: true, authFailureLimits: { burst: 1, refillPerSecond: 0 } });
+    await bad(base, "9.9.9.9");
+    expect((await api(base, "/api/machines", TOKEN.d1, { "x-forwarded-for": "9.9.9.9" })).status).toBe(429);
+  });
+
+  test("permintaan sah tidak menghabiskan jatah kegagalan", async () => {
+    const base = await start({ authFailureLimits: { burst: 2, refillPerSecond: 0 }, limits: { burst: 1000, refillPerSecond: 1000 } });
+    for (let i = 0; i < 20; i++) expect((await api(base, "/api/machines")).status).toBe(200);
+    expect((await bad(base)).status).toBe(401); // jatah masih penuh
+  });
+
+  test("tanpa trustProxy, header X-Forwarded-For palsu TIDAK bisa menghindari batas", async () => {
+    const base = await start({ authFailureLimits: { burst: 1, refillPerSecond: 0 } });
+    expect((await bad(base, "1.1.1.1")).status).toBe(401);
+    expect((await bad(base, "2.2.2.2")).status).toBe(429); // alamat sebenarnya sama
+  });
+
+  test("tanpa token sama sekali juga dihitung sebagai kegagalan", async () => {
+    const base = await start({ authFailureLimits: { burst: 2, refillPerSecond: 0 } });
+    const statuses = [];
+    for (let i = 0; i < 4; i++) statuses.push((await api(base, "/api/machines", null)).status);
+    expect(statuses).toEqual([401, 401, 429, 429]);
+  });
+});
+
 describe("laju dan CORS", () => {
   test("permintaan dibatasi lajunya per HP, dan HP lain tidak ikut terkena", async () => {
     const base = await start({ limits: { burst: 3, refillPerSecond: 0 } });
