@@ -24,6 +24,11 @@ export interface RelayDirectory {
   devicesOf(machineId: string): Promise<readonly string[]>;
   /** Apakah laptop dan HP ini dipasangkan? */
   isPaired(machineId: string, deviceId: string): Promise<boolean>;
+  /**
+   * Nomor HP yang dipasangkan dengan laptop ini dan punya langganan push (bisa dibangunkan walau sedang terkunci).
+   * Opsional: direktori tanpa penyimpanan push tidak mengimplementasikannya.
+   */
+  devicesWithPush?(machineId: string): Promise<readonly string[]>;
 }
 
 /** Hash token yang disimpan sebagai pengganti token aslinya. */

@@ -37,6 +37,8 @@ async function main() {
       // terminal muncul. Nyalakan dengan AGENTMON_HOLD=1, dan jawab lewat perintah `approve`
       // dan `deny`. Perintah `pause` melepas semuanya.
       holdEnabled,
+      // Dengan relay terpasang, aksi hanya ditahan bila ada HP yang bisa menjawab; tanpa relay, jawaban lewat CLI atau halaman lokal.
+      canAnswer: () => (process.env.AGENTMON_RELAY_URL && process.env.AGENTMON_RELAY_TOKEN ? (relay?.canReachPhone() ?? false) : true),
       onHook: createClaudeCodeHandler({
         // Event dicatat di timeline (ringkasan tanpa isi), di log (jenis dan urutannya), dan dititipkan
         // ke klien relay. Menitipkan selalu seketika dan tidak pernah gagal ke pemanggilnya.

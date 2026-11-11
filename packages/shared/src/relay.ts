@@ -80,6 +80,10 @@ export const ServerFrameSchema = z.discriminatedUnion("kind", [
   // event atau mengirimnya dua kali. Dengan konfirmasi, laptop mengirim ulang yang belum
   // dikonfirmasi, dan relay mengabaikan event yang id-nya sudah pernah diterima.
   z.object({ kind: z.literal("ack"), eventId: nonEmpty }),
+  // Ke LAPTOP: berapa HP yang dipasangkan dengannya dan bisa dihubungi sekarang (sedang tersambung, atau punya
+  // langganan push). Dikirim setelah `welcome` dan setiap kali jumlah itu mungkin berubah. 0 = tidak ada yang
+  // bisa menjawab, jadi laptop tidak perlu menahan aksi agent.
+  z.object({ kind: z.literal("presence"), reachable: z.number().int().nonnegative() }),
   z.object({ kind: z.literal("error"), code: RelayErrorCodeSchema, message: nonEmpty }),
 ]);
 export type ServerFrame = z.infer<typeof ServerFrameSchema>;

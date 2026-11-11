@@ -177,7 +177,10 @@ export function createRelayHub(options: RelayHubOptions) {
     sessions.delete(session);
     if (session.id !== undefined) {
       const map = session.role === "machine" ? machines : devices;
-      if (map.get(session.id) === session) map.delete(session.id);
+      if (map.get(session.id) === session) {
+        map.delete(session.id);
+        if (session.role === "device") announcePresenceToAll();
+      }
     }
   }
 
@@ -314,6 +317,35 @@ export function createRelayHub(options: RelayHubOptions) {
     }
   }
 
+  // ---- Kehadiran HP ----
+  // Berapa HP yang dipasangkan dengan laptop ini dan bisa dihubungi: sedang tersambung, atau punya langganan push.
+  async function reachableFor(machineId: string): Promise<number> {
+    const paired = await directory.devicesOf(machineId);
+    const push = directory.devicesWithPush ? await directory.devicesWithPush(machineId) : [];
+    const reachable = new Set<string>(push);
+    for (const id of paired) if (devices.has(id)) reachable.add(id);
+    // Hanya yang masih dipasangkan: langganan push dari HP yang sudah dilepas tidak dihitung.
+    return paired.filter((id) => reachable.has(id)).length;
+  }
+
+  // Memberi tahu satu laptop yang sedang tersambung. Gagal menghitung tidak boleh mengganggu siapa pun; laptop
+  // yang tidak mendapat kabar menganggap tidak ada yang bisa dihubungi (kembali ke prompt terminal).
+  async function announcePresence(machineId: string): Promise<void> {
+    const target = machines.get(machineId);
+    if (!target) return;
+    try {
+      const reachable = await reachableFor(machineId);
+      if (machines.get(machineId) === target) send(target, { kind: "presence", reachable });
+    } catch (error) {
+      logger.error(`gagal menghitung kehadiran: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  // HP tersambung atau putus: semua laptop yang sedang tersambung dihitung ulang.
+  function announcePresenceToAll(): void {
+    for (const machineId of [...machines.keys()]) void announcePresence(machineId);
+  }
+
   async function authenticate(session: Session, role: RelayRole, token: string): Promise<void> {
     let id: string | undefined;
     try {
@@ -336,6 +368,8 @@ export function createRelayHub(options: RelayHubOptions) {
     map.set(id, session);
     logger.info(`terautentikasi role=${role}`);
     send(session, { kind: "welcome", role, id });
+    if (role === "machine") void announcePresence(id);
+    else announcePresenceToAll();
   }
 
   // ---- Yang dipakai transport ----------------------------------------------------------

@@ -93,6 +93,12 @@ export type RelayClient = {
   /** Menitipkan event. Selalu seketika, tidak pernah melempar error, tidak menunggu jaringan. */
   send(event: Envelope): void;
   stats(): RelayClientStats;
+  /**
+   * Adakah HP yang bisa menjawab sekarang? Benar hanya bila tersambung ke relay DAN relay melaporkan paling sedikit
+   * satu HP yang bisa dihubungi. Relay mati, belum ada laporan, atau tidak ada HP = salah, sehingga daemon tidak
+   * menahan aksi dan prompt terminal langsung muncul.
+   */
+  canReachPhone(): boolean;
   /** Menunggu antrean kosong (semua di-ack) paling lama `timeoutMs`. Mengembalikan true bila kosong. */
   flush(timeoutMs: number): Promise<boolean>;
   close(): void;
@@ -182,6 +188,8 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   // menjawab rate_limited). Hanya satu; pump() yang menjadwalkannya lagi bila masih perlu.
   let pumpTimer: ReturnType<typeof setTimeout> | undefined;
   let misconfigured = false;
+  // Jumlah HP yang bisa dihubungi menurut laporan relay terakhir; kosong = belum ada laporan.
+  let reachable: number | undefined;
   // Ember berlubang untuk laju kirim sendiri.
   let tokens = sendBurst;
   let tokensAt = now();
@@ -386,6 +394,9 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         pump();
         return;
       }
+      case "presence":
+        reachable = frame.reachable;
+        return;
       case "ack": {
         const entry = byId.get(frame.eventId);
         if (!entry) return; // ack untuk event yang sudah dibuang atau pernah di-ack
@@ -415,6 +426,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   const scheduleReconnect = () => {
     if (state === "closed") return;
     state = "disconnected";
+    reachable = undefined; // laporan lama tidak berlaku lagi setelah putus
     if (misconfigured) return; // salah pengaturan: mencoba lagi tidak akan menolong
     const base = Math.min(reconnectMax, reconnectMin * 2 ** Math.min(attempts, 20));
     // Acak antara 50% dan 100% dari jeda, supaya banyak laptop tidak menyerbu bersamaan.
@@ -502,6 +514,8 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       }
     },
 
+    canReachPhone: () => state === "ready" && reachable !== undefined && reachable > 0,
+
     stats() {
       const inFlight = queue.filter((entry) => entry.sentAt !== undefined).length;
       return { state, queued: queue.length - inFlight, inFlight, acked, dropped, reconnects };
@@ -517,6 +531,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
 
     close() {
       state = "closed";
+      reachable = undefined;
       clearTimeout(reconnectTimer);
       clearConnectionTimers();
       try {

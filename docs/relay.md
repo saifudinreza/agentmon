@@ -162,3 +162,11 @@ HP hanya boleh membaca laptop yang dipasangkan dengannya. Laptop yang tidak dipa
 - **`GET /api/approvals`**: izin yang masih menunggu di semua laptop yang dipasangkan dengan HP ini (dihitung dari event `approval.requested` 30 menit terakhir, dikurangi yang sudah `resolved`/`auto_resolved` atau kedaluwarsa; berisiko tinggi di atas). Dipakai HP untuk mengisi antrean saat dibuka.
 - **Frame `command`** (HP ke laptop) membawa `approval.decision` (`approve` atau `deny`, alasan opsional). Laptop menjawab lewat frame **`reply`** (laptop ke relay, diteruskan hanya ke HP yang memutuskan) berisi `approval.result` dengan hasil `applied`, `already_resolved` (kalah dari perangkat lain atau sudah kedaluwarsa), `unknown`, atau `invalid`. Keputusan pertama yang sah menang; relay tidak memutuskan apa pun.
 - Event `approval.requested` membawa `diff` (perubahan berkas yang diusulkan). Input alat yang terlalu besar dipotong dengan penanda di sisi laptop supaya tetap muat dalam satu pesan.
+
+## Kehadiran HP (presence)
+
+Relay mengirim frame **`presence`** `{reachable: N}` ke laptop: berapa HP yang dipasangkan dengannya dan **bisa dihubungi**, yaitu sedang tersambung ke relay, atau punya langganan push (bisa dibangunkan walau terkunci; dihitung sekali walau keduanya benar). Dikirim setelah `welcome` dan setiap kali ada HP tersambung atau putus. HP yang dicabut atau tidak dipasangkan tidak dihitung. Bila relay gagal menghitung (mis. database bermasalah), tidak ada frame yang dikirim.
+
+Daemon memakainya lewat `relayClient.canReachPhone()`: benar hanya bila tersambung ke relay DAN laporan terakhir > 0. Relay mati, belum ada laporan, atau 0 HP berarti daemon **tidak menahan aksi**, sehingga prompt terminal langsung muncul (tidak menunggu 9 menit). Perintah `status` menjelaskan keadaan ini. Tanpa relay yang dikonfigurasi, perilaku lama tetap: jawaban lewat CLI atau halaman lokal.
+
+Keterbatasan: backend push belum ada (issue lain), jadi langganan push belum bisa terdaftar; hitungannya sudah benar begitu tabelnya terisi. Izin yang SUDAH menunggu tidak dilepas bila HP terakhir putus; hanya aksi berikutnya yang kembali ke terminal.

@@ -26,6 +26,16 @@ describe("panel kontrol (saklar menahan aksi)", () => {
     expect(on.canHold()).toBe(true);
   });
 
+  test("canAnswer salah (tidak ada HP yang bisa menjawab): tidak ditahan, dan status menjelaskan alasannya", () => {
+    let answer = false;
+    const control = createDaemonControl({ holdEnabled: true, approvals: createApprovalEngine(), canAnswer: () => answer });
+    expect(control.canHold()).toBe(false);
+    expect(control.status().message).toContain("Tidak ada HP yang bisa dihubungi");
+    answer = true;
+    expect(control.canHold()).toBe(true);
+    expect(control.status().message).not.toContain("Tidak ada HP");
+  });
+
   test("menjeda tidak menyalakan penahanan yang mati, dan melanjutkan juga tidak", () => {
     const control = createDaemonControl({ holdEnabled: false, approvals: createApprovalEngine() });
     control.pause();
