@@ -989,13 +989,19 @@ describe("kehadiran HP (presence) untuk laptop", () => {
     expect(presences(m1.fake)).toEqual([0]);
   });
 
-  test("gagal menghitung (database bermasalah) tidak melempar dan tidak mengirim hitungan palsu", async () => {
+  test("gagal menghitung (database bermasalah) tidak melempar, dicatat, dan melaporkan 0 (bukan angka lama)", async () => {
     const memory = makeDirectory();
-    const directory: RelayDirectory = { ...memory, devicesWithPush: async () => Promise.reject(new Error("db mati")) };
+    let broken = false;
+    const directory: RelayDirectory = { ...memory, devicesWithPush: async () => (broken ? Promise.reject(new Error("db mati")) : []) };
     const { hub, logs } = setup({ directory });
     const m1 = await connect(hub, "machine", TOKENS.m1);
+    await connect(hub, "device", TOKENS.d1);
     await settle();
-    expect(presences(m1.fake)).toEqual([]);
+    expect(presences(m1.fake).at(-1)).toBe(1);
+    broken = true;
+    await connect(hub, "device", TOKENS.d2);
+    await settle();
+    expect(presences(m1.fake).at(-1)).toBe(0);
     expect(logs.some((l) => l.includes("gagal menghitung kehadiran"))).toBe(true);
   });
 
@@ -1005,5 +1011,44 @@ describe("kehadiran HP (presence) untuk laptop", () => {
     await connect(hub, "machine", TOKENS.m1);
     await settle();
     expect(presences(d1.fake)).toEqual([]);
+  });
+});
+
+describe("kehadiran: ketepatan hitungan", () => {
+  const presences = (fake: ReturnType<typeof fakeConnection>) => fake.sent.filter((f) => f.kind === "presence").map((f) => (f as { reachable: number }).reachable);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+
+  test("HP milik laptop lain tidak memicu laporan ke laptop ini", async () => {
+    const { hub } = setup();
+    const m1 = await connect(hub, "machine", TOKENS.m1);
+    await settle();
+    const before = presences(m1.fake).length;
+    const d3 = await connect(hub, "device", TOKENS.d3);
+    await settle();
+    d3.session.closed();
+    await settle();
+    expect(presences(m1.fake)).toHaveLength(before);
+  });
+
+  test("hitungan lama yang selesai belakangan tidak menimpa yang lebih baru", async () => {
+    const memory = makeDirectory();
+    const gates: Array<() => void> = [];
+    let calls = 0;
+    // Panggilan pertama ke devicesWithPush tertahan sampai dilepas; yang berikutnya langsung selesai.
+    const directory: RelayDirectory = {
+      ...memory,
+      devicesWithPush: () => {
+        calls++;
+        if (calls === 1) return new Promise((resolve) => gates.push(() => resolve(["d1", "d2"])));
+        return Promise.resolve([]);
+      },
+    };
+    const { hub } = setup({ directory });
+    const m1 = await connect(hub, "machine", TOKENS.m1); // hitungan #1 tertahan (akan menghasilkan 2)
+    await connect(hub, "device", TOKENS.d1); // hitungan #2 selesai: 1
+    await settle();
+    gates[0]?.(); // hitungan #1 selesai terlambat dengan hasil basi
+    await settle();
+    expect(presences(m1.fake)).toEqual([1]);
   });
 });
