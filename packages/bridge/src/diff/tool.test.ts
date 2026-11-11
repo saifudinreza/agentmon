@@ -282,7 +282,8 @@ describe("kasus sulit: biner, besar, tidak terbaca", () => {
     const change = changeOf(await diffOf("Write", { file_path: path, content: "kecil\n" }));
     expect(change).toMatchObject({ type: "too_large", isNew: false, oldBytes: 3 * 1024 * 1024 });
     expect(vi.mocked(readFile)).not.toHaveBeenCalled(); // inilah jaminan memorinya
-  });
+    // Menulis berkas 3 MB ke disk bisa lambat saat mesin sibuk (antivirus, test paket lain berjalan bersamaan).
+  }, 30_000);
 
   test("batas ukuran bisa diatur", async () => {
     put("a.txt", "x".repeat(200));

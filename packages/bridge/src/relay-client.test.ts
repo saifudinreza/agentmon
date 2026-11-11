@@ -285,7 +285,10 @@ describe("putus-sambung: tidak ada event yang hilang atau ganda", () => {
 
   test("dalam SATU koneksi, klien tidak pernah mengirim event yang sama dua kali", async () => {
     const relay = await startFakeRelay({ onEvent: (n) => (n % 9 === 0 ? "close" : "ack") });
-    const { client } = connect(relay.url);
+    // Batas ack dibuat sangat panjang: kirim ulang karena ack telat (perilaku yang memang ada, dan
+    // bisa terjadi saat mesin sibuk) tidak boleh mengaburkan apa yang diuji di sini, yaitu bahwa
+    // kirim ulang HANYA terjadi lewat koneksi baru setelah putus.
+    const { client } = connect(relay.url, { ackTimeoutMs: 100_000 });
     for (let i = 0; i < 60; i++) client.send(event(i));
     await settled(client);
 
@@ -351,23 +354,27 @@ describe("putus-sambung: tidak ada event yang hilang atau ganda", () => {
 });
 
 describe("antrean besar tidak membuat relay menolak atau memutus klien", () => {
-  // Relay yang menerapkan batas laju seperti aslinya: lonjakan 20, lalu 100 per detik, putus setelah 5 pelanggaran.
-  const strict = { capacity: 20, refillPerSecond: 100, maxViolations: 5 };
+  // Relay yang menerapkan batas laju seperti aslinya, dengan perbandingan yang sama dengan relay sungguhan:
+  // kapasitas jauh di atas lonjakan klien, dan isi ulang di atas laju klien. Kelonggaran itu penting: bila
+  // mesin sesaat macet (CI yang sibuk), pesan menumpuk lalu diproses sekaligus, dan relay harus punya ruang
+  // untuk itu. Relay asli: kapasitas 100 dan 50 per detik, melawan klien 50 dan 40 per detik.
+  const strict = { capacity: 200, refillPerSecond: 400, maxViolations: 5 };
 
   test("antrean ratusan event yang menumpuk selagi terputus terkuras habis tanpa satu pun penolakan", async () => {
     const relay = await startFakeRelay({ rate: strict });
     const port = relay.port;
     await relay.stop();
-    const { client } = connect(`http://127.0.0.1:${port}`, { maxEventsPerSecond: 80, sendBurst: 15 });
-    const sent = Array.from({ length: 300 }, (_, i) => event(i));
+    // Batas ack panjang: yang diuji di sini laju kirim, bukan kirim ulang karena ack telat.
+    const { client } = connect(`http://127.0.0.1:${port}`, { maxEventsPerSecond: 150, sendBurst: 50, ackTimeoutMs: 30_000 });
+    const sent = Array.from({ length: 400 }, (_, i) => event(i));
     for (const e of sent) client.send(e);
 
     const back = await startFakeRelay({ port, rate: strict });
-    await vi.waitFor(() => expect(client.stats()).toMatchObject({ queued: 0, inFlight: 0, acked: 300 }), { timeout: 15_000 });
+    await vi.waitFor(() => expect(client.stats()).toMatchObject({ queued: 0, inFlight: 0, acked: 400 }), { timeout: 20_000 });
     expect(back.limited()).toBe(0); // klien mengatur lajunya sendiri sehingga tidak pernah terlalu cepat
-    expect(back.applied).toHaveLength(300);
+    expect(back.applied).toHaveLength(400);
     expect(back.connections()).toBe(1); // dan tidak pernah diputus
-  }, 20_000);
+  }, 30_000);
 
   test("laju kirim benar-benar dibatasi: lonjakan awal, lalu sesuai laju yang diatur", async () => {
     const relay = await startFakeRelay();

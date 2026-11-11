@@ -10,7 +10,9 @@
     "lint": "eslint .",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "check": "pnpm lint && pnpm typecheck && pnpm test"
+    "build": "pnpm -r --if-present build",
+    "check:size": "pnpm --filter @agentmon/web check:size",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm check:size"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
