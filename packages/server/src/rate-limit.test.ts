@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { createRateLimiter } from "./rate-limit";
+import { createKeyedRateLimiter, createRateLimiter } from "./rate-limit";
 
 describe("createRateLimiter", () => {
   test("lonjakan sebesar kapasitas diizinkan, sisanya ditolak", () => {
@@ -46,5 +46,31 @@ describe("createRateLimiter", () => {
     limiter.take();
     clock.ms = 0; // jam sistem mundur
     expect(limiter.take()).toBe(false);
+  });
+});
+
+describe("createKeyedRateLimiter", () => {
+  test("tiap kunci punya ember sendiri: satu kunci yang habis tidak mengganggu kunci lain", () => {
+    const limiter = createKeyedRateLimiter({ capacity: 2, refillPerSecond: 0, now: () => 0 });
+    expect([limiter.take("a"), limiter.take("a"), limiter.take("a")]).toEqual([true, true, false]);
+    expect([limiter.take("b"), limiter.take("b"), limiter.take("b")]).toEqual([true, true, false]);
+  });
+
+  test("ember tiap kunci terisi lagi sesuai waktu", () => {
+    const clock = { ms: 0 };
+    const limiter = createKeyedRateLimiter({ capacity: 1, refillPerSecond: 1, now: () => clock.ms });
+    expect([limiter.take("a"), limiter.take("a")]).toEqual([true, false]);
+    clock.ms = 1000;
+    expect(limiter.take("a")).toBe(true);
+  });
+
+  test("jumlah kunci dibatasi: yang paling lama tidak dipakai dibuang, yang aktif dipertahankan", () => {
+    const limiter = createKeyedRateLimiter({ capacity: 1, refillPerSecond: 0, now: () => 0, maxKeys: 2 });
+    expect(limiter.take("a")).toBe(true); // a habis
+    expect(limiter.take("b")).toBe(true); // b habis
+    expect(limiter.take("a")).toBe(false); // a dipakai lagi -> "terbaru"
+    expect(limiter.take("c")).toBe(true); // penuh: b (paling lama) dibuang
+    expect(limiter.take("a")).toBe(false); // a masih diingat, tetap habis
+    expect(limiter.take("b")).toBe(true); // b dilupakan, mulai dari ember penuh
   });
 });

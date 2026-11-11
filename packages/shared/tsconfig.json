@@ -1,4 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
+  // DOM hanya untuk tipe URL dan URLSearchParams: paket ini dipakai di browser (PWA) dan di Node,
+  // dan keduanya punya kedua kelas itu (alamat QR pairing, pairing.ts).
+  "compilerOptions": { "lib": ["ES2023", "DOM"] },
   "include": ["src"]
 }

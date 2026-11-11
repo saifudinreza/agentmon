@@ -23,12 +23,15 @@ import { readFileSync } from "node:fs";
 import { DEFAULT_PORT } from "./daemon";
 import { agentmonHome, paths } from "./home";
 import type { DaemonStatus } from "./control";
+import { runPair, type PairOptions } from "./pairing";
 
 // Bekal yang bisa diganti di test: lingkungan, tempat menulis keluaran.
 export type CliDeps = {
   env: Record<string, string | undefined>;
   out: (text: string) => void;
   err: (text: string) => void;
+  // Hanya diisi test, untuk perintah `pair` (jaringan, jam, dan pencetak QR palsu).
+  pair?: Partial<Pick<PairOptions, "fetch" | "sleep" | "now" | "pollMs" | "renderQr">>;
 };
 
 type Reply = { status: number; body: unknown };
@@ -77,14 +80,36 @@ const USAGE = [
   "  approve [id] [komentar]   setujui permintaan yang menunggu",
   "  deny [id] [komentar]      tolak permintaan, dengan komentar untuk agent",
   "  ui                        cetak alamat halaman web lokal (alat pengembangan)",
+  "  pair                      pasangkan HP lewat QR (butuh AGENTMON_RELAY_URL, AGENTMON_RELAY_TOKEN, AGENTMON_APP_URL)",
 ].join("\n");
 
 /** Menjalankan satu perintah. Mengembalikan kode keluar (0 = berhasil). */
 export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   const [command, ...rest] = argv;
-  if (!command || !["status", "pause", "resume", "approve", "deny", "ui"].includes(command)) {
+  if (!command || !["status", "pause", "resume", "approve", "deny", "ui", "pair"].includes(command)) {
     deps.err(USAGE);
     return command ? 2 : 0;
+  }
+
+  // `pair` berbicara dengan RELAY, bukan dengan daemon lokal, jadi tidak butuh token daemon
+  // dan tetap bisa dijalankan walau daemon belum pernah dinyalakan.
+  if (command === "pair") {
+    const missing = ["AGENTMON_RELAY_URL", "AGENTMON_RELAY_TOKEN", "AGENTMON_APP_URL"].filter((name) => !deps.env[name]);
+    if (missing.length > 0) {
+      deps.err(`Variabel lingkungan belum diisi: ${missing.join(", ")}`);
+      deps.err("  AGENTMON_RELAY_URL     alamat relay, misalnya https://relay.contoh.com");
+      deps.err("  AGENTMON_RELAY_TOKEN   token laptop ini di relay");
+      deps.err("  AGENTMON_APP_URL       alamat aplikasi HP (PWA)");
+      return 1;
+    }
+    return runPair({
+      relayUrl: deps.env.AGENTMON_RELAY_URL as string,
+      machineToken: deps.env.AGENTMON_RELAY_TOKEN as string,
+      appUrl: deps.env.AGENTMON_APP_URL as string,
+      out: deps.out,
+      err: deps.err,
+      ...deps.pair,
+    });
   }
 
   // Port dan token dibaca dengan cara yang sama seperti daemon.

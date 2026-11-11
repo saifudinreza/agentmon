@@ -1,4 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
+  // Aplikasi browser: butuh tipe DOM (URL, document, dan seterusnya).
+  "compilerOptions": { "lib": ["ES2023", "DOM"] },
   "include": ["src"]
 }
