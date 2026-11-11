@@ -142,6 +142,7 @@ export const id = {
   "approval.diff.hidden": "…{count} baris lagi tidak ditampilkan",
   "approval.diff.none": "Rincian perubahan tidak tersedia. Periksa isi permintaan di atas.",
   "approval.approve": "Setujui",
+  "approval.truncated": "Sebagian isi permintaan ini terlalu besar dan tidak ditampilkan utuh, jadi tidak bisa disetujui dari HP. Anda tetap bisa menolak, atau memutuskannya di laptop.",
   "approval.deny": "Tolak",
   "approval.comment.label": "Alasan penolakan (dikirim ke agent)",
   "approval.comment.hint": "Agent membaca alasan ini dan bisa memperbaiki pekerjaannya.",

@@ -159,6 +159,9 @@ function ApprovalBody({ entry, machineId, approvalId, focusHeading }: { entry: R
   const finished = decision !== undefined && decision.phase !== "failed";
   const canDecide = pending !== undefined && !expired && !inFlight && !finished && resolution === undefined && state.status === "online";
 
+  // Isi yang terpotong tidak boleh disetujui: pengguna tidak melihat semuanya. Menolak tetap bisa.
+  const canApprove = canDecide && !approval?.truncated;
+
   const textareaId = "approval-comment";
 
   if (!approval) {
@@ -200,6 +203,11 @@ function ApprovalBody({ entry, machineId, approvalId, focusHeading }: { entry: R
         ))}
       </header>
 
+      {approval.truncated && (
+        <p role="alert" className="rounded-lg bg-warn-bg px-3 py-2 text-sm font-semibold text-warn-fg">
+          {t("approval.truncated")}
+        </p>
+      )}
       {shell && (
         <Section title={t("approval.command")}>
           <Pre label={t("approval.command")}>{shell.value}</Pre>
@@ -249,7 +257,7 @@ function ApprovalBody({ entry, machineId, approvalId, focusHeading }: { entry: R
           </button>
           <button
             type="button"
-            disabled={!canDecide}
+            disabled={!canApprove}
             onClick={() => entry.store.decide(machineId, approvalId, "approve")}
             className="min-h-12 rounded-lg bg-accent px-4 font-semibold text-on-accent active:opacity-80 disabled:opacity-40"
           >

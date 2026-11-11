@@ -175,3 +175,16 @@ describe("layar keputusan", () => {
     expect(screen.getByRole("alert")).toBeTruthy();
   });
 });
+
+describe("izin yang terpotong", () => {
+  test("Setujui mati dengan peringatan, tetapi Tolak tetap bisa", async () => {
+    relay.data.approvals = [pending("a1", { truncated: true })];
+    renderApp("/a/m1/a1");
+    await sync();
+    expect(screen.getByText(/tidak bisa disetujui dari HP/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Setujui" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Tolak" }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Tolak" }));
+    expect(sent).toHaveLength(1);
+  });
+});

@@ -136,6 +136,7 @@ export const en: Record<MessageKey, string> = {
   "approval.diff.hidden": "…{count} more lines not shown",
   "approval.diff.none": "Change details are not available. Check the request details above.",
   "approval.approve": "Approve",
+  "approval.truncated": "Part of this request is too large to show in full, so it cannot be approved from the phone. You can still deny it, or decide on the laptop.",
   "approval.deny": "Deny",
   "approval.comment.label": "Reason for denying (sent to the agent)",
   "approval.comment.hint": "The agent reads this reason and can fix its work.",

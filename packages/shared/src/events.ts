@@ -92,6 +92,8 @@ export const eventPayloads = {
     summary: z.string().optional(), // ringkasan satu aksi untuk dibaca cepat
     // Perubahan berkas yang diusulkan (dihitung daemon), untuk ditampilkan di HP sebelum memutuskan.
     diff: FileDiffSchema.optional(),
+    // true bila ada isi (input atau diff) yang terlalu besar dan tidak dikirim utuh ke HP. HP tidak boleh menyetujuinya.
+    truncated: z.boolean().optional(),
     expiresAt: isoDate, // batas waktu menjawab
   }),
   // Izin sudah diputuskan (oleh kamu, atau waktu habis, atau dibatalkan).

@@ -58,6 +58,7 @@ export const PendingApprovalSchema = z.object({
   summary: z.string().optional(),
   risk: RiskSchema.optional(),
   diff: FileDiffSchema.optional(),
+  truncated: z.boolean().optional(),
   requestedAt: isoDate,
   expiresAt: isoDate,
 });

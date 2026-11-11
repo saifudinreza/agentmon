@@ -166,9 +166,10 @@ export function createStore(db: Database, options: { now?: () => Date } = {}) {
         .select()
         .from(events)
         .where(and(eq(events.machineId, machineId), inArray(events.type, [...types]), gte(events.receivedAt, since)))
-        .orderBy(asc(events.receivedAt), asc(events.seq))
+        .orderBy(desc(events.receivedAt), desc(events.seq))
         .limit(Math.min(Math.max(1, finiteInt(limit, 2000)), 5000));
-      return rows.map(toEnvelope);
+      // Bila batas tercapai, yang terpotong adalah yang paling LAMA; urutan dikembalikan menaik.
+      return rows.reverse().map(toEnvelope);
     },
 
     /** Sesi sebuah laptop, dari yang paling baru aktif. */

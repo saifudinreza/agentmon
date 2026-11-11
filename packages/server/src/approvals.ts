@@ -37,6 +37,7 @@ export function computePendingApprovals(events: readonly Envelope[], now: Date):
         ...(event.payload.summary !== undefined ? { summary: event.payload.summary } : {}),
         ...(event.payload.risk !== undefined ? { risk: event.payload.risk } : {}),
         ...(event.payload.diff !== undefined ? { diff: event.payload.diff } : {}),
+        ...(event.payload.truncated ? { truncated: true } : {}),
         requestedAt: event.ts,
         expiresAt: event.payload.expiresAt,
       });

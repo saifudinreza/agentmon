@@ -145,6 +145,8 @@ describe("toClaudeDecision: hasil persetujuan menjadi jawaban untuk Claude Code"
 
 // ---- Penangan: menahan aksi sampai ada keputusan ---------------------------------------
 
+const requestedPayload = (s: { events: Array<{ type: string; payload: unknown }> }) => s.events.find((e) => e.type === "approval.requested")?.payload as Record<string, unknown>;
+
 function setup(
   options: {
     holdEnabled?: boolean;
@@ -636,6 +638,7 @@ describe("diff untuk aksi yang ditahan", () => {
     await flush();
     const payload = s.events.find((e) => e.type === "approval.requested")?.payload as { summary?: string; diff?: unknown };
     expect(payload).not.toHaveProperty("diff");
+    expect(requestedPayload(s)).toMatchObject({ truncated: true });
     expect(payload.summary).toBe("berkas baru +6000 -0 (1 hunk)");
   });
 
@@ -651,10 +654,36 @@ describe("diff untuk aksi yang ditahan", () => {
     await flush();
     const requested = s.events.find((e) => e.type === "approval.requested");
     const input = (requested?.payload as unknown as { toolInput: { file_path: string; content: string } }).toolInput;
-    expect(input.content.length).toBeLessThan(101_000);
+    expect(Buffer.byteLength(input.content)).toBeLessThan(151_000);
     expect(input.content).toContain("dipotong");
+    expect(requestedPayload(s)).toMatchObject({ truncated: true });
     expect(input.file_path).toBe(join(dir, "besar.txt"));
     expect(JSON.stringify(requested).length).toBeLessThan(1024 * 1024 - 4096);
+  });
+
+  test("teks multibyte diukur dalam byte: event tetap di bawah 1 MiB, dan ditandai terpotong", async () => {
+    const s = setup();
+    const response = s.handler(
+      { hook_event_name: "PreToolUse", session_id: "sesi-1", cwd: dir, tool_name: "Edit", tool_input: { file_path: join(dir, "a.txt"), old_string: "😀".repeat(90_000), new_string: "😀".repeat(90_000) } },
+      s.context,
+    );
+    await s.waitPending();
+    s.decideFirst("approve");
+    await response;
+    await flush();
+    const requested = s.events.find((e) => e.type === "approval.requested");
+    expect(Buffer.byteLength(JSON.stringify(requested))).toBeLessThan(1024 * 1024);
+    expect(requestedPayload(s)).toMatchObject({ truncated: true });
+  });
+
+  test("permintaan kecil tidak ditandai terpotong", async () => {
+    const s = setup();
+    const response = s.handler(editInput(), s.context);
+    await s.waitPending();
+    s.decideFirst("approve");
+    await response;
+    await flush();
+    expect(requestedPayload(s)).not.toHaveProperty("truncated");
   });
 });
 
