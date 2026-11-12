@@ -34,3 +34,5 @@ jobs:
       # Membangun PWA lalu menimbang JS awalnya: gagal bila melebihi 200 KB gzip (PRD §14).
       - run: pnpm build
       - run: pnpm check:size
+      # Tidak boleh ada rahasia (kunci, token, alamat database berkata sandi) di berkas yang dilacak git.
+      - run: pnpm check:secrets
