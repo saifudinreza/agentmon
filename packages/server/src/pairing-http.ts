@@ -42,6 +42,8 @@ export type PairingRoutesOptions = {
    * ke internet, karena klien bisa memalsukan header itu.
    */
   trustProxy?: boolean;
+  /** Dipanggil setelah sebuah perangkat dicabut, untuk memutus koneksinya seketika. */
+  onDeviceRevoked?: (deviceId: string) => void;
   /** Batas laju; bawaannya diatur untuk pemakaian manusia dan bisa diganti test. */
   limits?: Partial<PairingLimits>;
   now?: () => number;
@@ -113,6 +115,17 @@ export function mountPairingRoutes(app: Hono, options: PairingRoutesOptions): vo
     if (!machineId) return c.json({ error: "unauthorized" }, 401);
     const body: PairedDevicesResponse = { devices: await pairing.listDevices(machineId) };
     return c.json(body);
+  });
+
+  // Laptop mencabut sebuah HP (HP hilang). Hanya HP yang dipasangkan dengan laptop ini; selain itu 404 yang sama.
+  app.delete("/pair/devices/:deviceId", async (c) => {
+    const machineId = await machineOf(c);
+    if (!machineId) return c.json({ error: "unauthorized" }, 401);
+    if (!perMachine.take(machineId)) return c.json({ error: "rate-limited" }, 429);
+    const deviceId = c.req.param("deviceId");
+    if (deviceId.length > 200 || !(await pairing.revokeDevice({ machineId }, deviceId))) return c.json({ error: "not-found" }, 404);
+    options.onDeviceRevoked?.(deviceId);
+    return c.json({ ok: true });
   });
 
   const allowed = new Set(options.allowedOrigins ?? []);

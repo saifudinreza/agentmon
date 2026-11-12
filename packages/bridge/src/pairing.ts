@@ -152,3 +152,80 @@ export async function runPair(options: PairOptions): Promise<number> {
   err("Kode kedaluwarsa sebelum ada HP yang memindainya. Jalankan perintah pair lagi untuk membuat kode baru.");
   return 1;
 }
+
+// ---- Daftar dan cabut HP dari laptop (untuk kasus HP hilang) ----------------------------
+
+export type DevicesCommandOptions = {
+  relayUrl: string;
+  machineToken: string;
+  out: (text: string) => void;
+  err: (text: string) => void;
+  fetch?: typeof fetch;
+};
+
+// Teks dari relay dibersihkan dari karakter kontrol sebelum dicetak: nama perangkat datang dari HP, dan terminal
+// tidak boleh dikendalikan oleh nama yang dipilih orang lain.
+function printable(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "?");
+}
+
+/** Mencetak HP yang terpasang dengan laptop ini. Mengembalikan kode keluar. */
+export async function runListDevices(options: DevicesCommandOptions): Promise<number> {
+  const http = options.fetch ?? fetch;
+  const base = options.relayUrl.replace(/\/+$/, "");
+  let response: Response;
+  try {
+    response = await http(`${base}/pair/devices`, { headers: { authorization: `Bearer ${options.machineToken}` }, signal: AbortSignal.timeout(10_000) });
+  } catch {
+    options.err("Relay tidak terjangkau. Periksa AGENTMON_RELAY_URL dan koneksi internet.");
+    return 1;
+  }
+  if (response.status === 401) {
+    options.err("Relay menolak token laptop ini (AGENTMON_RELAY_TOKEN).");
+    return 1;
+  }
+  const parsed = PairedDevicesResponseSchema.safeParse(await response.json().catch(() => undefined));
+  if (!response.ok || !parsed.success) {
+    options.err("Relay menjawab dengan cara yang tidak dikenal.");
+    return 1;
+  }
+  if (parsed.data.devices.length === 0) {
+    options.out("Tidak ada HP yang terpasang.");
+    return 0;
+  }
+  options.out("HP yang terpasang (cabut dengan: revoke <nomor>):");
+  for (const device of parsed.data.devices) options.out(`  ${printable(device.id)}  ${printable(device.name)}  (sejak ${device.pairedAt})`);
+  return 0;
+}
+
+/** Mencabut satu HP dari laptop ini: koneksinya langsung diputus dan tokennya tidak berlaku lagi. */
+export async function runRevokeDevice(options: DevicesCommandOptions & { deviceId: string }): Promise<number> {
+  const http = options.fetch ?? fetch;
+  const base = options.relayUrl.replace(/\/+$/, "");
+  let response: Response;
+  try {
+    response = await http(`${base}/pair/devices/${encodeURIComponent(options.deviceId)}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${options.machineToken}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    options.err("Relay tidak terjangkau. HP BELUM dicabut. Periksa AGENTMON_RELAY_URL dan koneksi internet, lalu coba lagi.");
+    return 1;
+  }
+  if (response.status === 401) {
+    options.err("Relay menolak token laptop ini (AGENTMON_RELAY_TOKEN). HP BELUM dicabut.");
+    return 1;
+  }
+  if (response.status === 404) {
+    options.err("Tidak ada HP dengan nomor itu yang terpasang di laptop ini. Lihat daftarnya dengan: devices");
+    return 1;
+  }
+  if (!response.ok) {
+    options.err(`Relay gagal mencabut (kode ${response.status}). HP mungkin BELUM dicabut; coba lagi.`);
+    return 1;
+  }
+  options.out("HP dicabut. Koneksinya diputus dan tidak bisa tersambung lagi.");
+  return 0;
+}

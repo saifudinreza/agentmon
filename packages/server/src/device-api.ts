@@ -20,11 +20,12 @@
 //     terdaftar.
 //   - Laju dibatasi per HP, dan ukuran halaman dibatasi (maksimal 500 event).
 //   - CORS hanya untuk asal PWA yang diizinkan.
-import { ApprovalsResponseSchema, EventsResponseSchema, type DeviceMachine, type PendingApproval, type SessionSummary } from "@agentmon/shared";
+import { ApprovalsResponseSchema, DevicesResponseSchema, EventsResponseSchema, type DeviceMachine, type PendingApproval, type SessionSummary } from "@agentmon/shared";
 import type { Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import { computePendingApprovals } from "./approvals";
 import type { DbDirectory } from "./db/directory";
+import type { PairingService } from "./db/pairing";
 import { MAX_PAGE_SIZE, type Store } from "./db/store";
 import { clientAddress } from "./client-ip";
 import { createKeyedRateLimiter } from "./rate-limit";
@@ -33,6 +34,10 @@ export type DeviceApiOptions = {
   directory: Pick<DbDirectory, "authenticate" | "isPaired" | "machinesOf">;
   store: Pick<Store, "listSessions" | "listEvents" | "listRecentByType">;
   isMachineOnline: (machineId: string) => boolean;
+  /** Daftar dan pencabut perangkat. Tanpa ini, /api/devices tidak dipasang. */
+  devices?: Pick<PairingService, "listPeerDevices" | "revokeDevice">;
+  /** Dipanggil setelah sebuah perangkat dicabut, untuk memutus koneksinya seketika. */
+  onDeviceRevoked?: (deviceId: string) => void;
   /** Asal PWA yang boleh memanggil dari browser, misalnya ["https://app.contoh.com"]. */
   allowedOrigins?: string[];
   /** Batas laju per HP (permintaan yang sah). */
@@ -89,7 +94,7 @@ export function mountDeviceApi(app: Hono, options: DeviceApiOptions): void {
     "/api/*",
     cors({
       origin: (origin) => (allowed.has(origin) ? origin : null),
-      allowMethods: ["GET", "OPTIONS"],
+      allowMethods: ["GET", "DELETE", "OPTIONS"],
       allowHeaders: ["authorization"],
       maxAge: 600,
     }),
@@ -124,6 +129,26 @@ export function mountDeviceApi(app: Hono, options: DeviceApiOptions): void {
     const machines: DeviceMachine[] = rows.map((m) => ({ id: m.id, name: m.name, online: options.isMachineOnline(m.id) }));
     return c.json({ machines });
   });
+
+  if (options.devices) {
+    const peers = options.devices;
+    // Perangkat yang berbagi laptop dengan HP ini; yang sedang dipakai ditandai `current`.
+    app.get("/api/devices", async (c) => {
+      const auth = await authenticate(c);
+      if (auth instanceof Response) return auth;
+      const list = await peers.listPeerDevices(auth.deviceId);
+      return c.json(DevicesResponseSchema.parse({ devices: list.map((d) => ({ ...d, current: d.id === auth.deviceId })) }));
+    });
+    // Mencabut perangkat (termasuk dirinya sendiri). Berlaku seketika: koneksinya diputus dan tokennya ditolak.
+    app.delete("/api/devices/:deviceId", async (c) => {
+      const auth = await authenticate(c);
+      if (auth instanceof Response) return auth;
+      const target = c.req.param("deviceId");
+      if (target.length > MAX_ID_LENGTH || !(await peers.revokeDevice({ deviceId: auth.deviceId }, target))) return c.json({ error: "not-found" }, 404);
+      options.onDeviceRevoked?.(target);
+      return c.json({ ok: true });
+    });
+  }
 
   // Antrean izin yang menunggu untuk SEMUA laptop yang dipasangkan dengan HP ini. Dihitung dari riwayat event.
   app.get("/api/approvals", async (c) => {

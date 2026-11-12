@@ -54,7 +54,7 @@ if (process.env.DATABASE_URL) {
   };
   // Event dari laptop disimpan sebelum diteruskan dan di-ack, dan HP membaca riwayatnya lewat /api/*.
   persist = (event) => eventStore.saveEvent(event);
-  deviceApi = { directory: dbDirectory, store: eventStore, allowedOrigins, trustProxy: process.env.TRUST_PROXY === "1" };
+  deviceApi = { directory: dbDirectory, store: eventStore, devices: pairing.pairing, allowedOrigins, trustProxy: process.env.TRUST_PROXY === "1" };
 } else {
   const machineToken = process.env.RELAY_DEV_MACHINE_TOKEN;
   const deviceToken = process.env.RELAY_DEV_DEVICE_TOKEN;

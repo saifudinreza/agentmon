@@ -1,6 +1,6 @@
 // Pembantu KHUSUS TEST: relay tiruan di sisi data (laptop, sesi, event yang "tersimpan") beserta API yang
 // membacanya. Dipakai test store dan test layar. Tidak dipakai kode aplikasi.
-import type { DeviceMachine, Envelope, PendingApproval, SessionSummary } from "@agentmon/shared";
+import type { DeviceMachine, Envelope, ListedDevice, PendingApproval, SessionSummary } from "@agentmon/shared";
 import { vi } from "vitest";
 import type { RelayApi } from "./api";
 import { sessionKey } from "./relay-store";
@@ -37,8 +37,9 @@ export function fakeRelay() {
     sessions: { m1: [summary("s1", "2026-11-11T10:00:00.000Z")] } as Record<string, SessionSummary[]>,
     events: { "m1/s1": [] as Envelope[] } as Record<string, Envelope[]>,
     approvals: [] as PendingApproval[],
+    devices: [] as ListedDevice[],
   };
-  const fail: { machines?: Error; sessions?: Error; events?: Error; approvals?: Error } = {};
+  const fail: { machines?: Error; sessions?: Error; events?: Error; approvals?: Error; devices?: Error; revoke?: Error } = {};
   const calls = { machines: 0, sessions: 0, eventsAfter: [] as number[] };
   let gate: Promise<void> | undefined;
   const api: RelayApi = {
@@ -47,6 +48,14 @@ export function fakeRelay() {
       if (gate) await gate;
       if (fail.machines) throw fail.machines;
       return [...data.machines];
+    }),
+    devices: vi.fn(async () => {
+      if (fail.devices) throw fail.devices;
+      return [...data.devices];
+    }),
+    revokeDevice: vi.fn(async (deviceId: string) => {
+      if (fail.revoke) throw fail.revoke;
+      data.devices = data.devices.filter((d) => d.id !== deviceId);
     }),
     approvals: vi.fn(async () => {
       if (fail.approvals) throw fail.approvals;

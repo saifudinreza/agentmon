@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import type { PairingLink } from "@agentmon/shared";
 import { ApprovalList } from "./approvals/ApprovalList";
 import { ApprovalScreen } from "./approvals/ApprovalScreen";
+import { DevicesScreen } from "./devices/DevicesScreen";
 import { useI18n } from "./i18n/react";
 import { PairScreen } from "./pairing/PairScreen";
 import { setPendingLink } from "./pairing/pending";
@@ -122,6 +123,12 @@ export function Home({ focusHeading = false }: { focusHeading?: boolean }) {
         </section>
       )}
 
+      {hasMachines && (
+        <Link to="/devices" className="inline-flex min-h-11 items-center self-start text-sm underline">
+          {t("devices.link")}
+        </Link>
+      )}
+
       <section className="rounded-2xl border border-line bg-surface p-4">
         <h2 className="text-lg font-semibold">{t("home.pair.title")}</h2>
         <p className="mt-1 mb-4 text-sm text-muted">{t("home.pair.body")}</p>
@@ -164,6 +171,7 @@ export function Routes() {
   }, []);
 
   if (path === "/pair") return <PairScreen key="pair" focusHeading={focusHeading} />;
+  if (path === "/devices") return <DevicesScreen key="devices" focusHeading={focusHeading} />;
   const approval = parseApprovalPath(path);
   if (approval) return <ApprovalScreen key={`a/${approval.machineId}/${approval.approvalId}`} {...approval} focusHeading={focusHeading} />;
   const timeline = parseTimelinePath(path);

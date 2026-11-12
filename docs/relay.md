@@ -170,3 +170,20 @@ Relay mengirim frame **`presence`** `{reachable: N}` ke laptop: berapa HP yang d
 Daemon memakainya lewat `relayClient.canReachPhone()`: benar hanya bila tersambung ke relay DAN laporan terakhir > 0. Relay mati, belum ada laporan, atau 0 HP berarti daemon **tidak menahan aksi**, sehingga prompt terminal langsung muncul (tidak menunggu 9 menit). Perintah `status` menjelaskan keadaan ini. Tanpa relay yang dikonfigurasi, perilaku lama tetap: jawaban lewat CLI atau halaman lokal.
 
 Keterbatasan: backend push belum ada (issue lain), jadi langganan push belum bisa terdaftar; hitungannya sudah benar begitu tabelnya terisi. Izin yang SUDAH menunggu tidak dilepas bila HP terakhir putus; hanya aksi berikutnya yang kembali ke terminal.
+
+## Daftar dan cabut perangkat
+
+| Endpoint | Siapa | Fungsi |
+|---|---|---|
+| `GET /api/devices` | HP (token HP) | perangkat yang berbagi laptop dengan HP ini, termasuk dirinya (`current: true`); HP laptop lain tidak tampak |
+| `DELETE /api/devices/:id` | HP | mencabut perangkat itu (atau dirinya sendiri) |
+| `GET /pair/devices` | laptop (token laptop) | HP yang terpasang dengan laptop ini |
+| `DELETE /pair/devices/:id` | laptop | mencabut HP yang terpasang dengan laptop ini (untuk HP hilang) |
+
+Pencabut harus punya hubungan dengan perangkat itu (laptop yang dipasangkan dengannya, atau HP yang berbagi laptop). Selain itu dijawab `404` yang sama dengan "tidak ada", supaya nomor perangkat tidak bisa dicari tahu. Mencabut dua kali aman (idempoten).
+
+**Berlaku seketika.** Setelah tersimpan di database, hub menutup koneksi HP itu (kode "tidak berwenang", sama dengan token ditolak, sehingga PWA menampilkan "Perangkat dicabut"), token ditolak untuk koneksi baru dan API baca, perintah dari HP itu tidak lagi diteruskan ke laptop (pemasangannya dianggap tidak ada), dan laptop menerima hitungan kehadiran baru. HP yang dicabut juga tidak dihitung sebagai "bisa dihubungi lewat push" (lihat Kehadiran HP), jadi langganan push miliknya tidak membuat daemon menunggu. Baris perangkat tetap disimpan (jejak), hanya ditandai dicabut.
+
+CLI di laptop: `devices` mencetak daftar HP, `revoke <nomor>` mencabutnya (butuh `AGENTMON_RELAY_URL` dan `AGENTMON_RELAY_TOKEN`). Perintah jujur bila relay tidak terjangkau: HP dinyatakan BELUM dicabut.
+
+Keterbatasan: izin yang SUDAH diputuskan oleh HP itu sebelum dicabut tetap berlaku (keputusan lama tidak ditarik). Sambungan yang sedang dalam proses `hello` tepat pada saat pencabutan bisa lolos sebentar; ia tetap tidak bisa memutuskan apa pun karena setiap perintah memeriksa pemasangan, dan ditutup di sambungan berikutnya. Pencabutan diri sendiri dari PWA mengeluarkan HP itu dan memerlukan QR baru. Pemberitahuan push belum ada backend-nya; begitu ada, ia harus memakai `devicesWithPush` yang sudah mengecualikan perangkat tercabut.

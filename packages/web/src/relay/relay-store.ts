@@ -71,6 +71,8 @@ export type RelayState = {
 };
 
 export type RelayStore = {
+  /** API baca/tulis ke relay, untuk layar yang butuh panggilan sendiri (mis. daftar perangkat). */
+  readonly api: RelayApi;
   getState(): RelayState;
   subscribe(listener: () => void): () => void;
   /** Mengambil ulang laptop, sesi, dan event sesi yang terbuka. */
@@ -365,6 +367,7 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
     retrySession(machineId, sessionId) {
       void catchUp(machineId, sessionId);
     },
+    api,
     decide(machineId, approvalId, decision, comment) {
       const key = approvalKey(machineId, approvalId);
       const commandId = newId();

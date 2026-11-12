@@ -473,6 +473,17 @@ export function createRelayHub(options: RelayHubOptions) {
       return { connections: sessions.size, machines: machines.size, devices: devices.size };
     },
 
+    /**
+     * Memutus HP yang baru dicabut: koneksinya ditutup seketika (dengan kode "tidak berwenang", sama dengan token
+     * ditolak), lalu semua laptop dihitung ulang kehadirannya. Dipanggil SETELAH pencabutan tersimpan di database,
+     * supaya sambungan ulang langsung ditolak dan hitungan tidak lagi memuat HP itu.
+     */
+    disconnectDevice(deviceId: string): void {
+      const session = devices.get(deviceId);
+      if (session) close(session, CLOSE.unauthorized, "revoked");
+      for (const machineId of [...machines.keys()]) void announcePresence(machineId);
+    },
+
     /** Apakah laptop ini sedang tersambung ke relay? */
     isMachineOnline(machineId: string): boolean {
       return machines.has(machineId);
