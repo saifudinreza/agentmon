@@ -123,7 +123,11 @@ export function createCheckpointService(options: CheckpointOptions = {}) {
       tmpDir = mkdtempSync(join(tmpdir(), "agentmon-cp-"));
       // Folder hook yang sengaja tidak ada: git tidak menemukan hook apa pun.
       const config = safeConfig(join(tmpDir, "tanpa-hook"));
-      const run = (args: string[], at: string, env: Record<string, string> = {}, input?: string) => git([...config, ...args], at, env, left(), input);
+      const run = (args: string[], at: string, env: Record<string, string> = {}, input?: string): Promise<GitOutcome> => {
+        // Anggaran habis: jangan memulai langkah berikutnya sama sekali.
+        if (Date.now() >= deadline) return Promise.resolve({ ok: false, code: undefined, stderr: "", timedOut: true });
+        return git([...config, ...args], at, env, left(), input);
+      };
       const top = await run(["rev-parse", "--show-toplevel"], cwd);
       if (!top.ok) {
         if (top.code === "ENOENT") {

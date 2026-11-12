@@ -203,7 +203,7 @@ describe("tidak pernah menghalangi agent", () => {
 
   test("melewati batas waktu: ok=false, tidak menggantung", async () => {
     initRepo();
-    const result = await service({ timeoutMs: 1 }).create(dir);
+    const result = await service({ timeoutMs: 0 }).create(dir);
     expect(result.ok).toBe(false);
   });
 });
@@ -309,7 +309,7 @@ describe("ketahanan terhadap lingkungan dan konfigurasi pengguna", () => {
 
   test("melewati batas waktu dilaporkan sebagai timeout", async () => {
     initRepo();
-    const result = await service({ timeoutMs: 1 }).create(dir);
+    const result = await service({ timeoutMs: 0 }).create(dir);
     expect(result).toMatchObject({ ok: false, reason: "timeout" });
   });
 });
