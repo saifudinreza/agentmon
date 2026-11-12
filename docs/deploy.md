@@ -8,7 +8,7 @@ Service worker dan Web Push hanya bekerja lewat HTTPS, jadi relay dan PWA perlu 
 
 ### Database (Neon)
 1. Buat proyek Postgres di Neon (free tier), salin *connection string* (`postgres://...`). Itu rahasia: jangan ditulis di repo, chat, atau log.
-2. Migrasi tidak perlu dijalankan manual: perintah start relay menjalankannya dulu (aman diulang, hanya migrasi yang belum diterapkan yang dijalankan). Manual bila perlu: `DATABASE_URL=... pnpm --filter @agentmon/server db:migrate`.
+2. Migrasi tidak perlu dijalankan manual: relay menjalankannya sendiri saat menyala bila `DATABASE_URL` diisi (aman diulang, hanya migrasi yang belum diterapkan yang dijalankan). Manual bila perlu: `DATABASE_URL=... pnpm --filter @agentmon/server db:migrate`.
 
 ### Relay (Render)
 1. Di Render pilih **New > Blueprint**, hubungkan repo ini. Berkas [`render.yaml`](../render.yaml) membuat layanan `agentmon-relay` (free, deploy otomatis dari `main`, pemeriksaan `/health`).
@@ -16,7 +16,9 @@ Service worker dan Web Push hanya bekerja lewat HTTPS, jadi relay dan PWA perlu 
    - `DATABASE_URL`: alamat Postgres dari Neon.
    - `PAIRING_ALLOWED_ORIGINS`: alamat PWA, misalnya `https://agentmon.pages.dev` (beberapa alamat dipisah koma).
 3. `TRUST_PROXY=1` sudah diatur di cetak biru, karena Render berada di depan relay (alamat IP penelepon dibaca dari `X-Forwarded-For`).
-4. Setiap push ke `main` men-deploy ulang dan menjalankan migrasi.
+4. Setiap push ke `main` men-deploy ulang (migrasi ikut berjalan saat relay menyala).
+5. **Bila migrasi gagal** (mis. Neon tidak terjangkau atau melewati batas waktu), relay berhenti dengan kode keluar 1 dan tidak melayani apa pun: deploy ditandai gagal, dan bila terjadi saat bangun dari tidur relay tetap mati sampai dijalankan ulang. Gejalanya: `/health` tidak menjawab dan log Render memuat "Migrasi gagal". Pemulihan: periksa `DATABASE_URL` dan status Neon, lalu *Manual Deploy / Restart* di Render. Pesan galat tidak mencetak alamat database.
+6. Belum diverifikasi di sini (dikerjakan pemilik saat deploy pertama): nama field `autoDeploy` di Blueprint Render (versi baru mungkin memakai `autoDeployTrigger`; `checksPass` lebih baik agar deploy menunggu CI hijau), dan apakah `corepack enable` berjalan di Render dan Cloudflare Pages (bila gagal EACCES, pasang pnpm dengan `npm i -g pnpm@12.16.1`).
 
 ### PWA (Cloudflare Pages)
 1. Buat proyek Pages dari repo ini dengan: *build command* `corepack enable && pnpm install --frozen-lockfile && pnpm --filter @agentmon/web build`, *output directory* `packages/web/dist`, variabel `NODE_VERSION=22`.
@@ -33,6 +35,7 @@ Catatan: pendaftaran laptop ke relay produksi (membuat baris dan token laptop) b
 
 ## 2. Rahasia tidak masuk repo
 - Semua nilai rahasia hanya ada di dashboard layanan (Render, Neon, Cloudflare) atau di lingkungan laptop. Berkas `.env*` di-ignore git (kecuali `.env.example`).
+- Cakupan terbatas: yang diperiksa hanya berkas yang dilacak git saat ini (riwayat commit TIDAK dipindai; rahasia yang pernah ter-commit harus dianggap bocor dan diganti), dan aturannya sempit (kunci pribadi, token GitHub, kunci AWS, alamat database berkata sandi, serta berkas `.env` yang terlanjur dilacak). Token relay dan kunci VAPID tidak punya pola yang bisa dikenali otomatis.
 - `pnpm check:secrets` memindai berkas yang dilacak git untuk kunci pribadi, token GitHub/AWS, dan alamat database berkata sandi, dan dijalankan di CI. Ini jaring pengaman untuk kesalahan umum, bukan pengganti pemindai rahasia penuh.
 
 ## 3. Pengembangan lokal dengan tunnel
@@ -59,7 +62,7 @@ Free tier Render menidurkan layanan setelah beberapa menit idle; permintaan pert
 ```
 node tools/measure-wake.mjs https://agentmon-relay.onrender.com 20
 ```
-Argumen kedua (menit) membuat skrip mengukur, menunggu sejumlah menit supaya relay tidur lagi, lalu mengukur ulang. Tanpa argumen kedua, ia mengukur sekali. Skrip menunggu sampai `/health` menjawab 200 dan mencetak lamanya.
+Argumen kedua (menit) membuat skrip mengukur, menunggu sejumlah menit supaya relay tidur, lalu mengukur lagi, **berulang sampai dihentikan dengan Ctrl+C**. Tanpa argumen kedua, ia mengukur sekali. Skrip menunggu sampai `/health` menjawab 200 dan mencetak lamanya. Ukuran pertama belum tentu cold start (relay mungkin sedang bangun); yang bermakna adalah ukuran sesudah jeda panjang. Batas idle free tier Render (dikabarkan sekitar 15 menit) belum diverifikasi, jadi pilih jeda yang cukup panjang (mis. 20 menit atau lebih) dan catat hasil yang benar-benar tampak lambat.
 
 | Tanggal | Layanan | Idle sebelum ukur | Waktu bangun |
 |---|---|---|---|

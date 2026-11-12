@@ -1,27 +1,39 @@
 /* global console, process */
 // Pemeriksa sederhana: memastikan tidak ada rahasia yang masuk repo. Memindai berkas yang DILACAK git.
 // Bukan pengganti pemindai penuh, tetapi menangkap kesalahan yang paling umum: alamat database berkata sandi,
-// kunci pribadi, dan token layanan yang terkenal. Dijalankan di CI (pnpm check:secrets).
+// kunci pribadi, token layanan yang terkenal, dan berkas .env yang terlanjur dilacak. Riwayat commit TIDAK dipindai.
+// Dijalankan di CI (pnpm check:secrets).
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const files = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" }).split("\0").filter(Boolean);
 const SKIP = /(^|\/)(pnpm-lock\.yaml|.*\.(png|ico|jpg|jpeg|gif|woff2?|webp))$|^tools\/check-no-secrets\.mjs$/;
 
-// Alamat database yang aman: tempat contoh, komputer lokal, atau kata sandi jelas-jelas contoh.
-const SAFE_HOST = /@(127\.0\.0\.1|localhost|host|contoh|example|db\.example)/i;
+// Alamat database yang aman: tempat contoh atau komputer lokal. Dicocokkan sampai batas kata (titik dua, garis
+// miring, tanda tanya, atau akhir), supaya host asli seperti "example-db.neon.tech" tidak lolos hanya karena
+// diawali kata contoh.
+const SAFE_HOST = /@(127\.0\.0\.1|localhost|h\d?|host|contoh|example|[\w-]+\.example)(?=[:/?]|$)/i;
 const RULES = [
   { name: "kunci pribadi", test: (t) => /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(t) },
-  { name: "token GitHub", test: (t) => /\bgh[pousr]_[A-Za-z0-9]{30,}\b/.test(t) },
+  { name: "token GitHub", test: (t) => /\b(gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b/.test(t) },
   { name: "kunci AWS", test: (t) => /\bAKIA[0-9A-Z]{16}\b/.test(t) },
   {
     name: "alamat database dengan kata sandi",
-    skipTests: true, // berkas test memuat alamat contoh dengan kata sandi palsu
     test: (t) => [...t.matchAll(/postgres(?:ql)?:\/\/[^\s:@/'"`]+:[^\s@/'"`]+@[^\s'"`]+/gi)].some((m) => !SAFE_HOST.test(m[0])),
   },
 ];
 
 let problems = 0;
+
+// Berkas lingkungan asli tidak boleh dilacak git (hanya .env.example).
+for (const file of files) {
+  const base = file.split("/").pop() ?? "";
+  if (/^\.env(\..+)?$/.test(base) && base !== ".env.example") {
+    console.error(`Berkas lingkungan dilacak git: ${file}`);
+    problems++;
+  }
+}
+
 for (const file of files) {
   if (SKIP.test(file)) continue;
   let text;
@@ -31,7 +43,6 @@ for (const file of files) {
     continue;
   }
   for (const rule of RULES) {
-    if (rule.skipTests && file.includes(".test.")) continue;
     if (rule.test(text)) {
       console.error(`Kemungkinan rahasia (${rule.name}) di ${file}`);
       problems++;

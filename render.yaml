@@ -10,8 +10,8 @@ services:
     autoDeploy: true # setiap push ke main men-deploy ulang
     healthCheckPath: /health
     buildCommand: corepack enable && pnpm install --frozen-lockfile
-    # Migrasi dijalankan sebelum relay menyala. Aman diulang: hanya migrasi yang belum diterapkan yang dijalankan.
-    startCommand: pnpm --filter @agentmon/server db:migrate && pnpm --filter @agentmon/server start
+    # Relay sendiri menjalankan migrasi saat menyala bila DATABASE_URL diisi (aman diulang), jadi tidak perlu langkah terpisah.
+    startCommand: pnpm --filter @agentmon/server start
     envVars:
       - key: NODE_VERSION
         value: "22"
