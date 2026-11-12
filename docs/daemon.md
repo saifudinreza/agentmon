@@ -236,3 +236,19 @@ Kode lain: `400` (JSON atau bentuk tidak valid), `404`, `405`, `413` (terlalu be
 Penangan hook yang error tetap dijawab `200` dengan `{}` dan dicatat, bukan `500` dan bukan persetujuan. Daemon mati atau menolak request tidak menghentikan agent: Claude Code menganggapnya kesalahan tanpa pemblokiran dan meneruskan alur izin normal. Buktinya ada di [hooks-claude-code.md](hooks-claude-code.md), bagian 8b: jawaban teks biasa, JSON terpotong, nilai keputusan yang tidak dikenal, status 500, token salah, port salah, daemon mati, dan daemon yang terlalu lambat semuanya diperlakukan seperti tanpa keputusan.
 
 **Daemon tidak boleh memblokir event loop-nya.** Hook menunggu jawaban sampai batas waktunya (bawaan 600 detik), jadi daemon yang membeku sama dengan agent yang berhenti. Pekerjaan berat di dalam penangan hook, misalnya menghitung diff besar atau menjalankan git, harus asinkron.
+
+## Checkpoint git
+
+Sebelum alat pengubah berkas (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) dijalankan, daemon memotret keadaan proyek (`src/checkpoint.ts`) dan mengirim event `checkpoint.created`. Pemotretan terjadi di hook `PreToolUse`, SEBELUM aksi ditahan menunggu keputusan atau dilepas, termasuk saat mode `bypassPermissions`. Matikan dengan `AGENTMON_CHECKPOINT=0`.
+
+**Cara kerjanya (tidak menyentuh repo pengguna):** index git pengguna disalin ke berkas sementara, lalu `git add -A`, `git write-tree`, `git commit-tree` (induknya HEAD), dan `git update-ref` dijalankan terhadap salinan itu (lewat `GIT_INDEX_FILE`). Hasilnya disimpan di `refs/agentmon/checkpoints/<waktu>-<acak>`, di luar cabang, tag, dan stash. Index asli, cabang aktif, stash, `git status`, dan `git log` (HEAD) sama persis sebelum dan sesudah, dan itu diuji dengan membandingkan keadaannya (termasuk hash berkas index). Yang terlihat hanya: objek git baru di `.git/objects`, dan commit checkpoint muncul di `git log --all`.
+
+**Isi snapshot:** berkas yang dilacak ditambah berkas baru yang belum dilacak; berkas yang dihapus tidak ada. Berkas yang di-ignore (`.gitignore`, mis. `.env`) **tidak** ditangkap, sehingga tidak ikut dipulihkan oleh rollback.
+
+**Pembersihan:** hanya 50 checkpoint terbaru yang disimpan; yang lebih lama dihapus, dan hanya dari namespace `refs/agentmon/checkpoints/` (cabang, tag, atau ref lain milik pengguna tidak disentuh, termasuk yang namanya mirip).
+
+**Gagal tidak menghalangi agent.** Semua galat menjadi hasil `ok: false` yang hanya dicatat di log: folder bukan repo git (fitur nonaktif untuk folder itu, dicatat sekali), git tidak terpasang, repo yang akarnya folder home (terlalu luas, ditolak), repo rusak, dan melewati batas waktu 10 detik. Index yang terkunci (`index.lock`) tidak menghalangi karena checkpoint memakai salinan index.
+
+**Waktu pemotretan** (Windows, Node 24, satu perubahan kecil setelah commit; rata-rata tiga ukuran): 200 berkas ±350 ms, 5.000 berkas ±560 ms, 20.000 berkas ±580 ms. Sebagian besar waktu adalah memulai proses git (beberapa kali per checkpoint), bukan membaca berkas, karena salinan index membawa catatan stat sehingga berkas tak berubah tidak dibaca ulang. Belum diukur: repo ratusan ribu berkas, disk jaringan, dan Linux/macOS (CI menjalankan tesnya di ketiganya).
+
+Keterbatasan: efek di luar berkas (`git push`, jaringan, database) tidak bisa dibatalkan. Rollback itu sendiri dikerjakan di issue lain; di sini hanya pemotretan.

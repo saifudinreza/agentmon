@@ -1,8 +1,9 @@
 // Titik masuk untuk menjalankan daemon dari terminal: `pnpm --filter @agentmon/bridge daemon`.
 // Perintah `agentmon` yang rapi (setup, status, dan seterusnya) dibuat di issue berikutnya.
 import { createClaudeCodeHandler } from "./adapters/claude-code-handler";
+import { createCheckpointService } from "./checkpoint";
 import { DaemonAlreadyRunningError, DEFAULT_PORT, startDaemon } from "./daemon";
-import { loadOrCreateMachineId, paths } from "./home";
+import { agentmonHome, loadOrCreateMachineId, paths } from "./home";
 import { createLogger } from "./logger";
 import { createRelayClient, type RelayClient } from "./relay-client";
 import { createTimeline } from "./timeline";
@@ -40,6 +41,14 @@ async function main() {
       // Dengan relay terpasang, aksi hanya ditahan bila ada HP yang bisa menjawab; tanpa relay, jawaban lewat CLI atau halaman lokal.
       canAnswer: () => (process.env.AGENTMON_RELAY_URL && process.env.AGENTMON_RELAY_TOKEN ? (relay?.canReachPhone() ?? false) : true),
       onHook: createClaudeCodeHandler({
+        // Checkpoint git sebelum alat pengubah berkas. Matikan dengan AGENTMON_CHECKPOINT=0.
+        ...(process.env.AGENTMON_CHECKPOINT === "0"
+          ? {}
+          : (() => {
+              const logger = createLogger(paths(agentmonHome()).log);
+              const service = createCheckpointService({ log: (message) => logger.info(message) });
+              return { checkpoint: (cwd: string) => service.create(cwd) };
+            })()),
         // Event dicatat di timeline (ringkasan tanpa isi), di log (jenis dan urutannya), dan dititipkan
         // ke klien relay. Menitipkan selalu seketika dan tidak pernah gagal ke pemanggilnya.
         emit: (event, { logger }) => {

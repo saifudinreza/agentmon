@@ -44,7 +44,8 @@ import { computeToolDiff, type ToolDiffInput } from "../diff";
 import { summarizeDiff } from "../control";
 import type { HookContext, HookHandler } from "../server";
 // Penerjemah dari file tetangga. "./claude-code" = file claude-code di folder yang sama.
-import { buildClaudeEvent, holdCandidate, mapClaudeCodeHook, toClaudeDecision, type HoldCandidate, type Stamp } from "./claude-code";
+import type { CheckpointResult } from "../checkpoint";
+import { buildClaudeEvent, FILE_MUTATING_TOOLS, holdCandidate, mapClaudeCodeHook, toClaudeDecision, type HoldCandidate, type Stamp } from "./claude-code";
 
 // ---- BATAS UKURAN ISI EVENT ------------------------------------------------------------
 //
@@ -112,6 +113,9 @@ export type ClaudeCodeHandlerOptions = {
   // Penghitung diff dan batas waktunya. Bawaan: computeToolDiff dan DIFF_TIMEOUT_MS. Bisa diganti di test.
   computeDiff?: (input: ToolDiffInput) => Promise<FileDiff | undefined>;
   diffTimeoutMs?: number;
+  // Pembuat checkpoint (foto keadaan proyek) yang diambil sebelum alat pengubah berkas dijalankan. Tanpa ini,
+  // tidak ada checkpoint. Tidak boleh melempar, dan kegagalannya tidak pernah menghalangi agent.
+  checkpoint?: (cwd: string) => Promise<CheckpointResult>;
 };
 
 // Batas jumlah sesi yang nomor urutnya diingat sekaligus. Mencegah ingatan membengkak bila
@@ -252,6 +256,28 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
     }
   };
 
+  // CHECKPOINT sebelum alat pengubah berkas. Berjalan di PreToolUse SEBELUM aksi ditahan atau dilepas, jadi
+  // fotonya menangkap keadaan sebelum perubahan. Gagal, nonaktif (bukan repo git), atau lambat hanya dicatat:
+  // agent tetap berjalan.
+  const takeCheckpoint = async (input: Record<string, unknown>, context: HookContext) => {
+    if (!options.checkpoint || input.hook_event_name !== "PreToolUse") return;
+    const toolName = typeof input.tool_name === "string" ? input.tool_name : "";
+    const sessionId = typeof input.session_id === "string" ? input.session_id : "";
+    const cwd = typeof input.cwd === "string" ? input.cwd : "";
+    if (!FILE_MUTATING_TOOLS.has(toolName) || !sessionId || !cwd) return;
+    try {
+      const result = await options.checkpoint(cwd);
+      if (result.ok) {
+        context.logger.info(`checkpoint ${result.id} dibuat dalam ${result.durationMs} ms (alat=${toolName})`);
+        emitOwn("checkpoint.created", { checkpointId: result.id }, sessionId, context);
+      } else {
+        context.logger.info(`checkpoint tidak dibuat (${result.reason}): ${result.message}`);
+      }
+    } catch (error) {
+      context.logger.error(`checkpoint gagal: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
   // MENAHAN satu aksi sampai ada keputusan, lalu menerjemahkannya jadi jawaban.
   const holdForDecision = async (hold: HoldCandidate, context: HookContext) => {
     const { logger, approvals } = context;
@@ -355,6 +381,8 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
         case "ignored":
           break;
       }
+
+      await takeCheckpoint(input as Record<string, unknown>, context);
 
       // APAKAH AKSI INI DITAHAN? Hanya bila penahanan menyala dan tidak dijeda, aksinya layak
       // ditahan (alat pengubah berkas di PreToolUse, atau permintaan izin dari Claude), dan

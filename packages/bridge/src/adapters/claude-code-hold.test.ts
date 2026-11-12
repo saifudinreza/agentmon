@@ -714,3 +714,87 @@ describe("penghitung diff yang menolak terlambat", () => {
     }
   });
 });
+
+describe("checkpoint sebelum alat pengubah berkas", () => {
+  const okResult = { ok: true as const, id: "20261112T100000Z-abc123", ref: "refs/agentmon/checkpoints/20261112T100000Z-abc123", commit: "c0ffee", durationMs: 12 };
+  const types = (s: ReturnType<typeof setup>) => s.events.map((e) => e.type);
+
+  test("Write di PreToolUse: checkpoint dibuat dengan cwd sesi, dan event checkpoint.created dikirim", async () => {
+    const calls: string[] = [];
+    const s = setup({ holdEnabled: false, handler: { checkpoint: async (cwd) => (calls.push(cwd), okResult) } });
+    const input = load("PreToolUse.Write.json");
+    await s.handler(input, s.context);
+    await flush();
+    expect(calls).toEqual([input.cwd]);
+    const created = s.events.find((e) => e.type === "checkpoint.created");
+    expect(created?.payload).toEqual({ checkpointId: okResult.id });
+  });
+
+  test("diambil SEBELUM aksi ditahan: sudah selesai ketika izin masih menunggu keputusan", async () => {
+    const calls: string[] = [];
+    const s = setup({ handler: { checkpoint: async (cwd) => (calls.push(cwd), okResult) } });
+    const response = s.handler(load("PreToolUse.Write.json"), s.context);
+    await s.waitPending();
+    expect(calls).toHaveLength(1);
+    s.decideFirst("approve");
+    await response;
+  });
+
+  test("alat bukan pengubah berkas (Bash) dan hook selain PreToolUse tidak memicu checkpoint", async () => {
+    const calls: string[] = [];
+    const s = setup({ holdEnabled: false, handler: { checkpoint: async (cwd) => (calls.push(cwd), okResult) } });
+    await s.handler({ ...load("PreToolUse.Write.json"), tool_name: "Bash", tool_input: { command: "ls" } }, s.context);
+    await s.handler({ ...load("PreToolUse.Write.json"), tool_name: "Read", tool_input: { file_path: "a.ts" } }, s.context);
+    await s.handler({ ...load("PreToolUse.Write.json"), hook_event_name: "PostToolUse" }, s.context);
+    expect(calls).toEqual([]);
+    expect(types(s)).not.toContain("checkpoint.created");
+  });
+
+  test("tanpa sesi atau cwd: dilewati tanpa galat", async () => {
+    const calls: string[] = [];
+    const s = setup({ holdEnabled: false, handler: { checkpoint: async (cwd) => (calls.push(cwd), okResult) } });
+    const noCwd = { ...load("PreToolUse.Write.json") } as Record<string, unknown>;
+    delete noCwd.cwd;
+    await s.handler(noCwd as never, s.context);
+    expect(calls).toEqual([]);
+  });
+
+  test("checkpoint dinonaktifkan (bukan repo git): tidak ada event, tercatat di log, agent tidak terganggu", async () => {
+    const s = setup({ holdEnabled: false, handler: { checkpoint: async () => ({ ok: false, reason: "not_git", message: "folder ini bukan repo git" }) } });
+    const response = await s.handler(load("PreToolUse.Write.json"), s.context);
+    await flush();
+    expect(response).toBeUndefined();
+    expect(types(s)).not.toContain("checkpoint.created");
+    expect(s.logs.join("\n")).toContain("checkpoint tidak dibuat (not_git)");
+  });
+
+  test("checkpoint melempar: hanya dicatat, hook tetap dijawab dan aksi tetap ditahan lalu diputuskan", async () => {
+    const s = setup({
+      handler: {
+        checkpoint: async () => {
+          throw new Error("git meledak");
+        },
+      },
+    });
+    const response = s.handler(load("PreToolUse.Write.json"), s.context);
+    await s.waitPending();
+    s.decideFirst("approve");
+    expect(await response).toEqual({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } });
+    expect(s.logs.join("\n")).toContain("checkpoint gagal: git meledak");
+  });
+
+  test("mode bypassPermissions: tidak ditahan, tetapi checkpoint tetap dibuat", async () => {
+    const calls: string[] = [];
+    const s = setup({ handler: { checkpoint: async (cwd) => (calls.push(cwd), okResult) } });
+    const response = await s.handler({ ...load("PreToolUse.Write.json"), permission_mode: "bypassPermissions" }, s.context);
+    expect(response).toBeUndefined();
+    expect(calls).toHaveLength(1);
+  });
+
+  test("tanpa pembuat checkpoint (bawaan): tidak ada perubahan perilaku", async () => {
+    const s = setup({ holdEnabled: false });
+    await s.handler(load("PreToolUse.Write.json"), s.context);
+    await flush();
+    expect(types(s)).not.toContain("checkpoint.created");
+  });
+});
