@@ -202,6 +202,22 @@ describe("DELETE /pair/devices/:id (dari laptop, untuk HP yang hilang)", () => {
   });
 });
 
+
+describe("perintah dari soket yang masih terbuka setelah pencabutan di database", () => {
+  test("hub menolak (forbidden) dan laptop tidak menerima apa pun, walau soket belum sempat diputus", async () => {
+    await start();
+    const port = relay!.port;
+    const machine = connectWs(port, "machine", T.m1);
+    const lost = connectWs(port, "device", T.d3);
+    await vi_waitFor(() => lost.frames.some((f) => f.kind === "welcome") && machine.frames.some((f) => f.kind === "welcome"));
+    await directory.revokeDevice("d3"); // langsung di database: hub belum memutus soketnya
+    lost.ws.send(JSON.stringify({ kind: "command", machineId: "m1", body: { type: "approval.decision", commandId: "11111111-1111-4111-8111-111111111111", approvalId: "a1", decision: "approve" } }));
+    await vi_waitFor(() => lost.frames.some((f) => f.kind === "error" && f.code === "forbidden"));
+    await settle();
+    expect(machine.frames.filter((f) => f.kind === "command")).toHaveLength(0);
+  });
+});
+
 // Menunggu sampai syarat terpenuhi (lihat vi.waitFor); ditulis sendiri agar mudah dipakai dengan fungsi boolean.
 async function vi_waitFor(condition: () => boolean, timeoutMs = 3000): Promise<void> {
   const deadline = Date.now() + timeoutMs;

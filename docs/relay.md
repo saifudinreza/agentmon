@@ -187,3 +187,5 @@ Pencabut harus punya hubungan dengan perangkat itu (laptop yang dipasangkan deng
 CLI di laptop: `devices` mencetak daftar HP, `revoke <nomor>` mencabutnya (butuh `AGENTMON_RELAY_URL` dan `AGENTMON_RELAY_TOKEN`). Perintah jujur bila relay tidak terjangkau: HP dinyatakan BELUM dicabut.
 
 Keterbatasan: izin yang SUDAH diputuskan oleh HP itu sebelum dicabut tetap berlaku (keputusan lama tidak ditarik). Sambungan yang sedang dalam proses `hello` tepat pada saat pencabutan bisa lolos sebentar; ia tetap tidak bisa memutuskan apa pun karena setiap perintah memeriksa pemasangan, dan ditutup di sambungan berikutnya. Pencabutan diri sendiri dari PWA mengeluarkan HP itu dan memerlukan QR baru. Pemberitahuan push belum ada backend-nya; begitu ada, ia harus memakai `devicesWithPush` yang sudah mengecualikan perangkat tercabut.
+
+Catatan HP hilang: HP yang berbagi laptop yang sama boleh saling mencabut (termasuk pencuri yang memegang HP hilang mencabut HP pemilik). Itu tidak membuka akses baru, dan pemilik pulih dengan `revoke` lalu `pair` di laptop. Untuk HP hilang, jalur yang dianjurkan adalah CLI di laptop.
