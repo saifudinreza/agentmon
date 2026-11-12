@@ -3,8 +3,11 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { CHECKPOINT_NAMESPACE, createCheckpointService } from "./checkpoint";
+
+// Runner Windows memulai proses git dengan lambat; beberapa tes membuat beberapa checkpoint berturut-turut.
+vi.setConfig({ testTimeout: 60_000 });
 
 let dir: string;
 const originalCeiling = process.env.GIT_CEILING_DIRECTORIES;
@@ -74,7 +77,8 @@ function userState() {
   };
 }
 const refsOf = () => git(["for-each-ref", "--format=%(refname)", CHECKPOINT_NAMESPACE]).split("\n").filter(Boolean);
-const service = (extra: Parameters<typeof createCheckpointService>[0] = {}) => createCheckpointService({ ...extra });
+// Batas waktu longgar di tes supaya runner yang lambat tidak membuat tes goyah; tes batas waktu memberi nilainya sendiri.
+const service = (extra: Parameters<typeof createCheckpointService>[0] = {}) => createCheckpointService({ timeoutMs: 60_000, ...extra });
 
 describe("keadaan repo pengguna tidak berubah", () => {
   test("repo dengan perubahan campur (diubah, staged, baru, dihapus, di-ignore, stash): semuanya sama persis sebelum dan sesudah", async () => {
