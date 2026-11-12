@@ -16,7 +16,8 @@
 // kedaluwarsa. Bila dua HP menukar kode yang sama persis bersamaan, database hanya meluluskan
 // satu. Tidak ada celah antara "periksa" dan "tandai".
 import { randomBytes, randomUUID } from "node:crypto";
-import { and, asc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, min, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { hashToken } from "../directory";
 import type { Database } from "./connect";
 import { devices, machines, pairingCodes, pairings } from "./schema";
@@ -122,6 +123,52 @@ export function createPairingService(db: Database, options: PairingOptions = {})
           ...(deviceToken !== undefined ? { deviceToken } : {}),
         };
       });
+    },
+
+    /**
+     * Perangkat (yang belum dicabut) yang berbagi laptop dengan HP ini, termasuk HP itu sendiri, dari yang paling lama
+     * terpasang. HP hanya melihat sesamanya yang memegang laptop yang sama, tidak pernah seluruh isi relay.
+     */
+    async listPeerDevices(deviceId: string): Promise<Array<{ id: string; name: string; pairedAt: string }>> {
+      const mine = db.select({ machineId: pairings.machineId }).from(pairings).where(eq(pairings.deviceId, deviceId));
+      const pairedAt = min(pairings.createdAt);
+      const rows = await db
+        .select({ id: devices.id, name: devices.name, pairedAt })
+        .from(pairings)
+        .innerJoin(devices, eq(devices.id, pairings.deviceId))
+        .where(and(inArray(pairings.machineId, mine), isNull(devices.revokedAt)))
+        .groupBy(devices.id, devices.name)
+        .orderBy(asc(pairedAt), asc(devices.id));
+      return rows.map((row) => ({ id: row.id, name: row.name, pairedAt: (row.pairedAt ?? new Date(0)).toISOString() }));
+    },
+
+    /**
+     * Mencabut sebuah perangkat. Pencabut harus punya hubungan dengannya: laptop yang dipasangkan dengan perangkat itu,
+     * atau HP yang berbagi laptop dengannya (termasuk dirinya sendiri). Selain itu ditolak (false), dan jawabannya sama
+     * untuk "tidak ada" dan "bukan urusanmu", supaya nomor perangkat tidak bisa dicari tahu. Mencabut dua kali aman.
+     */
+    async revokeDevice(actor: { machineId: string } | { deviceId: string }, targetId: string): Promise<boolean> {
+      let related: boolean;
+      if ("machineId" in actor) {
+        const rows = await db
+          .select({ id: pairings.deviceId })
+          .from(pairings)
+          .where(and(eq(pairings.machineId, actor.machineId), eq(pairings.deviceId, targetId)))
+          .limit(1);
+        related = rows.length > 0;
+      } else {
+        const theirs = alias(pairings, "theirs");
+        const rows = await db
+          .select({ id: pairings.deviceId })
+          .from(pairings)
+          .innerJoin(theirs, eq(theirs.machineId, pairings.machineId))
+          .where(and(eq(pairings.deviceId, actor.deviceId), eq(theirs.deviceId, targetId)))
+          .limit(1);
+        related = rows.length > 0;
+      }
+      if (!related) return false;
+      await db.update(devices).set({ revokedAt: now() }).where(and(eq(devices.id, targetId), isNull(devices.revokedAt)));
+      return true;
     },
 
     /** HP yang terpasang dengan sebuah laptop (yang belum dicabut), dari yang paling lama. */

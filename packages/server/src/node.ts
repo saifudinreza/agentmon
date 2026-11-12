@@ -31,7 +31,7 @@ export type RelayServerOptions = {
   // Pairing lewat QR (HTTP). Tanpa ini endpoint /pair/* tidak ada (404).
   pairing?: PairingRoutesOptions;
   // API baca riwayat untuk HP (HTTP). Tanpa ini endpoint /api/* tidak ada (404).
-  deviceApi?: Omit<DeviceApiOptions, "isMachineOnline">;
+  deviceApi?: Omit<DeviceApiOptions, "isMachineOnline" | "onDeviceRevoked">;
   // Menyimpan event sebelum diteruskan dan di-ack (lihat hub.ts).
   persist?: RelayHubOptions["persist"];
 };
@@ -64,8 +64,9 @@ export async function startRelayServer(options: RelayServerOptions): Promise<Run
   // Hanya "ok". Jumlah laptop dan HP yang tersambung adalah bahan pengintaian yang tidak dibutuhkan
   // pemeriksaan hosting; statistik tetap bisa dibaca di dalam proses lewat hub.stats().
   app.get("/health", (c) => c.json({ status: "ok" }));
-  if (options.pairing) mountPairingRoutes(app, options.pairing);
-  if (options.deviceApi) mountDeviceApi(app, { ...options.deviceApi, isMachineOnline: (id) => hub.isMachineOnline(id) });
+  const onDeviceRevoked = (deviceId: string) => hub.disconnectDevice(deviceId);
+  if (options.pairing) mountPairingRoutes(app, { ...options.pairing, onDeviceRevoked });
+  if (options.deviceApi) mountDeviceApi(app, { ...options.deviceApi, isMachineOnline: (id) => hub.isMachineOnline(id), onDeviceRevoked });
   // Galat tak terduga (misalnya database sesaat tidak terjangkau): jawab 500 yang polos dan catat.
   // Tidak ada rincian ke klien, dan pairing tetap gagal tertutup (tidak ada kredensial yang keluar).
   app.onError((error, c) => {

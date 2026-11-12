@@ -80,6 +80,12 @@ export type PairedDevice = z.infer<typeof PairedDeviceSchema>;
 export const PairedDevicesResponseSchema = z.object({ devices: z.array(PairedDeviceSchema) });
 export type PairedDevicesResponse = z.infer<typeof PairedDevicesResponseSchema>;
 
+// ---- HP melihat perangkat sesamanya (yang berbagi laptop) -------------------------------
+export const ListedDeviceSchema = PairedDeviceSchema.extend({ current: z.boolean() });
+export type ListedDevice = z.infer<typeof ListedDeviceSchema>;
+export const DevicesResponseSchema = z.object({ devices: z.array(ListedDeviceSchema) });
+export type DevicesResponse = z.infer<typeof DevicesResponseSchema>;
+
 // ---- Alamat di dalam QR ----------------------------------------------------------------
 export type PairingLink = {
   code: string;

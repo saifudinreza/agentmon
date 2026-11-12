@@ -10,6 +10,8 @@
 // pernah memuat token maupun isi jawaban.
 import {
   ApprovalsResponseSchema,
+  DevicesResponseSchema,
+  type ListedDevice,
   EventsResponseSchema,
   MachinesResponseSchema,
   SessionsResponseSchema,
@@ -38,6 +40,10 @@ export type RelayApi = {
   machines(): Promise<DeviceMachine[]>;
   /** Permintaan izin yang masih menunggu, dari semua laptop yang dipasangkan. */
   approvals(): Promise<PendingApproval[]>;
+  /** Perangkat yang berbagi laptop dengan HP ini (termasuk dirinya, ditandai `current`). */
+  devices(): Promise<ListedDevice[]>;
+  /** Mencabut sebuah perangkat. Berlaku seketika di relay. */
+  revokeDevice(deviceId: string): Promise<void>;
   sessions(machineId: string): Promise<SessionSummary[]>;
   events(machineId: string, sessionId: string, afterSeq: number, limit?: number): Promise<{ events: Envelope[]; hasMore: boolean }>;
   /** Semua event sesudah `afterSeq`, mengikuti halaman sampai habis. `onPage` dipanggil tiap halaman supaya layar bisa terisi bertahap. */
@@ -61,10 +67,10 @@ export function createRelayApi(options: RelayApiOptions): RelayApi {
   const http = options.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  async function get<T>(path: string, parse: (json: unknown) => T): Promise<T> {
+  async function get<T>(path: string, parse: (json: unknown) => T, method: "GET" | "DELETE" = "GET"): Promise<T> {
     let response: Response;
     try {
-      response = await http(`${base}${path}`, { headers: { authorization: `Bearer ${options.token}` }, signal: AbortSignal.timeout(timeoutMs) });
+      response = await http(`${base}${path}`, { method, headers: { authorization: `Bearer ${options.token}` }, signal: AbortSignal.timeout(timeoutMs) });
     } catch {
       throw new RelayApiError("unreachable");
     }
@@ -87,6 +93,9 @@ export function createRelayApi(options: RelayApiOptions): RelayApi {
 
   return {
     machines: () => get("/api/machines", (json) => MachinesResponseSchema.parse(json).machines),
+    devices: () => get("/api/devices", (json) => DevicesResponseSchema.parse(json).devices),
+    revokeDevice: (deviceId) =>
+      get(`/api/devices/${encodeURIComponent(deviceId)}`, () => undefined, "DELETE"),
     approvals: () => get("/api/approvals", (json) => ApprovalsResponseSchema.parse(json).approvals),
     sessions: (machineId) => get(`/api/machines/${encodeURIComponent(machineId)}/sessions`, (json) => SessionsResponseSchema.parse(json).sessions),
     events,
