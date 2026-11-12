@@ -1,0 +1,23 @@
+# Cetak biru Render untuk relay staging (Blueprint). Tidak ada rahasia di berkas ini:
+# nilai yang `sync: false` diisi manual di dashboard Render dan tidak pernah masuk repo.
+# Panduan lengkap: docs/deploy.md
+services:
+  - type: web
+    name: agentmon-relay
+    runtime: node
+    plan: free
+    branch: main
+    autoDeploy: true # setiap push ke main men-deploy ulang
+    healthCheckPath: /health
+    buildCommand: corepack enable && pnpm install --frozen-lockfile
+    # Relay sendiri menjalankan migrasi saat menyala bila DATABASE_URL diisi (aman diulang), jadi tidak perlu langkah terpisah.
+    startCommand: pnpm --filter @agentmon/server start
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: TRUST_PROXY # relay di belakang proxy Render: IP penelepon dibaca dari X-Forwarded-For
+        value: "1"
+      - key: DATABASE_URL # alamat Postgres (Neon), termasuk kata sandi
+        sync: false
+      - key: PAIRING_ALLOWED_ORIGINS # alamat PWA, mis. https://agentmon.pages.dev (dipisah koma)
+        sync: false
