@@ -251,3 +251,65 @@ describe("kecepatan", () => {
     expect(result.durationMs).toBeLessThan(8000);
   }, 30_000);
 });
+
+describe("ketahanan terhadap lingkungan dan konfigurasi pengguna", () => {
+  test("variabel GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE dari lingkungan daemon tidak membelokkan checkpoint ke repo lain", async () => {
+    initRepo();
+    const other = mkdtempSync(join(tmpdir(), "agentmon-cpother-"));
+    try {
+      git(["init", "-q", "-b", "main"], other);
+      const saved = { dir: process.env.GIT_DIR, tree: process.env.GIT_WORK_TREE, index: process.env.GIT_INDEX_FILE };
+      process.env.GIT_DIR = join(other, ".git");
+      process.env.GIT_WORK_TREE = other;
+      process.env.GIT_INDEX_FILE = join(other, "indeks-palsu");
+      try {
+        const result = await service().create(dir);
+        expect(result.ok).toBe(true);
+      } finally {
+        for (const [key, value] of [["GIT_DIR", saved.dir], ["GIT_WORK_TREE", saved.tree], ["GIT_INDEX_FILE", saved.index]] as const) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+      expect(refsOf()).toHaveLength(1); // ada di repo yang dimaksud
+      expect(git(["for-each-ref", "refs/agentmon/"], other)).toBe(""); // dan tidak di repo lain
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  test("hook git milik pengguna tidak dijalankan (reference-transaction lewat .git/hooks maupun core.hooksPath)", async () => {
+    initRepo();
+    const marker = join(dir, "..", `hook-jalan-${Date.now()}.txt`).split(String.fromCharCode(92)).join("/");
+    const script = ["#!/bin/sh", `echo jalan > "${marker}"`, ""].join(String.fromCharCode(10));
+    const gitDir = git(["rev-parse", "--absolute-git-dir"]).trim();
+    mkdirSync(join(gitDir, "hooks"), { recursive: true });
+    writeFileSync(join(gitDir, "hooks", "reference-transaction"), script, { mode: 0o755 });
+    const custom = join(dir, "hook-kustom");
+    mkdirSync(custom);
+    writeFileSync(join(custom, "reference-transaction"), script, { mode: 0o755 });
+    git(["config", "core.hooksPath", custom]);
+    const result = await service().create(dir);
+    expect(result.ok).toBe(true);
+    expect(() => readFileSync(marker)).toThrow(); // penanda tidak pernah ditulis
+  });
+
+  test("checkpoint yang lahir di milidetik yang sama atau saat jam mundur: yang TERBARU dibuat yang bertahan", async () => {
+    initRepo();
+    const fixed = new Date(Date.UTC(2026, 10, 12, 10, 0, 0, 0));
+    const svc = service({ keep: 2, now: () => fixed });
+    const made: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const r = await svc.create(dir);
+      if (!r.ok) throw new Error(r.message);
+      made.push(r.ref);
+    }
+    expect(refsOf()).toEqual(made.slice(3));
+  });
+
+  test("melewati batas waktu dilaporkan sebagai timeout", async () => {
+    initRepo();
+    const result = await service({ timeoutMs: 1 }).create(dir);
+    expect(result).toMatchObject({ ok: false, reason: "timeout" });
+  });
+});
