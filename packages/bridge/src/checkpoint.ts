@@ -19,7 +19,7 @@
 // terpasang, repo rusak, kehabisan waktu) menjadi hasil `ok: false` dengan pesan yang jelas, bukan lemparan.
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -80,7 +80,16 @@ function git(args: string[], cwd: string, env: Record<string, string>, timeoutMs
   });
 }
 
-const sameDir = (a: string, b: string) => resolve(a).toLowerCase() === resolve(b).toLowerCase();
+// Bandingkan setelah symlink dan nama pendek diselesaikan (macOS: /var -> /private/var; Windows: nama 8.3 seperti
+// RUNNER~1), karena git melaporkan jalur aslinya sedangkan folder home bisa ditulis dengan jalur lain.
+function canonical(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return resolve(path);
+  }
+}
+const sameDir = (a: string, b: string) => canonical(a).toLowerCase() === canonical(b).toLowerCase();
 
 // Nomor checkpoint: waktu sampai milidetik + penghitung (untuk yang lahir di milidetik yang sama) + acak (untuk
 // beberapa daemon di satu repo). Diurutkan leksikal = diurutkan menurut waktu.
