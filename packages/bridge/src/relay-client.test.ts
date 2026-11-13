@@ -969,3 +969,57 @@ describe("canReachPhone: adakah HP yang bisa menjawab", () => {
     expect(client.canReachPhone()).toBe(false);
   });
 });
+
+describe("onCommand: perintah selain keputusan izin (mis. rollback)", () => {
+  function withOnCommand(onCommand: NonNullable<Parameters<typeof createRelayClient>[0]["onCommand"]>, relay: Awaited<ReturnType<typeof startFakeRelay>>) {
+    const log = makeLogger();
+    const client = createRelayClient({ url: relay.url, token: TOKEN, machineId: MACHINE, decide: () => ({ ok: true }), onCommand, logger: log.logger, reconnectMinMs: 10 });
+    clients.push(client);
+    return { client, ...log };
+  }
+
+  test("hasilnya dibalas ke HP yang mengirim, dengan isi balasan apa adanya", async () => {
+    const relay = await startFakeRelay();
+    const seen: Array<{ body: Record<string, unknown>; deviceId: string }> = [];
+    const { client } = withOnCommand(async (body, deviceId) => {
+      seen.push({ body, deviceId });
+      return { type: "rollback.result", commandId: "c1", outcome: "refused" };
+    }, relay);
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    relay.sendCommand({ type: "rollback.preview", commandId: "c1", checkpointId: "cp1" });
+    await vi.waitFor(() => expect(relay.replies).toHaveLength(1));
+    expect(seen).toEqual([{ body: { type: "rollback.preview", commandId: "c1", checkpointId: "cp1" }, deviceId: "d1" }]);
+    expect(relay.replies[0]).toEqual({ kind: "reply", deviceId: "d1", body: { type: "rollback.result", commandId: "c1", outcome: "refused" } });
+  });
+
+  test("tanpa hasil (undefined): tidak ada balasan, dan perintah tidak dikenal dicatat", async () => {
+    const relay = await startFakeRelay();
+    const { client, lines } = withOnCommand(async () => undefined, relay);
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    relay.sendCommand({ type: "aneh" });
+    await vi.waitFor(() => expect(lines.join("\n")).toContain("perintah tidak dikenal"));
+    expect(relay.replies).toHaveLength(0);
+  });
+
+  test("penangan melempar: dicatat tanpa menjatuhkan klien, tanpa balasan", async () => {
+    const relay = await startFakeRelay();
+    const { client, lines } = withOnCommand(async () => {
+      throw new Error("meledak");
+    }, relay);
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    relay.sendCommand({ type: "rollback.apply" });
+    await vi.waitFor(() => expect(lines.join("\n")).toContain("gagal"));
+    expect(relay.replies).toHaveLength(0);
+    expect(client.stats().state).toBe("ready");
+  });
+
+  test("keputusan izin tetap lewat jalur lama, bukan onCommand", async () => {
+    const relay = await startFakeRelay();
+    let called = 0;
+    const { client } = withOnCommand(async () => (called++, undefined), relay);
+    await vi.waitFor(() => expect(client.stats().state).toBe("ready"));
+    relay.sendCommand({ type: "approval.decision", commandId: "11111111-1111-4111-8111-111111111111", approvalId: "a1", decision: "approve" });
+    await vi.waitFor(() => expect(relay.replies).toHaveLength(1));
+    expect(called).toBe(0);
+  });
+});

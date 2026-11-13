@@ -41,6 +41,11 @@ export type RelayClientOptions = {
   machineId: string;
   /** Menyerahkan keputusan dari HP ke approval engine. */
   decide: (input: unknown) => unknown;
+  /**
+   * Menangani perintah dari HP selain keputusan izin (mis. rollback). Mengembalikan isi balasan untuk HP yang
+   * mengirimnya, atau undefined bila tidak ada balasan. Bila tidak diisi, perintah lain diabaikan.
+   */
+  onCommand?: (body: Record<string, unknown>, deviceId: string) => Promise<Record<string, unknown> | undefined>;
   logger?: Logger;
 
   /** Batas antrean. Yang terlama dibuang bila terlampaui. */
@@ -323,6 +328,17 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   const handleCommand = (deviceId: string, body: Record<string, unknown>) => {
     const { type, commandId, ...rest } = body;
     if (type !== APPROVAL_DECISION_COMMAND) {
+      if (options.onCommand) {
+        // Perintah lain (mis. rollback) dijalankan di luar jalur ini dan bisa memakan waktu; balasannya dikirim setelah selesai.
+        void options
+          .onCommand(body, deviceId)
+          .then((result) => {
+            if (result !== undefined) sendNow({ kind: "reply", deviceId, body: result });
+            else logger?.info(`relay: perintah tidak dikenal type=${printable(String(type))}`);
+          })
+          .catch((error: unknown) => logger?.error(`relay: perintah ${printable(String(type))} gagal: ${error instanceof Error ? printable(error.message) : "galat tak dikenal"}`));
+        return;
+      }
       logger?.info(`relay: perintah tidak dikenal type=${printable(String(type))}`);
       return;
     }

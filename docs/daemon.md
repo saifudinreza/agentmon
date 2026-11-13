@@ -254,3 +254,21 @@ Sebelum alat pengubah berkas (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) dija
 Batas yang perlu diketahui: (1) berkas besar atau rahasia yang BELUM di-ignore ikut masuk ke database objek git, sama seperti bila di-`git add`; (2) repo yang memakai filter git (mis. git-lfs) tetap menjalankan filter `clean` pada berkas yang berubah saat `git add -A`, yang bisa menulis ke penyimpanan filter itu (misalnya `.git/lfs`); (3) bila waktu habis, proses git dihentikan tetapi proses anak seperti filter tidak dijamin ikut berhenti, terutama di Windows; (4) tes belum mencakup CRLF (`core.autocrlf=true`), worktree, dan submodule.
 
 Keterbatasan: efek di luar berkas (`git push`, jaringan, database) tidak bisa dibatalkan. Rollback itu sendiri dikerjakan di issue lain; di sini hanya pemotretan.
+
+## Rollback dari HP
+
+Dari timeline di HP, event "Checkpoint dibuat" punya tautan "Kembalikan ke sini". Alurnya (`src/rollback.ts`, layar `src/rollback/RollbackScreen.tsx` di PWA):
+
+1. **Pratinjau.** HP mengirim `rollback.preview`; laptop membandingkan checkpoint dengan keadaan sekarang dan membalas daftar berkas yang akan dibuat lagi, dikembalikan isinya, atau **dihapus** (pekerjaan setelah checkpoint ikut tercantum), beserta sidik (hash) daftar itu. Paling banyak 200 berkas dikirim; jumlah sebenarnya tetap dilaporkan.
+2. **Konfirmasi dua ketukan** di HP, dengan keterangan hal yang tidak bisa dibatalkan.
+3. **Penerapan.** HP mengirim `rollback.apply` beserta sidik pratinjau. Laptop menghitung ulang; bila daftarnya berbeda ditolak (`preview_changed`). Ditolak juga bila agent masih berjalan di sesi itu (`agent_running`), checkpoint tidak dikenal/hilang/rusak, jalur berkas tidak aman, atau rollback lain sedang berjalan untuk repo itu.
+4. **Pengaman.** Sebelum menyentuh berkas apa pun, keadaan sekarang disimpan sebagai checkpoint baru; gagal menyimpannya berarti tidak ada yang diubah. Hasil akhir diverifikasi (isi harus sama persis dengan checkpoint); bila gagal di tengah jalan, keadaan sebelumnya dipulihkan otomatis dan hasilnya dilaporkan `failed` dengan `recovered`.
+5. **Membatalkan rollback** = rollback ke checkpoint pengaman yang dikembalikan oleh rollback sebelumnya (tautan "Batalkan rollback" di HP). Rollback itu pun menyimpan pengamannya sendiri, jadi bisa diulang maju.
+
+"Agent masih berjalan" dibaca dari event terakhir sesi (`src/session-activity.ts`): `agent.stopped` atau `session.recap` berarti selesai; event lain berarti bekerja, dan sesi yang tidak ada kabar 10 menit dianggap diam. Daftar nomor checkpoint ke repo dan sesi disimpan di `checkpoints.json` di folder data daemon, sehingga rollback tetap bekerja setelah daemon dimulai ulang. Setelah rollback berhasil, event `checkpoint.restored` dikirim.
+
+**Yang dipulihkan:** berkas yang dilacak dan berkas baru yang belum dilacak. Berkas yang di-ignore tidak disentuh. Index git milik pengguna tidak diubah, jadi `git status` bisa menampilkan perbedaan terhadap index sesudah rollback. Hanya 50 checkpoint terbaru yang disimpan, termasuk checkpoint pengaman, jadi pembatalan lama kelamaan tidak lagi tersedia.
+
+**Keamanan:** perintah hanya diterima dari HP yang dipasangkan dan belum dicabut (diperiksa relay pada setiap perintah, termasuk dari soket lama yang belum diputus; diuji). **Belum ada tanda tangan perintah**: issue 034 menambahkannya, jadi sampai itu selesai keamanan perintah bergantung pada token HP dan relay. Dokumentasi relay tidak perlu berubah.
+
+**Belum diuji:** di HP dan browser nyata (hanya tes otomatis dan jsdom), pada repo yang sangat besar, dengan `core.autocrlf=true`, worktree, dan submodule. Pada Windows, pembersihan berkas yang sedang dikunci proses lain bisa gagal dan dilaporkan sebagai kegagalan dengan pemulihan otomatis.
