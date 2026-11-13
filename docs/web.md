@@ -81,3 +81,25 @@ Kode berlaku sekitar 5 menit sejak QR dibuat, jadi langkah memasang lalu menempe
 - **Perangkat** (`/devices`, tautan "Perangkat dan akses" di beranda): daftar perangkat yang berbagi laptop dengan HP ini, perangkat sendiri ditandai, dan tombol Cabut dengan konfirmasi (ketukan kedua; mencabut diri sendiri diberi peringatan lebih tegas). Pencabutan berlaku seketika di relay. Mencabut diri sendiri membuat PWA menampilkan "Perangkat dicabut" dan perlu QR baru. Diuji dengan tes jsdom; belum dicoba di HP nyata.
 
 - **Rollback** (`/r/<laptop>/<checkpoint>`, dari tautan "Kembalikan ke sini" di event checkpoint): layar meminta pratinjau dari laptop setelah koneksi siap (sekali, tidak diulang saat tersambung ulang), menampilkan berkas yang akan dibuat lagi, dikembalikan, atau dihapus (jalur ditampilkan dengan karakter berbahaya sebagai kodenya), hal yang tidak bisa dibatalkan, lalu konfirmasi dua ketukan. Tombol mati bila agent masih berjalan. Setelah berhasil ada tautan "Batalkan rollback". Perintah umum dikirim lewat `store.request`, yang menunggu balasan bernomor perintah yang sama dan melaporkan offline, laptop mati, ditolak, atau waktu habis (60 detik). Detail alur di `docs/daemon.md`. Diuji dengan jsdom; belum dicoba di HP nyata.
+
+## Penampil diff (`src/diff/`)
+
+Layar keputusan menampilkan diff dengan penampil yang dimuat belakangan (`React.lazy`, `LazyDiffViewer`). Selama kodenya belum siap, atau bila gagal dimuat (mis. offline dan belum tersimpan), teks diff biasa yang sama tampil, jadi isi yang akan disetujui selalu terbaca; penampil hanya mengganti tampilannya.
+
+**Pilihan pustaka (perbandingan yang diminta issue 024).** Dua kandidat di PRD dibandingkan dari data paket npm (bukan diukur di HP): `diff2html` 3.4.56 (±2,0 MB tak terkompres, bergantung pada `diff` dan `@profoundlogic/hogan`, bekerja dari teks unified diff) dan `react-diff-view` 3.3.3 (±1,5 MB, bergantung pada `lodash`, `diff-match-patch`, `gitdiff-parser`, dan lainnya, juga bekerja dari teks unified diff). Keduanya mengurai TEKS diff, padahal daemon sudah mengirim hunk terstruktur (`FileDiff`: hunk, baris, nomor baris, id hunk), dan keduanya membawa banyak dependensi yang harus dipantau (aturan umur paket, pembaruan). Maka penampil ditulis sendiri tanpa dependensi baru: tiap hunk adalah komponen mandiri (`Hunk`) yang nanti dipakai ulang untuk swipe per hunk (issue 040). Ukuran kode penampil: sekitar 6,5 KB (2,3 KB gzip) dan pewarna 2,1 KB (1,0 KB gzip), keduanya di luar bundle awal. Yang belum dilakukan: membandingkan keterbacaan kedua pustaka di HP nyata.
+
+**Fitur:** judul hunk `@@ -a,b +c,d @@`, nomor baris lama dan baru, penanda +/- (pembaca layar mendapat kata "Ditambah"/"Dihapus"), navigasi antar hunk (sebelumnya/berikutnya dengan penunjuk posisi) dan antar berkas, opsi membungkus baris panjang (bawaan: gulir ke samping per hunk), peringatan path sensitif paling atas, dan jenis non-teks (biner, terlalu besar, tidak cocok) sebagai keterangan. Karakter kontrol atau pembalik arah tulisan di baris ditampilkan sebagai kodenya (`‮`), tidak dibuang. Diff yang melebihi 1.500 baris menampilkan 1.500 dulu dan sisanya lewat tombol.
+
+**Warna sintaks** (`highlight.ts`) memecah baris yang sudah di-escape menjadi kata kunci, string, angka, dan komentar (JS/TS dan keluarganya, Python, CSS, JSON, shell). Modul ini dimuat setelah penampil tampil, jadi teks sudah terbaca sebelum warna siap. Warna bantuan baca saja: tanpa ingatan antar baris (komentar atau string berbaris-baris tidak diwarnai utuh), baris lebih dari 2.000 karakter tidak diwarnai, dan warna tidak pernah dipakai untuk keputusan keamanan.
+
+**Bukan bundle awal (diperiksa otomatis).** `pnpm check:size` kini juga gagal bila penanda penampil ada di JS awal, atau tidak ditemukan di berkas JS mana pun. JS awal saat ini sekitar 121 KB gzip dari batas 200 KB.
+
+**Diukur di browser (Edge, viewport 390x844, build produksi, diff 1.000 baris)**, dengan perlambatan CPU sebagai pengganti HP kelas menengah (bukan perangkat nyata):
+
+| CPU | Waktu gambar awal | Gulir: median / p95 antar bingkai |
+|---|---|---|
+| 1x | 303 ms | 16,7 / 25,9 ms |
+| 4x lebih lambat | 612 ms | 16,8 / 51,6 ms |
+| 6x lebih lambat | 1.590 ms | 16,5 / 76,7 ms |
+
+Diff 1.500 baris pada 4x: 933 ms, gulir p95 76,5 ms. Jumlah elemen DOM besar (±9.500 untuk 1.000 baris), dan penghematannya (`content-visibility` per hunk sudah dipakai) belum dioptimalkan lebih jauh. **Belum diuji di HP nyata** (Android dan iOS); angka di atas adalah emulasi.

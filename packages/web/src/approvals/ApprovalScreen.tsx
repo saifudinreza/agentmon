@@ -17,6 +17,7 @@ import { findEntryForMachine, useRelayEntries, useRelayState, type RelayEntry } 
 import { Heading } from "../ui/Heading";
 import { Link } from "../ui/Link";
 import { cleanLine } from "../timeline/describe";
+import { LazyDiffViewer } from "../diff/LazyDiffViewer";
 import { RISK_LABEL } from "./ApprovalList";
 import { describeInput, formatDiff } from "./format";
 import { approvalKey, formatRemaining, isExpired, remainingMs, type Resolution } from "./model";
@@ -112,6 +113,14 @@ function DiffBlock({ diff }: { diff: FileDiff }) {
       </div>
     </>
   );
+}
+
+// Diff teks yang punya hunk memakai penampil yang dimuat belakangan; selama belum siap (atau gagal dimuat), teks biasa
+// yang sama tampil, jadi isi yang akan disetujui tetap terbaca. Jenis lain (biner, terlalu besar, dan seterusnya) cukup teks.
+function DiffSection({ diff }: { diff: FileDiff }) {
+  const plain = <DiffBlock diff={diff} />;
+  if (diff.change.type !== "text" || diff.change.hunks.length === 0) return plain;
+  return <LazyDiffViewer diffs={[diff]} fallback={plain} />;
 }
 
 // Teks status keputusan dalam bahasa manusia, atau undefined bila belum ada keputusan.
@@ -227,7 +236,7 @@ function ApprovalBody({ entry, machineId, approvalId, focusHeading }: { entry: R
           </dl>
         </Section>
       )}
-      <Section title={t("approval.diff")}>{approval.diff ? <DiffBlock diff={approval.diff} /> : <p className="text-sm text-muted">{t("approval.diff.none")}</p>}</Section>
+      <Section title={t("approval.diff")}>{approval.diff ? <DiffSection diff={approval.diff} /> : <p className="text-sm text-muted">{t("approval.diff.none")}</p>}</Section>
 
       <section className="flex flex-col gap-2 rounded-2xl border border-line bg-surface p-4">
         <label htmlFor={textareaId} className="text-sm font-medium">
