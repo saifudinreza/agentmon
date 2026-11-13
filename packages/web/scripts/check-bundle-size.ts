@@ -10,7 +10,7 @@
 // Yang dihitung hanya JS AWAL: skrip yang dimuat langsung oleh index.html (script dan modulepreload).
 // Bagian yang dimuat belakangan (lazy), seperti penampil diff nanti, tidak ikut dihitung.
 // Service worker (sw.js) dan pustaka workbox bukan bagian muatan awal, jadi juga tidak dihitung.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
@@ -51,6 +51,34 @@ export function measureInitialJs(distDir: string, limitBytes = INITIAL_JS_LIMIT_
   return { files, totalGzipBytes, limitBytes, ok: totalGzipBytes < limitBytes };
 }
 
+/** Penanda yang hanya ada di kode penampil diff (data-diff-viewer="agentmon"). */
+export const DIFF_VIEWER_MARKER = 'data-diff-viewer';
+
+/**
+ * Memastikan penampil diff benar-benar dimuat belakangan: penandanya TIDAK boleh ada di JS awal, tetapi harus ada di
+ * salah satu berkas JS lain hasil build (kalau tidak ada di mana pun, pemeriksaan ini tidak berarti dan harus gagal).
+ * Mengembalikan daftar masalah (kosong = baik).
+ */
+export function checkDiffViewerIsLazy(distDir: string, initialFiles: string[]): string[] {
+  const assets = join(distDir, "assets");
+  const initial = new Set(initialFiles.map((src) => join(distDir, src.replace(/^\/+/, "").split("?")[0] ?? "")));
+  const problems: string[] = [];
+  let foundLazy = false;
+  const scan = (dir: string) => {
+    for (const entry of existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) scan(path);
+      else if (/\.m?js$/.test(entry.name) && readFileSync(path, "utf8").includes(DIFF_VIEWER_MARKER)) {
+        if (initial.has(path)) problems.push(`Penampil diff ikut di JS awal (${entry.name}); seharusnya dimuat belakangan.`);
+        else foundLazy = true;
+      }
+    }
+  };
+  scan(assets);
+  if (!foundLazy && problems.length === 0) problems.push("Penampil diff tidak ditemukan di berkas JS mana pun; periksa penanda dan pemisahan kode.");
+  return problems;
+}
+
 const kb = (bytes: number) => `${(bytes / 1000).toFixed(1)} KB`;
 
 export function formatReport(report: BundleReport): string {
@@ -66,7 +94,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     const dist = join(dirname(fileURLToPath(import.meta.url)), "..", "dist");
     const report = measureInitialJs(dist);
     console.log(formatReport(report));
-    process.exitCode = report.ok ? 0 : 1;
+    const problems = checkDiffViewerIsLazy(dist, report.files.map((f) => f.file));
+    for (const problem of problems) console.error(`GAGAL: ${problem}`);
+    if (problems.length === 0) console.log("OK: penampil diff dimuat belakangan (tidak ada di JS awal).");
+    process.exitCode = report.ok && problems.length === 0 ? 0 : 1;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

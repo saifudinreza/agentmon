@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { afterEach, describe, expect, test } from "vitest";
-import { formatReport, initialScripts, INITIAL_JS_LIMIT_BYTES, measureInitialJs } from "./check-bundle-size";
+import { checkDiffViewerIsLazy, formatReport, initialScripts, INITIAL_JS_LIMIT_BYTES, measureInitialJs } from "./check-bundle-size";
 
 let dir: string | undefined;
 afterEach(() => {
@@ -110,5 +110,24 @@ describe("formatReport", () => {
     expect(ok).toContain("OK");
     const bad = formatReport({ files: [], totalGzipBytes: 250_000, limitBytes: 200_000, ok: false });
     expect(bad).toContain("GAGAL");
+  });
+});
+
+describe("checkDiffViewerIsLazy", () => {
+  const html = '<script type="module" src="/assets/index-1.js"></script>';
+
+  test("penampil hanya di berkas lain (lazy): tidak ada masalah", () => {
+    const d = makeDist(html, { "assets/index-1.js": "console.log(1)", "assets/DiffViewer-2.js": 'x({"data-diff-viewer":"agentmon"})' });
+    expect(checkDiffViewerIsLazy(d, ["/assets/index-1.js"])).toEqual([]);
+  });
+
+  test("penampil ikut di JS awal: dilaporkan", () => {
+    const d = makeDist(html, { "assets/index-1.js": 'x({"data-diff-viewer":"agentmon"})', "assets/DiffViewer-2.js": 'x({"data-diff-viewer":"agentmon"})' });
+    expect(checkDiffViewerIsLazy(d, ["/assets/index-1.js"]).join("\n")).toContain("ikut di JS awal");
+  });
+
+  test("penampil tidak ditemukan di mana pun: gagal (pemeriksaan tidak boleh lolos diam-diam)", () => {
+    const d = makeDist(html, { "assets/index-1.js": "console.log(1)" });
+    expect(checkDiffViewerIsLazy(d, ["/assets/index-1.js"]).join("\n")).toContain("tidak ditemukan");
   });
 });

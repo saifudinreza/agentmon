@@ -188,3 +188,54 @@ describe("izin yang terpotong", () => {
     expect(sent).toHaveLength(1);
   });
 });
+
+describe("diff di layar keputusan (penampil dimuat belakangan)", () => {
+  const withDiff = (): PendingApproval =>
+    pending("a1", {
+      toolName: "Edit",
+      toolInput: { file_path: "app.ts" },
+      diff: {
+        path: "app.ts",
+        toolName: "Edit",
+        sensitive: [{ code: "env_file", message: "berkas konfigurasi" }],
+        change: {
+          type: "text",
+          isNew: false,
+          added: 1,
+          removed: 1,
+          format: { oldEol: "lf", newEol: "lf", oldFinalNewline: true, newFinalNewline: true },
+          hunks: [
+            {
+              id: "h1",
+              oldStart: 1,
+              oldLines: 1,
+              newStart: 1,
+              newLines: 1,
+              lines: [
+                { type: "remove", text: "const lama = 1;", oldLine: 1 },
+                { type: "add", text: "const baru = 2;", newLine: 1 },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+  test("isi diff terbaca seketika (teks biasa), lalu diganti penampil setelah kodenya siap; tombol keputusan tidak terganggu", async () => {
+    relay.data.approvals = [withDiff()];
+    const { container } = renderApp("/a/m1/a1");
+    await sync();
+    // Seketika: teks diff sudah terbaca, juga peringatan path sensitif.
+    expect(container.textContent).toContain("const lama = 1;");
+    expect(container.textContent).toContain("const baru = 2;");
+    expect(container.textContent).toContain("berkas konfigurasi");
+    // Kemudian penampil menggantikannya, dengan isi yang sama.
+    await waitFor(() => expect(container.querySelector("[data-diff-viewer]")).toBeTruthy());
+    expect(container.textContent).toContain("const lama = 1;");
+    expect(container.textContent).toContain("const baru = 2;");
+    expect(container.textContent).toContain("berkas konfigurasi");
+    // Keputusan tetap bisa dikirim.
+    fireEvent.click(screen.getByRole("button", { name: "Setujui" }));
+    expect(sent).toHaveLength(1);
+  });
+});
