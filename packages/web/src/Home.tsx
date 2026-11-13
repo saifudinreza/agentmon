@@ -7,6 +7,7 @@ import { ApprovalScreen } from "./approvals/ApprovalScreen";
 import { DevicesScreen } from "./devices/DevicesScreen";
 import { useI18n } from "./i18n/react";
 import { PairScreen } from "./pairing/PairScreen";
+import { RollbackScreen } from "./rollback/RollbackScreen";
 import { setPendingLink } from "./pairing/pending";
 import { PasteLinkForm } from "./pairing/PasteLinkForm";
 import { useRelayEntries, useRelayState, type RelayEntry } from "./relay/RelayProvider";
@@ -160,6 +161,17 @@ function parseApprovalPath(path: string): { machineId: string; approvalId: strin
   }
 }
 
+// Alamat /r/<laptop>/<checkpoint> menjadi layar rollback.
+function parseRollbackPath(path: string): { machineId: string; checkpointId: string } | undefined {
+  const match = /^\/r\/([^/]+)\/([^/]+)$/.exec(path);
+  if (!match) return undefined;
+  try {
+    return { machineId: decodeURIComponent(match[1] as string), checkpointId: decodeURIComponent(match[2] as string) };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Memilih layar menurut alamat. */
 export function Routes() {
   const path = usePath();
@@ -174,6 +186,8 @@ export function Routes() {
   if (path === "/devices") return <DevicesScreen key="devices" focusHeading={focusHeading} />;
   const approval = parseApprovalPath(path);
   if (approval) return <ApprovalScreen key={`a/${approval.machineId}/${approval.approvalId}`} {...approval} focusHeading={focusHeading} />;
+  const rollback = parseRollbackPath(path);
+  if (rollback) return <RollbackScreen key={`r/${rollback.machineId}/${rollback.checkpointId}`} {...rollback} focusHeading={focusHeading} />;
   const timeline = parseTimelinePath(path);
   if (timeline) return <TimelineScreen key={`s/${timeline.machineId}/${timeline.sessionId}`} {...timeline} focusHeading={focusHeading} />;
   return <Home key="home" focusHeading={focusHeading} />;

@@ -70,6 +70,11 @@ export type RelayState = {
   syncError: boolean;
 };
 
+export type RequestFailure = "offline" | "laptop-offline" | "not-allowed" | "rate-limited" | "unconfirmed";
+export type RequestResult = { ok: true; reply: Record<string, unknown> } | { ok: false; reason: RequestFailure };
+/** Berapa lama `request` menunggu balasan laptop (rollback pada repo besar bisa memakan waktu). */
+export const REQUEST_TIMEOUT_MS = 60_000;
+
 export type RelayStore = {
   /** API baca/tulis ke relay, untuk layar yang butuh panggilan sendiri (mis. daftar perangkat). */
   readonly api: RelayApi;
@@ -83,6 +88,11 @@ export type RelayStore = {
   retrySession(machineId: string, sessionId: string): void;
   /** Mengirim keputusan sebuah izin ke laptop. Hasilnya tampil di `decisions`. */
   decide(machineId: string, approvalId: string, decision: "approve" | "deny", comment?: string): void;
+  /**
+   * Mengirim perintah ke laptop dan menunggu balasannya (dicocokkan lewat nomor perintah). Nomor perintah diisi store.
+   * Tidak pernah menolak (reject): kegagalan jaringan, laptop mati, ditolak relay, dan waktu habis menjadi `ok: false`.
+   */
+  request(machineId: string, body: Record<string, unknown>, timeoutMs?: number): Promise<RequestResult>;
   reconnectNow(): void;
   /** Membuka koneksi. Aman dipanggil berulang; setelah `stop` bisa dimulai lagi. */
   start(): void;
@@ -280,7 +290,16 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
   };
 
   // Balasan laptop atas keputusan HP ini: hasil yang sebenarnya berlaku.
+  // Permintaan umum (request) yang menunggu balasan: nomor perintah -> penyelesai.
+  const pendingRequests = new Map<string, { machineId: string; sentAt: number; done: (result: RequestResult) => void }>();
+
   const handleReply = (machineId: string, body: Record<string, unknown>) => {
+    const waiting = typeof body.commandId === "string" ? pendingRequests.get(body.commandId) : undefined;
+    // Balasan hanya diterima dari laptop yang kita kirimi perintahnya.
+    if (waiting && waiting.machineId === machineId) {
+      waiting.done({ ok: true, reply: body });
+      return;
+    }
     const parsed = ApprovalReplySchema.safeParse(body);
     if (!parsed.success) return;
     const reply = parsed.data;
@@ -308,6 +327,10 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
     const reason: DecisionFailure | undefined = code === "target_offline" ? "laptop-offline" : code === "forbidden" ? "not-allowed" : code === "rate_limited" ? "rate-limited" : undefined;
     if (!reason) return;
     const now = Date.now();
+    // Permintaan umum yang baru dikirim ikut gagal dengan alasan yang sama.
+    for (const waiting of [...pendingRequests.values()]) {
+      if (now - waiting.sentAt < ERROR_ATTRIBUTION_MS) waiting.done({ ok: false, reason });
+    }
     set((s) => {
       let decisions = s.decisions;
       for (const [key, d] of Object.entries(s.decisions)) {
@@ -397,6 +420,25 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
       }, confirmTimeoutMs);
       timers.add(timer);
     },
+    request(machineId, body, timeoutMs = REQUEST_TIMEOUT_MS) {
+      return new Promise<RequestResult>((resolve) => {
+        const commandId = newId();
+        const hold: { timer?: ReturnType<typeof setTimeout> } = {};
+        const done = (result: RequestResult) => {
+          if (!pendingRequests.delete(commandId)) return;
+          if (hold.timer) {
+            clearTimeout(hold.timer);
+            timers.delete(hold.timer);
+          }
+          resolve(result);
+        };
+        pendingRequests.set(commandId, { machineId, sentAt: Date.now(), done });
+        const sent = connection?.send({ kind: "command", machineId, body: { ...body, commandId } });
+        if (!sent) return done({ ok: false, reason: "offline" });
+        hold.timer = setTimeout(() => done({ ok: false, reason: "unconfirmed" }), timeoutMs);
+        timers.add(hold.timer);
+      });
+    },
     reconnectNow: () => connection?.reconnectNow(),
     start() {
       if (connection) return;
@@ -405,6 +447,7 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
     },
     stop() {
       stopped = true;
+      for (const waiting of [...pendingRequests.values()]) waiting.done({ ok: false, reason: "offline" });
       for (const timer of timers) clearTimeout(timer);
       timers.clear();
       connection?.close();

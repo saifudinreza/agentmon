@@ -322,3 +322,32 @@ describe("ketahanan terhadap lingkungan dan konfigurasi pengguna", () => {
     expect(result).toMatchObject({ ok: false, reason: "timeout" });
   });
 });
+
+describe("daftar checkpoint (registry)", () => {
+  test("mencatat repo dan sesi, dan bertahan setelah service dibuat ulang (daemon dimulai ulang)", async () => {
+    initRepo();
+    const registryFile = join(dir, "..", `registry-${Date.now()}.json`);
+    try {
+      const first = createCheckpointService({ timeoutMs: 60_000, registryFile });
+      const made = await first.create(dir, { sessionId: "sesi-9" });
+      if (!made.ok) throw new Error(made.message);
+      expect(first.lookup(made.id)).toEqual({ root: made.root, sessionId: "sesi-9" });
+      expect(first.lookup("tidak-ada")).toBeUndefined();
+
+      const second = createCheckpointService({ registryFile });
+      expect(second.lookup(made.id)).toEqual({ root: made.root, sessionId: "sesi-9" });
+    } finally {
+      rmSync(registryFile, { force: true });
+    }
+  });
+
+  test("berkas daftar rusak: dimulai dari kosong tanpa galat", async () => {
+    const registryFile = join(dir, "..", `registry-rusak-${Date.now()}.json`);
+    try {
+      writeFileSync(registryFile, "{bukan json");
+      expect(createCheckpointService({ registryFile }).lookup("apa-saja")).toBeUndefined();
+    } finally {
+      rmSync(registryFile, { force: true });
+    }
+  });
+});

@@ -115,7 +115,12 @@ export type ClaudeCodeHandlerOptions = {
   diffTimeoutMs?: number;
   // Pembuat checkpoint (foto keadaan proyek) yang diambil sebelum alat pengubah berkas dijalankan. Tanpa ini,
   // tidak ada checkpoint. Tidak boleh melempar, dan kegagalannya tidak pernah menghalangi agent.
-  checkpoint?: (cwd: string) => Promise<CheckpointResult>;
+  checkpoint?: (cwd: string, sessionId: string) => Promise<CheckpointResult>;
+  // Menyerahkan "pemancar event" ke pemanggil, untuk event yang lahir di luar hook (mis. checkpoint.restored setelah
+  // rollback dari HP). Nomor urut dan stempelnya tetap dari penangan ini, jadi urutan event sesi tidak bentrok.
+  // Dipanggil untuk SETIAP hook yang masuk (sebelum diproses), mis. untuk tahu agent baru menerima perintah.
+  onHookInput?: (input: Record<string, unknown>) => void;
+  registerEmitter?: (emit: (type: EventType, payload: Record<string, unknown>, sessionId: string) => void) => void;
 };
 
 // Batas jumlah sesi yang nomor urutnya diingat sekaligus. Mencegah ingatan membengkak bila
@@ -256,6 +261,12 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
     }
   };
 
+  // Konteks hook terakhir: dipakai pemancar dari luar hook (identitas laptop dan pencatat log diambil dari sini).
+  let lastContext: HookContext | undefined;
+  options.registerEmitter?.((type, payload, sessionId) => {
+    if (lastContext) emitOwn(type, payload, sessionId, lastContext);
+  });
+
   // CHECKPOINT sebelum alat pengubah berkas. Berjalan di PreToolUse SEBELUM aksi ditahan atau dilepas, jadi
   // fotonya menangkap keadaan sebelum perubahan. Gagal, nonaktif (bukan repo git), atau lambat hanya dicatat:
   // agent tetap berjalan.
@@ -266,7 +277,7 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
     const cwd = typeof input.cwd === "string" ? input.cwd : "";
     if (!FILE_MUTATING_TOOLS.has(toolName) || !sessionId || !cwd) return;
     try {
-      const result = await options.checkpoint(cwd);
+      const result = await options.checkpoint(cwd, sessionId);
       if (result.ok) {
         context.logger.info(`checkpoint ${result.id} dibuat dalam ${result.durationMs} ms (alat=${toolName})`);
         emitOwn("checkpoint.created", { checkpointId: result.id }, sessionId, context);
@@ -340,6 +351,12 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
   //   context = bekal dari daemon: pencatat, identitas laptop, buku antrean izin, panel kontrol
   return async (input, context) => {
     const { logger } = context; // ambil pencatat dari bekal
+    lastContext = context;
+    try {
+      options.onHookInput?.(input as Record<string, unknown>);
+    } catch {
+      // pengamat tidak boleh mengganggu hook
+    }
 
     // try/catch = "coba kerjakan; kalau ada yang meledak, tangkap, jangan biarkan menjalar".
     // Kegagalan apa pun di sini tidak boleh sampai ke agent. Server sudah menjawab {} bila

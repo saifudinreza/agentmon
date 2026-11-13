@@ -716,7 +716,7 @@ describe("penghitung diff yang menolak terlambat", () => {
 });
 
 describe("checkpoint sebelum alat pengubah berkas", () => {
-  const okResult = { ok: true as const, id: "20261112T100000Z-abc123", ref: "refs/agentmon/checkpoints/20261112T100000Z-abc123", commit: "c0ffee", durationMs: 12 };
+  const okResult = { ok: true as const, id: "20261112T100000Z-abc123", ref: "refs/agentmon/checkpoints/20261112T100000Z-abc123", commit: "c0ffee", root: "/repo", durationMs: 12 };
   const types = (s: ReturnType<typeof setup>) => s.events.map((e) => e.type);
 
   test("Write di PreToolUse: checkpoint dibuat dengan cwd sesi, dan event checkpoint.created dikirim", async () => {

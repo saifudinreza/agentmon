@@ -17,9 +17,12 @@
 //
 // Prinsip: membuat checkpoint TIDAK PERNAH boleh menghalangi agent. Semua galat (bukan repo git, git tidak
 // terpasang, repo rusak, kehabisan waktu) menjadi hasil `ok: false` dengan pesan yang jelas, bukan lemparan.
+//
+// Daftar checkpoint (nomor -> repo dan sesi) disimpan di memori dan, bila diberi `registryFile`, di berkas JSON,
+// supaya rollback masih tahu repo mana yang dimaksud setelah daemon dimulai ulang.
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -28,9 +31,11 @@ export const DEFAULT_KEEP = 50;
 // Batas SELURUH pembuatan satu checkpoint. Checkpoint berjalan di jalur hook PreToolUse (agent menunggu), jadi
 // dibuat ketat: lebih baik tidak ada checkpoint daripada agent tertahan lama.
 export const DEFAULT_TIMEOUT_MS = 5_000;
+// Berapa catatan checkpoint yang diingat di daftar (lebih banyak dari `keep` supaya tidak terpotong lebih dulu).
+const MAX_REGISTRY = 500;
 
 export type CheckpointResult =
-  | { ok: true; id: string; ref: string; commit: string; durationMs: number }
+  | { ok: true; id: string; ref: string; commit: string; root: string; durationMs: number }
   | { ok: false; reason: "not_git" | "git_missing" | "too_broad" | "timeout" | "failed"; message: string };
 
 export type CheckpointOptions = {
@@ -41,11 +46,15 @@ export type CheckpointOptions = {
   now?: () => Date;
   /** Folder home pengguna. Repo yang akarnya folder ini terlalu luas untuk dipotret. Bawaan: os.homedir(). */
   homeDir?: string;
+  /** Berkas JSON tempat daftar checkpoint disimpan agar bertahan setelah daemon dimulai ulang. */
+  registryFile?: string;
   /** Pencatat pesan ke log daemon (tanpa isi berkas). */
   log?: (message: string) => void;
 };
 
-type GitOutcome = { ok: true; stdout: string } | { ok: false; code: string | number | undefined; stderr: string; timedOut: boolean };
+export type GitOutcome = { ok: true; stdout: string } | { ok: false; code: string | number | undefined; stderr: string; timedOut: boolean };
+/** Menjalankan satu perintah git dalam anggaran waktu bersama; tidak pernah melempar. */
+export type GitRun = (args: string[], at: string, env?: Record<string, string>, input?: string) => Promise<GitOutcome>;
 
 // Identitas untuk commit checkpoint, supaya tidak bergantung pada user.name/user.email pengguna.
 const IDENTITY = { GIT_AUTHOR_NAME: "AgentMon", GIT_AUTHOR_EMAIL: "agentmon@localhost", GIT_COMMITTER_NAME: "AgentMon", GIT_COMMITTER_EMAIL: "agentmon@localhost" };
@@ -80,6 +89,52 @@ function git(args: string[], cwd: string, env: Record<string, string>, timeoutMs
   });
 }
 
+/**
+ * Menjalankan `fn` dengan pemanggil git yang aman (tanpa hook pengguna, tanpa GIT_* warisan) dan satu anggaran waktu
+ * bersama. Folder sementara dibuat untuk salinan index dan dihapus sesudahnya. Dipakai checkpoint dan rollback.
+ */
+export async function withGit<T>(timeoutMs: number, fn: (run: GitRun, tmpDir: string) => Promise<T>): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  const tmpDir = mkdtempSync(join(tmpdir(), "agentmon-cp-"));
+  try {
+    // Folder hook yang sengaja tidak ada: git tidak menemukan hook apa pun.
+    const config = safeConfig(join(tmpDir, "tanpa-hook"));
+    const run: GitRun = (args, at, env = {}, input) => {
+      // Anggaran habis: jangan memulai langkah berikutnya sama sekali.
+      if (Date.now() >= deadline) return Promise.resolve({ ok: false, code: undefined, stderr: "", timedOut: true });
+      return git([...config, ...args], at, env, Math.max(1, deadline - Date.now()), input);
+    };
+    return await fn(run, tmpDir);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+/** Satu baris pesan galat git yang aman dicatat: tanpa isi berkas, dibatasi panjangnya. */
+export function describeFailure(step: string, outcome: Extract<GitOutcome, { ok: false }>): string {
+  if (outcome.timedOut) return `${step} melewati batas waktu`;
+  const detail = outcome.stderr.trim().split("\n")[0]?.slice(0, 200) ?? "";
+  return `${step} gagal${detail ? `: ${detail}` : ""}`;
+}
+
+/**
+ * Memotret keadaan berkas SEKARANG menjadi sebuah pohon git (hanya objeknya; tanpa commit dan tanpa ref), memakai
+ * salinan index. Index asli tidak disentuh. Dipakai untuk checkpoint dan untuk membandingkan keadaan sekarang saat rollback.
+ */
+export async function snapshotTree(run: GitRun, root: string, tmpDir: string): Promise<{ ok: true; tree: string } | { ok: false; message: string; timedOut: boolean }> {
+  const indexCopy = join(tmpDir, "index");
+  // --git-path memberi lokasi index yang benar juga untuk worktree; bisa relatif terhadap root.
+  const indexPath = await run(["rev-parse", "--git-path", "index"], root);
+  const realIndex = indexPath.ok ? resolve(root, indexPath.stdout.trim()) : undefined;
+  if (realIndex && existsSync(realIndex) && !existsSync(indexCopy)) copyFileSync(realIndex, indexCopy);
+  const env = { GIT_INDEX_FILE: indexCopy };
+  const added = await run(["add", "-A"], root, env);
+  if (!added.ok) return { ok: false, message: describeFailure("git add", added), timedOut: added.timedOut };
+  const tree = await run(["write-tree"], root, env);
+  if (!tree.ok) return { ok: false, message: describeFailure("git write-tree", tree), timedOut: tree.timedOut };
+  return { ok: true, tree: tree.stdout.trim() };
+}
+
 // Bandingkan setelah symlink dan nama pendek diselesaikan (macOS: /var -> /private/var; Windows: nama 8.3 seperti
 // RUNNER~1), karena git melaporkan jalur aslinya sedangkan folder home bisa ditulis dengan jalur lain.
 function canonical(path: string): string {
@@ -100,6 +155,8 @@ function nextId(date: Date): string {
   return `${stamp}-${String(counter).padStart(4, "0")}-${randomBytes(2).toString("hex")}`;
 }
 
+export type CheckpointEntry = { root: string; sessionId?: string };
+
 export function createCheckpointService(options: CheckpointOptions = {}) {
   const keep = Math.max(1, options.keep ?? DEFAULT_KEEP);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -113,87 +170,96 @@ export function createCheckpointService(options: CheckpointOptions = {}) {
     log(`checkpoint dinonaktifkan untuk folder ini: ${message}`);
   };
 
-  /** Membuat satu checkpoint untuk repo yang memuat `cwd`. Tidak pernah melempar. */
-  async function create(cwd: string): Promise<CheckpointResult> {
-    const started = Date.now();
-    const deadline = started + timeoutMs;
-    const left = () => Math.max(1, deadline - Date.now());
-    let tmpDir: string | undefined;
+  // ---- Daftar checkpoint: nomor -> repo dan sesi ----
+  const registry = new Map<string, CheckpointEntry>();
+  if (options.registryFile) {
     try {
-      tmpDir = mkdtempSync(join(tmpdir(), "agentmon-cp-"));
-      // Folder hook yang sengaja tidak ada: git tidak menemukan hook apa pun.
-      const config = safeConfig(join(tmpDir, "tanpa-hook"));
-      const run = (args: string[], at: string, env: Record<string, string> = {}, input?: string): Promise<GitOutcome> => {
-        // Anggaran habis: jangan memulai langkah berikutnya sama sekali.
-        if (Date.now() >= deadline) return Promise.resolve({ ok: false, code: undefined, stderr: "", timedOut: true });
-        return git([...config, ...args], at, env, left(), input);
-      };
-      const top = await run(["rev-parse", "--show-toplevel"], cwd);
-      if (!top.ok) {
-        if (top.code === "ENOENT") {
-          noteDisabled(cwd, "git tidak terpasang");
-          return { ok: false, reason: "git_missing", message: "git tidak terpasang, jadi checkpoint tidak dibuat" };
-        }
-        if (top.timedOut) return { ok: false, reason: "timeout", message: "git terlalu lama menjawab" };
-        if (/not a git repository/i.test(top.stderr)) {
-          noteDisabled(cwd, "folder ini bukan repo git");
-          return { ok: false, reason: "not_git", message: "folder ini bukan repo git, jadi checkpoint tidak dibuat" };
-        }
-        // Alasan lain (mis. kepemilikan folder dianggap tidak aman oleh git): jangan salah menyebutnya "bukan repo".
-        return failure("git rev-parse", top);
+      const raw = JSON.parse(readFileSync(options.registryFile, "utf8")) as Record<string, unknown>;
+      for (const [id, entry] of Object.entries(raw)) {
+        const e = entry as { root?: unknown; sessionId?: unknown };
+        if (typeof e?.root === "string") registry.set(id, { root: e.root, ...(typeof e.sessionId === "string" ? { sessionId: e.sessionId } : {}) });
       }
-      const root = top.stdout.trim();
-      // Repo yang akarnya folder home (mis. dotfiles) memuat seluruh isi home: memotretnya lambat dan menggembungkan .git.
-      if (sameDir(root, options.homeDir ?? homedir())) {
-        noteDisabled(cwd, "repo git berakar di folder home, terlalu luas untuk dipotret");
-        return { ok: false, reason: "too_broad", message: "repo git ini berakar di folder home (terlalu luas), jadi checkpoint tidak dibuat" };
-      }
+    } catch {
+      // belum ada atau rusak: mulai dari kosong
+    }
+  }
+  const saveRegistry = () => {
+    if (!options.registryFile) return;
+    try {
+      const tmp = `${options.registryFile}.tmp`;
+      writeFileSync(tmp, JSON.stringify(Object.fromEntries(registry)));
+      renameSync(tmp, options.registryFile);
+    } catch (error) {
+      log(`daftar checkpoint gagal disimpan: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  const remember = (id: string, entry: CheckpointEntry) => {
+    registry.set(id, entry);
+    // Map mengingat urutan masuk: yang pertama adalah yang paling lama.
+    while (registry.size > MAX_REGISTRY) registry.delete(registry.keys().next().value as string);
+    saveRegistry();
+  };
 
-      // Salinan index sementara; index asli tidak disentuh.
-      const indexCopy = join(tmpDir, "index");
-      // --git-path memberi lokasi index yang benar juga untuk worktree; bisa relatif terhadap root.
-      const indexPath = await run(["rev-parse", "--git-path", "index"], root);
-      const realIndex = indexPath.ok ? resolve(root, indexPath.stdout.trim()) : undefined;
-      if (realIndex && existsSync(realIndex)) copyFileSync(realIndex, indexCopy);
-      const env = { GIT_INDEX_FILE: indexCopy };
+  /**
+   * Membuat satu checkpoint untuk repo yang memuat `cwd`. Tidak pernah melempar.
+   * `sessionId` dicatat supaya rollback tahu sesi mana yang punya checkpoint ini; `timeoutMs` menggantikan batas bawaan.
+   */
+  async function create(cwd: string, extra: { sessionId?: string; timeoutMs?: number } = {}): Promise<CheckpointResult> {
+    const started = Date.now();
+    try {
+      return await withGit(extra.timeoutMs ?? timeoutMs, async (run, tmpDir) => {
+        const top = await run(["rev-parse", "--show-toplevel"], cwd);
+        if (!top.ok) {
+          if (top.code === "ENOENT") {
+            noteDisabled(cwd, "git tidak terpasang");
+            return { ok: false, reason: "git_missing", message: "git tidak terpasang, jadi checkpoint tidak dibuat" } as const;
+          }
+          if (top.timedOut) return { ok: false, reason: "timeout", message: "git terlalu lama menjawab" } as const;
+          if (/not a git repository/i.test(top.stderr)) {
+            noteDisabled(cwd, "folder ini bukan repo git");
+            return { ok: false, reason: "not_git", message: "folder ini bukan repo git, jadi checkpoint tidak dibuat" } as const;
+          }
+          // Alasan lain (mis. kepemilikan folder dianggap tidak aman oleh git): jangan salah menyebutnya "bukan repo".
+          return failure("git rev-parse", top);
+        }
+        const root = top.stdout.trim();
+        // Repo yang akarnya folder home (mis. dotfiles) memuat seluruh isi home: memotretnya lambat dan menggembungkan .git.
+        if (sameDir(root, options.homeDir ?? homedir())) {
+          noteDisabled(cwd, "repo git berakar di folder home, terlalu luas untuk dipotret");
+          return { ok: false, reason: "too_broad", message: "repo git ini berakar di folder home (terlalu luas), jadi checkpoint tidak dibuat" } as const;
+        }
 
-      const added = await run(["add", "-A"], root, env);
-      if (!added.ok) return failure("git add", added);
+        const snap = await snapshotTree(run, root, tmpDir);
+        if (!snap.ok) return { ok: false, reason: snap.timedOut ? "timeout" : "failed", message: snap.message } as const;
 
-      const tree = await run(["write-tree"], root, env);
-      if (!tree.ok) return failure("git write-tree", tree);
+        const head = await run(["rev-parse", "--verify", "--quiet", "HEAD"], root);
+        const id = nextId(now());
+        const commitArgs = ["-c", "commit.gpgsign=false", "commit-tree", snap.tree, ...(head.ok ? ["-p", head.stdout.trim()] : []), "-m", `agentmon checkpoint ${id}`];
+        const commit = await run(commitArgs, root, { ...IDENTITY });
+        if (!commit.ok) return failure("git commit-tree", commit);
 
-      const head = await run(["rev-parse", "--verify", "--quiet", "HEAD"], root);
-      const id = nextId(now());
-      const commitArgs = ["-c", "commit.gpgsign=false", "commit-tree", tree.stdout.trim(), ...(head.ok ? ["-p", head.stdout.trim()] : []), "-m", `agentmon checkpoint ${id}`];
-      const commit = await run(commitArgs, root, { ...IDENTITY });
-      if (!commit.ok) return failure("git commit-tree", commit);
+        const ref = `${CHECKPOINT_NAMESPACE}${id}`;
+        const stored = await run(["update-ref", ref, commit.stdout.trim()], root);
+        if (!stored.ok) return failure("git update-ref", stored);
 
-      const ref = `${CHECKPOINT_NAMESPACE}${id}`;
-      const stored = await run(["update-ref", ref, commit.stdout.trim()], root);
-      if (!stored.ok) return failure("git update-ref", stored);
-
-      await prune(root, run);
-      return { ok: true, id, ref, commit: commit.stdout.trim(), durationMs: Date.now() - started };
+        remember(id, { root, ...(extra.sessionId ? { sessionId: extra.sessionId } : {}) });
+        await prune(root, run);
+        return { ok: true, id, ref, commit: commit.stdout.trim(), root, durationMs: Date.now() - started } as const;
+      });
     } catch (error) {
       return { ok: false, reason: "failed", message: error instanceof Error ? error.message : String(error) };
-    } finally {
-      if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
     }
   }
 
   function failure(step: string, outcome: Extract<GitOutcome, { ok: false }>): CheckpointResult {
-    if (outcome.timedOut) return { ok: false, reason: "timeout", message: `${step} melewati batas waktu` };
-    // Hanya baris pertama pesan git (tanpa isi berkas), dibatasi panjangnya.
-    const detail = outcome.stderr.trim().split("\n")[0]?.slice(0, 200) ?? "";
-    return { ok: false, reason: "failed", message: `${step} gagal${detail ? `: ${detail}` : ""}` };
+    return { ok: false, reason: outcome.timedOut ? "timeout" : "failed", message: describeFailure(step, outcome) };
   }
 
   // Menghapus checkpoint lama. Hanya menyentuh ref di bawah refs/agentmon/checkpoints/.
   // Urutan: tanggal commit (yang terlama dulu), lalu nama ref sebagai pemutus seri; nama ref memuat milidetik dan
   // penghitung, jadi tetap menurun benar walau jam sistem mundur sedikit. Semua penghapusan dalam SATU perintah
   // (update-ref --stdin), sehingga memakan anggaran waktu yang sama dengan langkah lain.
-  async function prune(root: string, run: (args: string[], at: string, env?: Record<string, string>, input?: string) => Promise<GitOutcome>): Promise<void> {
+  async function prune(root: string, run: GitRun): Promise<void> {
     const listed = await run(["for-each-ref", "--sort=refname", "--sort=committerdate", "--format=%(refname)", CHECKPOINT_NAMESPACE], root);
     if (!listed.ok) return;
     const refs = listed.stdout.split("\n").filter((r) => r.startsWith(CHECKPOINT_NAMESPACE));
@@ -202,7 +268,12 @@ export function createCheckpointService(options: CheckpointOptions = {}) {
     await run(["update-ref", "--stdin"], root, {}, `start\n${old.map((ref) => `delete ${ref}\n`).join("")}prepare\ncommit\n`);
   }
 
-  return { create };
+  /** Repo dan sesi pemilik sebuah checkpoint, atau undefined bila nomor itu tidak dikenal. */
+  function lookup(id: string): CheckpointEntry | undefined {
+    return registry.get(id);
+  }
+
+  return { create, lookup };
 }
 
 export type CheckpointService = ReturnType<typeof createCheckpointService>;

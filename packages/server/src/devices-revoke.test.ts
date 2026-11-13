@@ -218,6 +218,31 @@ describe("perintah dari soket yang masih terbuka setelah pencabutan di database"
   });
 });
 
+describe("perintah rollback dari perangkat yang tidak berhak", () => {
+  const rollbackBody = { type: "rollback.apply", commandId: "22222222-2222-4222-8222-222222222222", checkpointId: "cp1", previewHash: "h" };
+
+  test("HP yang sudah dicabut (soket lama masih terbuka) dan HP milik laptop lain: ditolak, laptop tidak menerima apa pun", async () => {
+    await start();
+    const port = relay!.port;
+    const machine = connectWs(port, "machine", T.m1);
+    const revoked = connectWs(port, "device", T.d3);
+    const stranger = connectWs(port, "device", T.d2); // dipasangkan dengan m2, bukan m1
+    await vi_waitFor(() => [revoked, stranger, machine].every((c) => c.frames.some((f) => f.kind === "welcome")));
+    await directory.revokeDevice("d3"); // dicabut di database; soketnya belum diputus hub
+    for (const device of [revoked, stranger]) device.ws.send(JSON.stringify({ kind: "command", machineId: "m1", body: rollbackBody }));
+    await vi_waitFor(() => revoked.frames.some((f) => f.kind === "error" && f.code === "forbidden") && stranger.frames.some((f) => f.kind === "error" && f.code === "forbidden"));
+    await settle();
+    expect(machine.frames.filter((f) => f.kind === "command")).toHaveLength(0);
+  });
+
+  test("token tidak dikenal: tidak bisa tersambung sehingga tidak bisa mengirim perintah", async () => {
+    await start();
+    const unknown = connectWs(relay!.port, "device", "token-tidak-dikenal-0000000000000000");
+    await vi_waitFor(() => unknown.state.closeCode !== undefined);
+    expect(unknown.frames.some((f) => f.kind === "welcome")).toBe(false);
+  });
+});
+
 // Menunggu sampai syarat terpenuhi (lihat vi.waitFor); ditulis sendiri agar mudah dipakai dengan fungsi boolean.
 async function vi_waitFor(condition: () => boolean, timeoutMs = 3000): Promise<void> {
   const deadline = Date.now() + timeoutMs;

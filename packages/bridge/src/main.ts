@@ -1,8 +1,12 @@
 // Titik masuk untuk menjalankan daemon dari terminal: `pnpm --filter @agentmon/bridge daemon`.
 // Perintah `agentmon` yang rapi (setup, status, dan seterusnya) dibuat di issue berikutnya.
 import { createClaudeCodeHandler } from "./adapters/claude-code-handler";
-import { createCheckpointService } from "./checkpoint";
-import { DaemonAlreadyRunningError, DEFAULT_PORT, startDaemon } from "./daemon";
+import { createCheckpointService, type CheckpointService } from "./checkpoint";
+import { createRollbackService } from "./rollback";
+import { createSessionActivity } from "./session-activity";
+import { DaemonAlreadyRunningError, DEFAULT_PORT, startDaemon, type RunningDaemon } from "./daemon";
+import { join } from "node:path";
+import type { EventType } from "@agentmon/shared";
 import { agentmonHome, loadOrCreateMachineId, paths } from "./home";
 import { createLogger } from "./logger";
 import { createRelayClient, type RelayClient } from "./relay-client";
@@ -29,6 +33,27 @@ async function main() {
     // Klien relay (menyambung ke relay agar HP bisa melihat dan menjawab) dibuat SETELAH daemon
     // menyala, karena butuh approval engine-nya. Sampai itu siap, event hanya tidak diteruskan.
     let relay: RelayClient | undefined;
+    // Checkpoint dan rollback. Aktivitas sesi dipakai rollback untuk menolak saat agent masih berjalan.
+    const activity = createSessionActivity();
+    let checkpoints: CheckpointService | undefined;
+    if (process.env.AGENTMON_CHECKPOINT !== "0") {
+      const logger = createLogger(paths(agentmonHome()).log);
+      checkpoints = createCheckpointService({ registryFile: join(agentmonHome(), "checkpoints.json"), log: (message) => logger.info(message) });
+    }
+    const ref: { daemon?: RunningDaemon } = {};
+    let emitOwnEvent: ((type: EventType, payload: Record<string, unknown>, sessionId: string) => void) | undefined;
+    const rollback = checkpoints
+      ? createRollbackService({
+          checkpoints,
+          // Berjalan = ada aktivitas terbaru, ATAU masih ada izin yang menunggu keputusan di sesi itu (sesi yang
+          // menunggu lama tidak boleh dianggap diam).
+          isSessionRunning: (sessionId) => activity.isRunning(sessionId) || (ref.daemon?.approvals.listPending().some((p) => p.sessionId === sessionId) ?? false),
+          log: (message) => createLogger(paths(agentmonHome()).log).info(message),
+          onRestored: ({ checkpointId, safetyCheckpointId, sessionId }) => {
+            if (sessionId) emitOwnEvent?.("checkpoint.restored", { checkpointId, ...(safetyCheckpointId ? { safetyCheckpointId } : {}) }, sessionId);
+          },
+        })
+      : undefined;
     const daemon = await startDaemon({
       port: portFromEnv(),
       devUi,
@@ -42,22 +67,26 @@ async function main() {
       canAnswer: () => (process.env.AGENTMON_RELAY_URL && process.env.AGENTMON_RELAY_TOKEN ? (relay?.canReachPhone() ?? false) : true),
       onHook: createClaudeCodeHandler({
         // Checkpoint git sebelum alat pengubah berkas. Matikan dengan AGENTMON_CHECKPOINT=0.
-        ...(process.env.AGENTMON_CHECKPOINT === "0"
-          ? {}
-          : (() => {
-              const logger = createLogger(paths(agentmonHome()).log);
-              const service = createCheckpointService({ log: (message) => logger.info(message) });
-              return { checkpoint: (cwd: string) => service.create(cwd) };
-            })()),
+        ...(checkpoints ? { checkpoint: (cwd: string, sessionId: string) => (checkpoints as CheckpointService).create(cwd, { sessionId }) } : {}),
+        // Perintah baru dari pengguna ke agent berarti agent mulai bekerja walau belum ada event alat.
+        onHookInput: (input) => {
+          if (input.hook_event_name === "UserPromptSubmit" && typeof input.session_id === "string") activity.touch(input.session_id);
+        },
+        registerEmitter: (emit) => {
+          emitOwnEvent = emit;
+        },
         // Event dicatat di timeline (ringkasan tanpa isi), di log (jenis dan urutannya), dan dititipkan
         // ke klien relay. Menitipkan selalu seketika dan tidak pernah gagal ke pemanggilnya.
         emit: (event, { logger }) => {
           timeline.record(event);
+          activity.record(event);
           logger.info(`event ${event.type} seq=${event.seq}`);
           relay?.send(event);
         },
       }),
     });
+
+    ref.daemon = daemon;
 
     // Terhubung ke relay bila alamat dan token laptop diisi (nilai yang sama dengan perintah `pair`).
     const relayUrl = process.env.AGENTMON_RELAY_URL;
@@ -70,6 +99,8 @@ async function main() {
           machineId: loadOrCreateMachineId(daemon.home),
           // Keputusan dari HP diserahkan ke approval engine yang sama dengan perintah `approve` dan `deny`.
           decide: (input) => daemon.approvals.decide(input),
+          // Perintah lain dari HP (rollback) ditangani rollback; tanpa checkpoint, perintahnya diabaikan.
+          ...(rollback ? { onCommand: (body: Record<string, unknown>) => rollback.handle(body) } : {}),
           logger: createLogger(paths(daemon.home).log),
           // Sambungan tanpa enkripsi ke host selain komputer ini ditolak kecuali dinyalakan dengan sadar.
           allowInsecure: process.env.AGENTMON_RELAY_INSECURE === "1",
