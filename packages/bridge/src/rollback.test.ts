@@ -73,13 +73,13 @@ function initRepo() {
 }
 
 type Setup = { checkpoints: CheckpointService; service: ReturnType<typeof createRollbackService>; running: { value: boolean }; restored: unknown[] };
-function setup(extra: { checkpoints?: Pick<CheckpointService, "create" | "lookup"> } = {}): Setup {
-  const checkpoints = createCheckpointService({ timeoutMs: 60_000, registryFile: join(dir, "..", `reg-${Date.now()}-${Math.random()}.json`) });
+function setup(extra: { checkpoints?: Pick<CheckpointService, "create" | "lookup">; keep?: number; isSessionRunning?: () => boolean } = {}): Setup {
+  const checkpoints = createCheckpointService({ timeoutMs: 60_000, registryFile: join(dir, "..", `reg-${Date.now()}-${Math.random()}.json`), ...(extra.keep ? { keep: extra.keep } : {}) });
   const running = { value: false };
   const restored: unknown[] = [];
   const service = createRollbackService({
     checkpoints: extra.checkpoints ?? checkpoints,
-    isSessionRunning: () => running.value,
+    isSessionRunning: extra.isSessionRunning ?? (() => running.value),
     onRestored: (info) => restored.push(info),
     timeoutMs: 60_000,
   });
@@ -156,13 +156,15 @@ describe("pratinjau", () => {
     const id = await makeCheckpoint(s);
     messUp();
     const preview = await call(s, previewCmd(id));
+    // Yang paling berbahaya (dihapus) di atas, lalu dikembalikan, lalu dibuat lagi; di dalam kelompok menurut jalur.
     expect(preview.files).toEqual([
-      { path: "a.txt", change: "overwrite" },
-      { path: "b.txt", change: "restore" },
       { path: "baru.txt", change: "delete" },
       { path: "folder-baru/dalam.txt", change: "delete" },
+      { path: "a.txt", change: "overwrite" },
+      { path: "b.txt", change: "restore" },
       { path: "lib/dalam.txt", change: "restore" },
     ]);
+    expect(preview.counts).toEqual({ restore: 2, overwrite: 1, delete: 2 });
     expect(preview.total).toBe(5);
     expect(preview.truncated).toBe(false);
     expect(preview.agentRunning).toBe(false);
@@ -185,6 +187,7 @@ describe("pratinjau", () => {
     for (let i = 0; i < 260; i++) write(`banyak/f${i}.txt`, `${i}\n`);
     const preview = await call(s, previewCmd(id));
     expect(preview.total).toBe(260);
+    expect(preview.counts).toEqual({ restore: 0, overwrite: 0, delete: 260 }); // jumlah dari daftar penuh, bukan 200 yang dikirim
     expect((preview.files as unknown[]).length).toBe(200);
     expect(preview.truncated).toBe(true);
   });
@@ -355,9 +358,145 @@ describe("gagal di tengah jalan", () => {
     expect(result).toMatchObject({ outcome: "failed", recovered: true });
     expect(RollbackResultSchema.safeParse(result).success).toBe(true);
     expect(String(result.message)).toContain("dipulihkan otomatis");
-    // Keadaan kembali seperti sebelum rollback (penyusup ikut tersapu karena pemulihan ke checkpoint pengaman).
-    expect(snapshotFiles()).toEqual(afterWork);
+    expect(result.safetyCheckpointId).toBeTruthy();
+    // Jalur yang disentuh rollback pulih seperti sebelum rollback. Berkas penyusup (ditulis pihak lain) TIDAK ikut
+    // terhapus oleh pemulihan: pemulihan hanya menyentuh jalur milik rollback.
+    expect(snapshotFiles()).toEqual({ ...afterWork, "penyusup.txt": "muncul tepat sebelum rollback" });
     expect(restored).toEqual([]);
+  });
+});
+
+describe("berkas yang diabaikan git tidak pernah ditimpa atau dihapus", () => {
+  test("(a) berkas yang dulu belum dilacak kini terkena aturan ignore: ditolak, isinya utuh", async () => {
+    initRepo();
+    write("catatan.log", "isi penting\n"); // belum dilacak saat checkpoint
+    const s = setup();
+    const id = await makeCheckpoint(s);
+    write("catatan.log", "isi penting yang BARU diubah\n");
+    write(".gitignore", "rahasia.env\ncatatan.log\n"); // sekarang di-ignore
+    const preview = await call(s, previewCmd(id));
+    const result = await call(s, applyCmd(id, preview.previewHash as string));
+    expect(result).toMatchObject({ outcome: "refused", reason: "ignored_conflict" });
+    expect(String(result.message)).toContain("catatan.log");
+    expect(read("catatan.log")).toBe("isi penting yang BARU diubah\n");
+  });
+
+  test("(b) checkpoint menyimpan sebuah BERKAS, sekarang jalur itu folder berisi berkas ter-ignore: ditolak, folder utuh", async () => {
+    initRepo();
+    write("data", "dulu berkas\n");
+    const s = setup();
+    const id = await makeCheckpoint(s);
+    rmSync(join(dir, "data"));
+    write("data/rahasia.env", "KUNCI=penting\n"); // ter-ignore (aturan ada di .gitignore)
+    const preview = await call(s, previewCmd(id));
+    const result = await call(s, applyCmd(id, preview.previewHash as string));
+    expect(result).toMatchObject({ outcome: "refused", reason: "ignored_conflict" });
+    expect(read("data/rahasia.env")).toBe("KUNCI=penting\n");
+  });
+
+  test("(c) berkas ter-ignore menempati jalur FOLDER induk yang mau dibuat lagi: ditolak, berkas utuh", async () => {
+    initRepo();
+    write("lib/dalam.txt", "isi di folder\n");
+    const s = setup();
+    const id = await makeCheckpoint(s);
+    rmSync(join(dir, "lib"), { recursive: true });
+    write("lib", "berkas ter-ignore menggantikan folder\n");
+    write(".gitignore", "rahasia.env\nlib\n");
+    const preview = await call(s, previewCmd(id));
+    const result = await call(s, applyCmd(id, preview.previewHash as string));
+    expect(result).toMatchObject({ outcome: "refused", reason: "ignored_conflict" });
+    expect(read("lib")).toBe("berkas ter-ignore menggantikan folder\n");
+  });
+
+  test("berkas ter-ignore yang TIDAK menghalangi dibiarkan, dan rollback tetap jalan", async () => {
+    initRepo();
+    const s = setup();
+    const id = await makeCheckpoint(s);
+    write("rahasia.env", "KUNCI=1\n");
+    write("a.txt", "diubah\n");
+    const preview = await call(s, previewCmd(id));
+    expect((await call(s, applyCmd(id, preview.previewHash as string))).outcome).toBe("applied");
+    expect(read("rahasia.env")).toBe("KUNCI=1\n");
+    expect(read("a.txt")).toBe("isi a\n");
+  });
+});
+
+describe("celah dan urutan operasi", () => {
+  test("berkas muncul di sela pembuatan checkpoint pengaman: ditolak (tidak ada yang tersimpan = tidak boleh dihapus)", async () => {
+    initRepo();
+    const real = setup();
+    const id = await makeCheckpoint(real);
+    messUp();
+    const preview = await call(real, previewCmd(id));
+    const racing = {
+      lookup: real.checkpoints.lookup,
+      create: async (cwd: string, extra: { sessionId?: string; timeoutMs?: number } = {}) => {
+        const result = await real.checkpoints.create(cwd, extra);
+        write("muncul-setelah-pengaman.txt", "tidak ada di pengaman\n"); // sesudah pengaman, sebelum hitung ulang
+        return result;
+      },
+    };
+    const s = setup({ checkpoints: racing });
+    const result = await call(s, applyCmd(id, preview.previewHash as string));
+    expect(result).toMatchObject({ outcome: "refused", reason: "preview_changed" });
+    expect(read("muncul-setelah-pengaman.txt")).toBe("tidak ada di pengaman\n");
+    expect(exists("baru.txt")).toBe(true); // tidak ada yang dihapus
+  });
+
+  test("isi berkas yang SUDAH ada di daftar berubah di sela pembuatan pengaman (sidik daftar tetap sama): ditolak lewat perbandingan pohon", async () => {
+    initRepo();
+    const real = setup();
+    const id = await makeCheckpoint(real);
+    messUp(); // a.txt sudah berbeda dari checkpoint, jadi masuk daftar sebagai 'overwrite'
+    const preview = await call(real, previewCmd(id));
+    const racing = {
+      lookup: real.checkpoints.lookup,
+      create: async (cwd: string, extra: { sessionId?: string; timeoutMs?: number } = {}) => {
+        const result = await real.checkpoints.create(cwd, extra);
+        write("a.txt", "ditulis lagi setelah pengaman dibuat\n"); // jalur sama, isi lain: sidik daftar tidak berubah
+        return result;
+      },
+    };
+    const s = setup({ checkpoints: racing });
+    const result = await call(s, applyCmd(id, preview.previewHash as string));
+    expect(result).toMatchObject({ outcome: "refused", reason: "preview_changed" });
+    expect(read("a.txt")).toBe("ditulis lagi setelah pengaman dibuat\n");
+  });
+
+  test("target tidak ikut terpangkas oleh checkpoint pengaman: rollback ke checkpoint tertua tetap berhasil", async () => {
+    initRepo();
+    const s = setup({ keep: 2 });
+    const oldest = await makeCheckpoint(s);
+    write("a.txt", "versi kedua\n");
+    await makeCheckpoint(s); // total 2 = batas; pengaman akan memangkas yang tertua
+    write("a.txt", "versi ketiga\n");
+    const preview = await call(s, previewCmd(oldest));
+    const result = await call(s, applyCmd(oldest, preview.previewHash as string));
+    expect(result.outcome).toBe("applied");
+    expect(read("a.txt")).toBe("isi a\n");
+  });
+
+  test("penolakan sebelum pengaman (sidik salah) tidak memakan slot checkpoint", async () => {
+    initRepo();
+    const s = setup({ keep: 3 });
+    const id = await makeCheckpoint(s);
+    messUp();
+    const before = git(["for-each-ref", "refs/agentmon/checkpoints/"]);
+    for (let i = 0; i < 5; i++) await call(s, applyCmd(id, "sidik-salah"));
+    expect(git(["for-each-ref", "refs/agentmon/checkpoints/"])).toBe(before);
+  });
+
+  test("agent mulai berjalan setelah pemeriksaan awal: diperiksa lagi tepat sebelum berkas diubah, dan ditolak", async () => {
+    initRepo();
+    let calls = 0;
+    const s = setup({ isSessionRunning: () => ++calls > 1 }); // pemeriksaan pertama diam, berikutnya berjalan
+    const id = await makeCheckpoint(s);
+    messUp();
+    const preview = await call(s, previewCmd(id)); // pratinjau memakai pemeriksaan pertama
+    const before = snapshotFiles();
+    const result = await call(s, applyCmd(id, preview.previewHash as string));
+    expect(result).toMatchObject({ outcome: "refused", reason: "agent_running" });
+    expect(snapshotFiles()).toEqual(before);
   });
 });
 

@@ -44,6 +44,7 @@ export const ROLLBACK_REFUSAL_REASONS = [
   "safety_failed", // keadaan sekarang tidak bisa disimpan, jadi tidak ada yang diubah
   "busy", // rollback lain sedang berjalan untuk repo itu
   "unsafe_path", // ada jalur berkas yang tidak aman (keluar dari repo)
+  "ignored_conflict", // ada berkas yang diabaikan git di jalur yang akan ditimpa; ditolak supaya tidak hilang
 ] as const;
 export const RollbackRefusalReasonSchema = z.enum(ROLLBACK_REFUSAL_REASONS);
 
@@ -56,6 +57,8 @@ export const RollbackResultSchema = z.discriminatedUnion("outcome", [
     /** Paling banyak sejumlah tertentu berkas ditampilkan; `total` selalu jumlah sebenarnya. */
     files: z.array(RollbackFileChangeSchema),
     total: z.int().nonnegative(),
+    /** Jumlah per jenis dari daftar PENUH (bukan hanya yang ditampilkan). */
+    counts: z.object({ restore: z.int().nonnegative(), overwrite: z.int().nonnegative(), delete: z.int().nonnegative() }),
     truncated: z.boolean(),
     previewHash: z.string().min(1),
     agentRunning: z.boolean(),

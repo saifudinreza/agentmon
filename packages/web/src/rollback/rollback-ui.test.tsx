@@ -63,6 +63,7 @@ const previewReply = (extra: Record<string, unknown> = {}) =>
       { path: "baru.txt", change: "delete" },
     ],
     total: 3,
+    counts: { restore: 1, overwrite: 1, delete: 1 },
     truncated: false,
     previewHash: "hash-1",
     agentRunning: false,
@@ -119,17 +120,19 @@ describe("layar rollback: pratinjau", () => {
   });
 
   test("jalur berkas dengan karakter berbahaya ditampilkan sebagai kodenya, bukan disembunyikan", async () => {
-    await openPreview({ files: [{ path: "aman‮gpj.exe", change: "delete" }], total: 1 });
+    await openPreview({ files: [{ path: "aman‮gpj.exe", change: "delete" }], total: 1, counts: { restore: 0, overwrite: 0, delete: 1 } });
     await screen.findByText("aman\\u202egpj.exe");
   });
 
   test("daftar dipotong: memberi tahu berapa yang ditampilkan dari total", async () => {
-    await openPreview({ total: 250, truncated: true });
+    await openPreview({ total: 250, truncated: true, counts: { restore: 10, overwrite: 40, delete: 200 } });
     await screen.findByText("Menampilkan 3 dari 250 berkas.");
+    // Ringkasan memakai jumlah dari daftar penuh, bukan dari 3 berkas yang tampil.
+    expect(screen.getByText(/10 dibuat lagi, 40 dikembalikan isinya, 200 dihapus/)).toBeTruthy();
   });
 
   test("tidak ada perbedaan: pesan 'tidak ada yang perlu dikembalikan', tanpa tombol", async () => {
-    await openPreview({ files: [], total: 0 });
+    await openPreview({ files: [], total: 0, counts: { restore: 0, overwrite: 0, delete: 0 } });
     await screen.findByText(/Tidak ada yang perlu dikembalikan/);
     expect(screen.queryByRole("button", { name: /Kembalikan berkas/ })).toBeNull();
   });
@@ -271,6 +274,20 @@ describe("tautan di timeline", () => {
       </I18nProvider>,
     );
     expect(screen.getByRole("link", { name: "Kembalikan ke sini" }).getAttribute("href")).toBe("/r/m1/a%2Fb%20c");
+  });
+
+  test("event checkpoint.restored punya tautan 'Batalkan rollback' ke checkpoint pengaman", () => {
+    render(
+      <I18nProvider>
+        <ul>
+          <EventRow event={ev(6, { type: "checkpoint.restored", payload: { checkpointId: "cp1", safetyCheckpointId: "aman-1" } })} />
+          <EventRow event={ev(7, { type: "checkpoint.restored", payload: { checkpointId: "cp1" } })} />
+        </ul>
+      </I18nProvider>,
+    );
+    const links = screen.getAllByRole("link", { name: "Batalkan rollback" });
+    expect(links).toHaveLength(1); // yang tanpa nomor pengaman tidak punya tautan
+    expect(links[0]?.getAttribute("href")).toBe(rollbackPath("m1", "aman-1"));
   });
 
   test("event lain, atau checkpoint.created tanpa nomor, tidak punya tautan", () => {

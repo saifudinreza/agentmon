@@ -19,13 +19,19 @@ export function createSessionActivity(options: { now?: () => number; staleMs?: n
   // sesi -> { berjalan?, kapan }. Map mengingat urutan masuk: yang pertama adalah yang paling lama dipakai.
   const sessions = new Map<string, { running: boolean; at: number }>();
 
+  const record = (event: { sessionId: string; type: string }): void => {
+    if (event.type === "checkpoint.restored") return;
+    sessions.delete(event.sessionId);
+    sessions.set(event.sessionId, { running: !IDLE_TYPES.has(event.type), at: now() });
+    if (sessions.size > MAX_SESSIONS) sessions.delete(sessions.keys().next().value as string);
+  };
+
   return {
     /** Mencatat satu event (semua event, termasuk yang dibuat daemon sendiri). */
-    record(event: { sessionId: string; type: string }): void {
-      if (event.type === "checkpoint.restored") return;
-      sessions.delete(event.sessionId);
-      sessions.set(event.sessionId, { running: !IDLE_TYPES.has(event.type), at: now() });
-      if (sessions.size > MAX_SESSIONS) sessions.delete(sessions.keys().next().value as string);
+    record,
+    /** Menandai sesi sedang bekerja tanpa event (mis. pengguna baru mengirim perintah ke agent). */
+    touch(sessionId: string): void {
+      record({ sessionId, type: "touch" });
     },
     /** Apakah agent diperkirakan masih berjalan di sesi ini? Sesi yang tidak dikenal dianggap diam. */
     isRunning(sessionId: string): boolean {

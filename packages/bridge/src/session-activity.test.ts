@@ -19,6 +19,14 @@ describe("pelacak aktivitas sesi", () => {
     expect(a.isRunning("s1")).toBe(false);
   });
 
+  test("touch (pengguna baru memberi perintah ke agent) menandai berjalan, dan agent.stopped menyelesaikannya", () => {
+    const a = createSessionActivity();
+    a.touch("s1");
+    expect(a.isRunning("s1")).toBe(true);
+    a.record({ sessionId: "s1", type: "agent.stopped" });
+    expect(a.isRunning("s1")).toBe(false);
+  });
+
   test("checkpoint.restored tidak mengubah keadaan (bukan tanda agent bekerja, bukan tanda selesai)", () => {
     const a = createSessionActivity();
     a.record({ sessionId: "s1", type: "agent.stopped" });

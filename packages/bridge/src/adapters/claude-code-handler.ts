@@ -118,6 +118,8 @@ export type ClaudeCodeHandlerOptions = {
   checkpoint?: (cwd: string, sessionId: string) => Promise<CheckpointResult>;
   // Menyerahkan "pemancar event" ke pemanggil, untuk event yang lahir di luar hook (mis. checkpoint.restored setelah
   // rollback dari HP). Nomor urut dan stempelnya tetap dari penangan ini, jadi urutan event sesi tidak bentrok.
+  // Dipanggil untuk SETIAP hook yang masuk (sebelum diproses), mis. untuk tahu agent baru menerima perintah.
+  onHookInput?: (input: Record<string, unknown>) => void;
   registerEmitter?: (emit: (type: EventType, payload: Record<string, unknown>, sessionId: string) => void) => void;
 };
 
@@ -350,6 +352,11 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
   return async (input, context) => {
     const { logger } = context; // ambil pencatat dari bekal
     lastContext = context;
+    try {
+      options.onHookInput?.(input as Record<string, unknown>);
+    } catch {
+      // pengamat tidak boleh mengganggu hook
+    }
 
     // try/catch = "coba kerjakan; kalau ada yang meledak, tangkap, jangan biarkan menjalar".
     // Kegagalan apa pun di sini tidak boleh sampai ke agent. Server sudah menjawab {} bila

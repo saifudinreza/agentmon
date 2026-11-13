@@ -4,7 +4,7 @@ import { createClaudeCodeHandler } from "./adapters/claude-code-handler";
 import { createCheckpointService, type CheckpointService } from "./checkpoint";
 import { createRollbackService } from "./rollback";
 import { createSessionActivity } from "./session-activity";
-import { DaemonAlreadyRunningError, DEFAULT_PORT, startDaemon } from "./daemon";
+import { DaemonAlreadyRunningError, DEFAULT_PORT, startDaemon, type RunningDaemon } from "./daemon";
 import { join } from "node:path";
 import type { EventType } from "@agentmon/shared";
 import { agentmonHome, loadOrCreateMachineId, paths } from "./home";
@@ -40,11 +40,14 @@ async function main() {
       const logger = createLogger(paths(agentmonHome()).log);
       checkpoints = createCheckpointService({ registryFile: join(agentmonHome(), "checkpoints.json"), log: (message) => logger.info(message) });
     }
+    const ref: { daemon?: RunningDaemon } = {};
     let emitOwnEvent: ((type: EventType, payload: Record<string, unknown>, sessionId: string) => void) | undefined;
     const rollback = checkpoints
       ? createRollbackService({
           checkpoints,
-          isSessionRunning: (sessionId) => activity.isRunning(sessionId),
+          // Berjalan = ada aktivitas terbaru, ATAU masih ada izin yang menunggu keputusan di sesi itu (sesi yang
+          // menunggu lama tidak boleh dianggap diam).
+          isSessionRunning: (sessionId) => activity.isRunning(sessionId) || (ref.daemon?.approvals.listPending().some((p) => p.sessionId === sessionId) ?? false),
           log: (message) => createLogger(paths(agentmonHome()).log).info(message),
           onRestored: ({ checkpointId, safetyCheckpointId, sessionId }) => {
             if (sessionId) emitOwnEvent?.("checkpoint.restored", { checkpointId, ...(safetyCheckpointId ? { safetyCheckpointId } : {}) }, sessionId);
@@ -65,6 +68,10 @@ async function main() {
       onHook: createClaudeCodeHandler({
         // Checkpoint git sebelum alat pengubah berkas. Matikan dengan AGENTMON_CHECKPOINT=0.
         ...(checkpoints ? { checkpoint: (cwd: string, sessionId: string) => (checkpoints as CheckpointService).create(cwd, { sessionId }) } : {}),
+        // Perintah baru dari pengguna ke agent berarti agent mulai bekerja walau belum ada event alat.
+        onHookInput: (input) => {
+          if (input.hook_event_name === "UserPromptSubmit" && typeof input.session_id === "string") activity.touch(input.session_id);
+        },
         registerEmitter: (emit) => {
           emitOwnEvent = emit;
         },
@@ -78,6 +85,8 @@ async function main() {
         },
       }),
     });
+
+    ref.daemon = daemon;
 
     // Terhubung ke relay bila alamat dan token laptop diisi (nilai yang sama dengan perintah `pair`).
     const relayUrl = process.env.AGENTMON_RELAY_URL;

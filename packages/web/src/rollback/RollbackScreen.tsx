@@ -40,6 +40,9 @@ const ERROR_KEY: Record<RequestFailure | "bad-reply", MessageKey> = {
   "bad-reply": "rollback.error.badReply",
 };
 
+// Rollback pada repo besar bisa memakan waktu; hasil yang terlambat bisa membuat nomor pembatalan hilang dari layar.
+const APPLY_TIMEOUT_MS = 300_000;
+
 export function rollbackPath(machineId: string, checkpointId: string): string {
   return `/r/${encodeURIComponent(machineId)}/${encodeURIComponent(checkpointId)}`;
 }
@@ -106,7 +109,7 @@ function RollbackBody({ entry, machineId, checkpointId, focusHeading }: { entry:
 
   async function apply(preview: Extract<RollbackResult, { outcome: "preview" }>) {
     setPhase({ kind: "applying", result: preview });
-    const result = await entry.store.request(machineId, { type: "rollback.apply", checkpointId, previewHash: preview.previewHash });
+    const result = await entry.store.request(machineId, { type: "rollback.apply", checkpointId, previewHash: preview.previewHash }, APPLY_TIMEOUT_MS);
     if (!alive.current) return;
     if (!result.ok) return setPhase({ kind: "error", reason: result.reason });
     const parsed = RollbackResultSchema.safeParse(result.reply);
@@ -173,8 +176,7 @@ function Preview({
   onConfirm: () => void;
 }) {
   const { t } = useI18n();
-  const counts = { restore: 0, overwrite: 0, delete: 0 };
-  for (const file of result.files) counts[file.change]++;
+  const counts = result.counts;
 
   if (result.total === 0) return <p className="rounded-2xl border border-line bg-surface p-4">{t("rollback.nothing")}</p>;
 
