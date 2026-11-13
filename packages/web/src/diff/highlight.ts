@@ -30,26 +30,26 @@ const MAX_LINE_CHARS = 2000;
 const PATTERNS: Record<Exclude<Language, "plain">, Array<{ kind: TokenKind; re: RegExp }>> = {
   js: [
     { kind: "comment", re: /\/\/.*|\/\*.*?(?:\*\/|$)/y },
-    { kind: "string", re: /"(?:[^"\\]|\\.)*(?:"|$)|'(?:[^'\\]|\\.)*(?:'|$)|`(?:[^`\\]|\\.)*(?:`|$)/y },
+    { kind: "string", re: /"(?:[^"\\]|\\.)*(?:"|\\?$)|'(?:[^'\\]|\\.)*(?:'|\\?$)|`(?:[^`\\]|\\.)*(?:`|\\?$)/y },
     { kind: "number", re: /\b(?:0[xX][\da-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b/y },
   ],
   python: [
     { kind: "comment", re: /#.*/y },
-    { kind: "string", re: /"(?:[^"\\]|\\.)*(?:"|$)|'(?:[^'\\]|\\.)*(?:'|$)/y },
+    { kind: "string", re: /"(?:[^"\\]|\\.)*(?:"|\\?$)|'(?:[^'\\]|\\.)*(?:'|\\?$)/y },
     { kind: "number", re: /\b\d[\d_]*(?:\.\d+)?\b/y },
   ],
   css: [
     { kind: "comment", re: /\/\*.*?(?:\*\/|$)/y },
-    { kind: "string", re: /"(?:[^"\\]|\\.)*(?:"|$)|'(?:[^'\\]|\\.)*(?:'|$)/y },
+    { kind: "string", re: /"(?:[^"\\]|\\.)*(?:"|\\?$)|'(?:[^'\\]|\\.)*(?:'|\\?$)/y },
     { kind: "number", re: /#[\da-fA-F]{3,8}\b|\b\d+(?:\.\d+)?(?:px|rem|em|%|vh|vw|s|ms)?\b/y },
   ],
   json: [
-    { kind: "string", re: /"(?:[^"\\]|\\.)*(?:"|$)/y },
+    { kind: "string", re: /"(?:[^"\\]|\\.)*(?:"|\\?$)/y },
     { kind: "number", re: /-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/y },
   ],
   shell: [
     { kind: "comment", re: /#.*/y },
-    { kind: "string", re: /"(?:[^"\\]|\\.)*(?:"|$)|'[^']*(?:'|$)/y },
+    { kind: "string", re: /"(?:[^"\\]|\\.)*(?:"|\\?$)|'[^']*(?:'|\\?$)/y },
     { kind: "number", re: /\b\d+\b/y },
   ],
 };

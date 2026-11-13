@@ -101,6 +101,15 @@ describe("tokenizeLine", () => {
     expect(performance.now() - started).toBeLessThan(50);
   });
 
+  test("baris berakhir dengan satu backslash setelah banyak tanda kutip tidak kuadratik, dan hasilnya tetap utuh", () => {
+    const evil = '\\"'.repeat(995) + "\\"; // 1.991 karakter
+    const started = performance.now();
+    for (let i = 0; i < 600; i++) tokenizeLine(evil, "js");
+    expect(performance.now() - started).toBeLessThan(300); // sebelum diperbaiki: ±3 ms per baris x 600 = ±1,8 detik
+    expect(tokenizeLine(evil, "js").map((t) => t.text).join("")).toBe(evil);
+    for (const lang of ["python", "css", "json", "shell"] as const) expect(tokenizeLine(evil, lang).map((t) => t.text).join("")).toBe(evil);
+  });
+
   test("teks yang dirancang menyulitkan regex tidak membuat pewarna menggantung", () => {
     const evil = `"${"\\".repeat(1500)}`;
     const started = performance.now();

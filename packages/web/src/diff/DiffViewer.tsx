@@ -51,8 +51,8 @@ const Line = memo(function Line({
   highlighter: Highlighter | undefined;
 }) {
   const { t } = useI18n();
-  const shown = escapeUnsafe(text);
-  const tokens = highlighter ? highlighter.tokenizeLine(shown, language) : undefined;
+  const shown = useMemo(() => escapeUnsafe(text), [text]);
+  const tokens = useMemo(() => (highlighter ? highlighter.tokenizeLine(shown, language) : undefined), [highlighter, shown, language]);
   return (
     <div className={`flex font-mono text-[13px] leading-5 ${ROW_CLASS[type]}`}>
       <span aria-hidden="true" className="w-9 shrink-0 select-none pr-1 text-right text-xs tabular-nums text-muted">
@@ -101,6 +101,7 @@ export const Hunk = memo(function Hunk({
           {lines.map((line, i) => (
             <Line key={i} type={line.type} oldLine={line.oldLine} newLine={line.newLine} text={line.text} wrap={wrap} language={language} highlighter={highlighter} />
           ))}
+          {lines.length < hunk.lines.length && <p className="bg-warn-bg px-2 py-1 text-xs font-semibold text-warn-fg">{t("diffv.hunk.cut", { count: hunk.lines.length - lines.length })}</p>}
         </div>
       </div>
     </section>
@@ -115,7 +116,7 @@ function scrollToHunk(id: string) {
 
 function FileView({ diff, highlighter }: { diff: FileDiff; highlighter: Highlighter | undefined }) {
   const { t } = useI18n();
-  const [wrap, setWrap] = useState(false);
+  const [wrap, setWrap] = useState(true);
   const [budget, setBudget] = useState(INITIAL_LINE_BUDGET);
   const [active, setActive] = useState(0);
   const language = useMemo(() => languageOf(diff.path), [diff.path]);
@@ -151,7 +152,15 @@ function FileView({ diff, highlighter }: { diff: FileDiff; highlighter: Highligh
     const clamped = Math.min(Math.max(next, 0), hunks.length - 1);
     setActive(clamped);
     const hunk = hunks[clamped];
-    if (hunk) scrollToHunk(hunk.id);
+    if (!hunk) return;
+    // Hunk yang belum digambar (anggaran habis): naikkan anggaran sampai hunk itu tampil, baru gulir.
+    if (limits[clamped] === 0) {
+      const needed = hunks.slice(0, clamped + 1).reduce((sum, h) => sum + h.lines.length, 0);
+      setBudget((b) => Math.max(b, needed));
+      setTimeout(() => scrollToHunk(hunk.id), 0);
+      return;
+    }
+    scrollToHunk(hunk.id);
   };
 
   return (
@@ -166,6 +175,12 @@ function FileView({ diff, highlighter }: { diff: FileDiff; highlighter: Highligh
           {t("diffv.wrap")}
         </label>
       </div>
+
+      {hidden > 0 && (
+        <p role="status" className="rounded-lg bg-warn-bg px-3 py-1.5 text-sm font-semibold text-warn-fg">
+          {t("diffv.hiddenNotice", { count: hidden })}
+        </p>
+      )}
 
       {hunks.length > 1 && (
         <div className="flex items-center justify-between gap-2 text-sm">
@@ -187,7 +202,7 @@ function FileView({ diff, highlighter }: { diff: FileDiff; highlighter: Highligh
 
       {hidden > 0 && (
         <button type="button" onClick={() => setBudget((b) => b + INITIAL_LINE_BUDGET)} className="min-h-11 rounded-lg border border-line px-3 text-sm">
-          {t("diffv.more", { count: Math.min(hidden, INITIAL_LINE_BUDGET) })}
+          {t("diffv.more", { count: Math.min(hidden, INITIAL_LINE_BUDGET), hidden })}
         </button>
       )}
     </div>
@@ -238,7 +253,7 @@ export default function DiffViewer({ diffs }: { diffs: FileDiff[] }) {
           </button>
         </div>
       )}
-      <p className="break-all text-sm font-medium">{cleanLine(diff.path, 200)}</p>
+      <p className="break-all text-sm font-medium">{escapeUnsafe(diff.path)}</p>
       {diff.sensitive.map((reason) => (
         <p key={reason.code} role="alert" className="rounded-lg bg-warn-bg px-3 py-1.5 text-sm font-semibold text-warn-fg">
           {t("approval.diff.sensitive", { reason: cleanLine(reason.message, 160) })}

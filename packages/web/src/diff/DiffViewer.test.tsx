@@ -4,6 +4,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { I18nProvider } from "../i18n/react";
 import DiffViewer, { INITIAL_LINE_BUDGET } from "./DiffViewer";
 
+// Diff 1.500+ baris di jsdom berat; runner CI yang lambat butuh waktu lebih dari bawaan 5 detik.
+vi.setConfig({ testTimeout: 60_000 });
+
 const format = { oldEol: "lf", newEol: "lf", oldFinalNewline: true, newFinalNewline: true } as const;
 const hunk = (id: string, lines: Array<[("add" | "remove" | "context"), string]>, start = 1): DiffHunk => {
   let oldN = start;
@@ -83,16 +86,23 @@ describe("DiffViewer: tampilan hunk", () => {
 });
 
 describe("DiffViewer: baris panjang", () => {
-  test("bawaan: baris tidak dibungkus dan hunk bisa digulir ke samping; opsi bungkus mengubahnya", () => {
+  test("bawaan: baris dibungkus (yang disetujui terlihat utuh, sama seperti teks cadangan); mematikan bungkus membuat hunk bisa digulir ke samping", () => {
     const long = "x".repeat(400);
     const { container } = renderViewer([fileDiff("a.txt", [hunk("h1", [["add", long]])])]);
+    expect((screen.getByRole("checkbox", { name: "Bungkus baris panjang" }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText(long).className).toContain("whitespace-pre-wrap");
+    expect(container.querySelector(".overflow-x-auto")).toBeNull();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Bungkus baris panjang" }));
     const text = screen.getByText(long);
     expect(text.className).toContain("whitespace-pre");
     expect(text.className).not.toContain("whitespace-pre-wrap");
     expect(container.querySelector(".overflow-x-auto")).toBeTruthy();
-    fireEvent.click(screen.getByRole("checkbox", { name: "Bungkus baris panjang" }));
-    expect(screen.getByText(long).className).toContain("whitespace-pre-wrap");
-    expect(container.querySelector(".overflow-x-auto")).toBeNull();
+  });
+
+  test("judul berkas menampilkan path utuh dengan karakter berbahaya sebagai kodenya (tidak dipotong, tidak dibuang diam-diam)", () => {
+    const path = "src/" + "dalam/".repeat(60) + "aman\u202egpj.ts";
+    renderViewer([fileDiff(path, [hunk("h1", [["add", "x"]])])]);
+    expect(screen.getByText(path.replace("\u202e", "\\u202e"))).toBeTruthy();
   });
 });
 
@@ -159,9 +169,14 @@ describe("DiffViewer: diff besar", () => {
   test("lebih dari anggaran: sisanya disembunyikan dengan tombol, dan tombol menampilkannya bertahap", () => {
     const { container } = renderViewer([bigDiff(INITIAL_LINE_BUDGET + 600)]);
     expect(rows(container)).toBe(INITIAL_LINE_BUDGET);
-    fireEvent.click(screen.getByRole("button", { name: `Tampilkan ${600} baris lagi` }));
+    // Pembaca diberi tahu bahwa diff belum terlihat seluruhnya, dan tombol menyebut berapa yang tersembunyi.
+    expect(screen.getByRole("status").textContent).toContain("600 baris belum ditampilkan");
+    expect(screen.getByText("… 600 baris lagi di hunk ini belum ditampilkan")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Tampilkan 600 baris lagi (600 tersembunyi)" }));
     expect(rows(container)).toBe(INITIAL_LINE_BUDGET + 600);
     expect(screen.queryByRole("button", { name: /baris lagi/ })).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByText(/belum ditampilkan/)).toBeNull();
   });
 
   test("anggaran dibagi antar hunk berurutan: hunk setelah anggaran habis tidak digambar", () => {
@@ -170,8 +185,21 @@ describe("DiffViewer: diff besar", () => {
     const { container } = renderViewer([fileDiff("besar.ts", [first, second])]);
     expect(rows(container)).toBe(INITIAL_LINE_BUDGET);
     expect(screen.queryByText("di hunk kedua")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Tampilkan 1 baris lagi" }));
+    fireEvent.click(screen.getByRole("button", { name: "Tampilkan 1 baris lagi (1 tersembunyi)" }));
     expect(screen.getByText("di hunk kedua")).toBeTruthy();
+  });
+});
+
+describe("DiffViewer: navigasi ke hunk yang belum digambar", () => {
+  test("hunk berikutnya yang tertahan anggaran langsung digambar, bukan menunjuk sesuatu yang tidak ada", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    const first = hunk("h1", Array.from({ length: INITIAL_LINE_BUDGET }, (_, i) => ["add" as const, `a${i}`]));
+    const second = hunk("h2", [["add", "isi hunk kedua"]], 5000);
+    renderViewer([fileDiff("besar.ts", [first, second])]);
+    expect(screen.queryByText("isi hunk kedua")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Hunk berikutnya" }));
+    expect(screen.getByText("isi hunk kedua")).toBeTruthy();
+    await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled());
   });
 });
 
@@ -184,6 +212,15 @@ describe("DiffViewer: warna sintaks dimuat belakangan", () => {
     await waitFor(() => expect(container.querySelector(".text-info")?.textContent).toBe("const"));
     expect(container.textContent).toContain("const nilai = 42; // catatan");
     expect(container.querySelector(".italic")?.textContent).toBe("// catatan");
+  });
+
+  test("baris yang dirancang membuat regex kuadratik (berakhir dengan satu backslash) tidak membekukan penampil", async () => {
+    const evil = '\\"'.repeat(995) + "\\";
+    const started = performance.now();
+    const { container } = renderViewer([fileDiff("a.ts", Array.from({ length: 300 }, () => hunk("h", [["add", evil]])).map((h, i) => ({ ...h, id: "h" + i })))]);
+    await waitFor(() => expect(container.querySelectorAll("div.font-mono").length).toBe(300));
+    await new Promise((resolve) => setTimeout(resolve, 100)); // beri waktu pewarna selesai
+    expect(performance.now() - started).toBeLessThan(3000);
   });
 
   test("berkas tanpa bahasa dikenal tetap polos", async () => {
