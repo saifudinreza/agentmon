@@ -229,12 +229,23 @@ describe("runPair", () => {
 });
 
 describe("perintah CLI `pair`", () => {
-  test("variabel lingkungan yang kurang disebut satu per satu, tanpa menyentuh jaringan", async () => {
+  // Folder data yang tidak ada: tes tidak boleh membaca pengaturan relay milik pengguna sungguhan (~/.agentmon/relay.json).
+  const NO_HOME = "/folder/yang/tidak/ada";
+
+  test("belum terhubung ke relay (tanpa token di lingkungan dan tanpa berkas tersimpan): dijelaskan, tanpa menyentuh jaringan", async () => {
     const err: string[] = [];
-    const code = await runCli(["pair"], { env: { AGENTMON_RELAY_URL: "https://r.example" }, out: () => undefined, err: (t) => err.push(t) });
+    const code = await runCli(["pair"], { env: { AGENTMON_HOME: NO_HOME, AGENTMON_RELAY_URL: "https://r.example", AGENTMON_APP_URL: "https://app.contoh.com" }, out: () => undefined, err: (t) => err.push(t) });
     expect(code).toBe(1);
-    expect(err[0]).toContain("AGENTMON_RELAY_TOKEN, AGENTMON_APP_URL");
-    expect(err[0]).not.toContain("AGENTMON_RELAY_URL,");
+    expect(err.join("\n")).toContain("belum terhubung ke relay");
+    expect(err.join("\n")).toContain("register");
+  });
+
+  test("relay sudah terhubung tetapi alamat aplikasi HP belum diisi: hanya AGENTMON_APP_URL yang disebut", async () => {
+    const err: string[] = [];
+    const code = await runCli(["pair"], { env: { AGENTMON_HOME: NO_HOME, AGENTMON_RELAY_URL: "https://r.example", AGENTMON_RELAY_TOKEN: TOKEN }, out: () => undefined, err: (t) => err.push(t) });
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("AGENTMON_APP_URL");
+    expect(err.join("\n")).not.toContain("AGENTMON_RELAY_TOKEN");
   });
 
   test("tidak butuh daemon lokal (tidak ada berkas token), dan meneruskan lingkungan ke runPair", async () => {

@@ -10,6 +10,7 @@ import type { EventType } from "@agentmon/shared";
 import { agentmonHome, loadOrCreateMachineId, paths } from "./home";
 import { createLogger } from "./logger";
 import { createRelayClient, type RelayClient } from "./relay-client";
+import { resolveRelayConfig, type ResolvedRelayConfig } from "./relay-config";
 import { createTimeline } from "./timeline";
 
 function portFromEnv(): number {
@@ -30,6 +31,14 @@ async function main() {
     const devUiRequested = process.env.AGENTMON_DEV_UI === "1";
     const devUi = devUiRequested && process.env.NODE_ENV !== "production";
     const timeline = createTimeline();
+    // Alamat dan token relay: dari lingkungan, atau dari berkas yang disimpan perintah `register`. Berkas yang rusak hanya
+    // mematikan relay (dengan penjelasan); daemon tetap jalan, karena relay tidak boleh menjadi alasan agent berhenti bekerja.
+    let relayConfig: ResolvedRelayConfig | undefined;
+    try {
+      relayConfig = resolveRelayConfig(process.env, agentmonHome());
+    } catch (error) {
+      console.error(`Relay TIDAK dipakai: ${error instanceof Error ? error.message : String(error)}`);
+    }
     // Klien relay (menyambung ke relay agar HP bisa melihat dan menjawab) dibuat SETELAH daemon
     // menyala, karena butuh approval engine-nya. Sampai itu siap, event hanya tidak diteruskan.
     let relay: RelayClient | undefined;
@@ -64,7 +73,7 @@ async function main() {
       // dan `deny`. Perintah `pause` melepas semuanya.
       holdEnabled,
       // Dengan relay terpasang, aksi hanya ditahan bila ada HP yang bisa menjawab; tanpa relay, jawaban lewat CLI atau halaman lokal.
-      canAnswer: () => (process.env.AGENTMON_RELAY_URL && process.env.AGENTMON_RELAY_TOKEN ? (relay?.canReachPhone() ?? false) : true),
+      canAnswer: () => (relayConfig ? (relay?.canReachPhone() ?? false) : true),
       onHook: createClaudeCodeHandler({
         // Checkpoint git sebelum alat pengubah berkas. Matikan dengan AGENTMON_CHECKPOINT=0.
         ...(checkpoints ? { checkpoint: (cwd: string, sessionId: string) => (checkpoints as CheckpointService).create(cwd, { sessionId }) } : {}),
@@ -88,9 +97,9 @@ async function main() {
 
     ref.daemon = daemon;
 
-    // Terhubung ke relay bila alamat dan token laptop diisi (nilai yang sama dengan perintah `pair`).
-    const relayUrl = process.env.AGENTMON_RELAY_URL;
-    const relayToken = process.env.AGENTMON_RELAY_TOKEN;
+    // Terhubung ke relay bila laptop sudah terdaftar (perintah `register`) atau alamat dan token diisi lewat lingkungan.
+    const relayUrl = relayConfig?.relayUrl;
+    const relayToken = relayConfig?.token;
     if (relayUrl && relayToken) {
       try {
         relay = createRelayClient({
@@ -105,14 +114,14 @@ async function main() {
           // Sambungan tanpa enkripsi ke host selain komputer ini ditolak kecuali dinyalakan dengan sadar.
           allowInsecure: process.env.AGENTMON_RELAY_INSECURE === "1",
         });
-        console.log(`Relay: menyambung ke ${relayUrl} (nomor laptop ini: ${loadOrCreateMachineId(daemon.home)})`);
+        console.log(`Relay: menyambung ke ${relayUrl} (nomor laptop ini: ${loadOrCreateMachineId(daemon.home)}; pengaturan dari ${relayConfig?.source === "file" ? "berkas" : "lingkungan"})`);
       } catch (error) {
         // Alamat relay yang salah hanya mematikan relay. Daemon tetap jalan, karena relay tidak
         // boleh menjadi alasan agent berhenti bekerja.
         console.error(`Relay TIDAK dipakai: ${error instanceof Error ? error.message : String(error)}`);
       }
     } else {
-      console.log("Relay: tidak dipakai (isi AGENTMON_RELAY_URL dan AGENTMON_RELAY_TOKEN untuk menyambung)");
+      console.log("Relay: tidak dipakai (daftarkan laptop ini dengan perintah register, atau isi AGENTMON_RELAY_URL dan AGENTMON_RELAY_TOKEN)");
     }
     console.log(`AgentMon daemon berjalan di http://127.0.0.1:${daemon.port}`);
     console.log(`Data dan log: ${daemon.home}`);

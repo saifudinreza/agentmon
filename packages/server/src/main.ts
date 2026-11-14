@@ -12,14 +12,17 @@
 //                                 kunci Web Push (buat dengan `pnpm --filter @agentmon/server push:keys`);
 //                                 subjek berupa https:// atau mailto:. Tanpa ketiganya push mati.
 //        PUSH_ALLOWED_HOSTS       (opsional) akhiran host layanan push tambahan, dipisah koma
+//        ADMIN_SECRET             rahasia pemilik relay (minimal 32 karakter) untuk mendaftarkan laptop lewat
+//                                 POST /admin/machines (perintah `register` di laptop). Tanpa ini pendaftaran tertutup.
 //
 //   2. MODE PENGEMBANGAN (tanpa database): direktori hanya di memori dengan satu laptop dan satu HP
 //      yang tokennya diambil dari variabel lingkungan. Untuk mencoba relay secara manual.
 //      Pairing TIDAK tersedia di mode ini.
-import { createDbDirectory, createPairingService, createPushStore, createStore, openPostgres, startRetention, type DatabaseHandle } from "./db";
+import { createDbDirectory, createMachineRegistry, createPairingService, createPushStore, createStore, openPostgres, startRetention, type DatabaseHandle } from "./db";
 import { createMemoryDirectory, type RelayDirectory } from "./directory";
 import { createConsoleLogger } from "./logger";
 import { startRelayServer, type RelayServerOptions } from "./node";
+import { parseAdminSecret } from "./admin-http";
 import { createEndpointPolicy, parseVapidConfig, withPushPresence } from "./push";
 
 const logger = createConsoleLogger();
@@ -35,6 +38,7 @@ let database: DatabaseHandle | undefined;
 let pairing: RelayServerOptions["pairing"];
 let persist: RelayServerOptions["persist"];
 let deviceApi: RelayServerOptions["deviceApi"];
+let admin: RelayServerOptions["admin"];
 let retention: ReturnType<typeof startRetention> | undefined;
 
 if (process.env.DATABASE_URL) {
@@ -68,6 +72,12 @@ if (process.env.DATABASE_URL) {
     ...(vapid.config ? { vapidPublicKey: vapid.config.publicKey } : {}),
   };
   deviceApi = { directory: dbDirectory, store: eventStore, devices: pairing.pairing, allowedOrigins, trustProxy: process.env.TRUST_PROXY === "1", push };
+  // Pendaftaran laptop (POST /admin/machines): terbuka hanya bila ADMIN_SECRET diisi dan cukup panjang.
+  const adminSecret = parseAdminSecret(process.env);
+  if (adminSecret.problem) logger.error(adminSecret.problem);
+  else if (adminSecret.secret) {
+    admin = { secret: adminSecret.secret, registry: createMachineRegistry(database.db), logger, trustProxy: process.env.TRUST_PROXY === "1" };
+  } else logger.info("Pendaftaran laptop ditutup: ADMIN_SECRET belum diisi");
   // Push mati: langganan yang masih tersimpan tidak dihitung sebagai HP yang bisa dihubungi (lihat withPushPresence).
   directory = withPushPresence(dbDirectory, vapid.config !== undefined);
 } else {
@@ -102,6 +112,7 @@ const relay = await startRelayServer({
   ...(pairing ? { pairing } : {}),
   ...(persist ? { persist } : {}),
   ...(deviceApi ? { deviceApi } : {}),
+  ...(admin ? { admin } : {}),
 });
 console.log(
   database

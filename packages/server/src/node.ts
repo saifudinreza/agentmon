@@ -18,6 +18,7 @@ import { mountDeviceApi, type DeviceApiOptions } from "./device-api";
 import { createRelayHub, DEFAULT_LIMITS, type RelayHub, type RelayHubOptions, type RelayLimits } from "./hub";
 import { silentLogger, type Logger } from "./logger";
 import { mountPairingRoutes, type PairingRoutesOptions } from "./pairing-http";
+import { mountAdminRoutes, type AdminRoutesOptions } from "./admin-http";
 
 export type RelayServerOptions = {
   directory: RelayDirectory;
@@ -32,6 +33,8 @@ export type RelayServerOptions = {
   pairing?: PairingRoutesOptions;
   // API baca riwayat untuk HP (HTTP). Tanpa ini endpoint /api/* tidak ada (404).
   deviceApi?: Omit<DeviceApiOptions, "isMachineOnline" | "onDeviceRevoked">;
+  // Pendaftaran laptop oleh pemilik relay (butuh rahasia admin). Tanpa ini endpoint /admin/* tidak ada (404).
+  admin?: Omit<AdminRoutesOptions, "onMachineRotated">;
   // Menyimpan event sebelum diteruskan dan di-ack (lihat hub.ts).
   persist?: RelayHubOptions["persist"];
 };
@@ -66,6 +69,7 @@ export async function startRelayServer(options: RelayServerOptions): Promise<Run
   app.get("/health", (c) => c.json({ status: "ok" }));
   const onDeviceRevoked = (deviceId: string) => hub.disconnectDevice(deviceId);
   if (options.pairing) mountPairingRoutes(app, { ...options.pairing, onDeviceRevoked });
+  if (options.admin) mountAdminRoutes(app, { ...options.admin, onMachineRotated: (machineId) => hub.disconnectMachine(machineId) });
   if (options.deviceApi) mountDeviceApi(app, { ...options.deviceApi, isMachineOnline: (id) => hub.isMachineOnline(id), onDeviceRevoked });
   // Galat tak terduga (misalnya database sesaat tidak terjangkau): jawab 500 yang polos dan catat.
   // Tidak ada rincian ke klien, dan pairing tetap gagal tertutup (tidak ada kredensial yang keluar).

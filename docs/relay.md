@@ -101,7 +101,7 @@ Menghubungkan sebuah HP dengan sebuah laptop. Aktif bila relay dijalankan dengan
 
 **Alur.** Laptop menjalankan `pnpm --filter @agentmon/bridge cli pair`, yang meminta kode sekali pakai ke relay dan menampilkannya sebagai QR di terminal (beserta alamat tertulis untuk jaga-jaga). HP memindai QR, membuka PWA, dan PWA menukar kode itu menjadi kredensial HP. Terminal laptop lalu menulis `Perangkat baru terpasang: <nama>`.
 
-Perintah `pair` butuh tiga variabel lingkungan: `AGENTMON_RELAY_URL` (alamat relay), `AGENTMON_RELAY_TOKEN` (token laptop di relay), dan `AGENTMON_APP_URL` (alamat PWA).
+Perintah `pair` butuh pengaturan relay (alamat dan token laptop) dan `AGENTMON_APP_URL` (alamat PWA). Pengaturan relay diambil dari berkas `relay.json` yang disimpan perintah `register` (lihat Pendaftaran laptop), atau dari `AGENTMON_RELAY_URL` dan `AGENTMON_RELAY_TOKEN` bila keduanya diisi (lingkungan menang).
 
 | Endpoint | Siapa | Fungsi |
 |---|---|---|
@@ -120,7 +120,7 @@ Perintah `pair` butuh tiga variabel lingkungan: `AGENTMON_RELAY_URL` (alamat rel
 **Alamat di dalam QR:** `https://<pwa>/pair#c=<kode>&r=<alamat-relay>`. Semuanya di **fragmen** (setelah `#`) yang tidak pernah dikirim browser ke server mana pun. Rahasia enkripsi ujung-ke-ujung (tahap 4) nanti ditambahkan sebagai parameter `k` di fragmen yang sama, sehingga relay tetap tidak bisa membacanya. Kode `buildPairingUrl` dan `parsePairingUrl` ada di `packages/shared/src/pairing.ts` dan dipakai bersama oleh laptop dan PWA.
 
 ## Klien relay di daemon
-Daemon di laptop menyambung ke relay lewat `packages/bridge/src/relay-client.ts`. Nyalakan dengan mengisi `AGENTMON_RELAY_URL` dan `AGENTMON_RELAY_TOKEN` saat menjalankan daemon (nilai yang sama dengan perintah `pair`). Nomor laptop di relay **harus sama** dengan isi berkas `machine-id` di folder data daemon; bila berbeda, klien berhenti dengan pesan jelas karena relay pasti menolak event-nya.
+Daemon di laptop menyambung ke relay lewat `packages/bridge/src/relay-client.ts`. Nyalakan dengan mendaftarkan laptop (perintah `register`, yang menyimpan `relay.json`) atau dengan mengisi `AGENTMON_RELAY_URL` dan `AGENTMON_RELAY_TOKEN` saat menjalankan daemon (nilai yang sama dengan perintah `pair`). Nomor laptop di relay **harus sama** dengan isi berkas `machine-id` di folder data daemon; bila berbeda, klien berhenti dengan pesan jelas karena relay pasti menolak event-nya.
 
 - **Tidak memperlambat agent.** Menitipkan event ke klien selalu seketika dan tidak pernah gagal ke pemanggilnya; koneksi, pengiriman, dan percobaan ulang berjalan di belakang layar.
 - **Tidak hilang, tidak ganda.** Event tetap di antrean sampai relay mengirim `ack`. Bila koneksi putus atau `ack` tidak datang dalam 10 detik, event dikirim ulang, dan relay mengabaikan nomor yang sama. Event dalam satu sesi disusun menurut `seq` sebelum dikirim.
@@ -146,7 +146,7 @@ HP hanya boleh membaca laptop yang dipasangkan dengannya. Laptop yang tidak dipa
 - **`ack` berarti event sudah tersimpan di relay (mode database), bukan bahwa HP sudah menerimanya.** HP yang sedang offline tidak mendapat event secara langsung, tetapi mengambilnya dari riwayat lewat API baca saat tersambung lagi (lihat bagian API baca riwayat).
 - Kode pairing yang terpakai atau kedaluwarsa dihapus oleh penghapusan otomatis (dijalankan `main.ts` di mode database: sekali saat mulai, lalu tiap 6 jam), sehingga bisa tertinggal sampai 6 jam. Itu aman, karena kode kedaluwarsa tetap ditolak walau barisnya belum terhapus.
 - Nama perangkat dari HP ditolak bila memuat karakter kontrol, dan tetap disanitasi saat dicetak di terminal laptop.
-- **Pendaftaran laptop ke relay belum ada.** Pairing mengandaikan laptop sudah punya baris dan token di relay. Alur pendaftaran otomatis dikerjakan bersama klien relay di daemon; sementara itu laptop didaftarkan lewat `createDbDirectory(...).registerMachine`.
+- **Pendaftaran laptop** sudah ada (lihat bagian Pendaftaran laptop); tidak lagi perlu memanggil `registerMachine` lewat kode.
 - **Layar pairing di PWA belum ada** (issue PWA). Sampai saat itu penukaran bisa dicoba dengan `POST /pair/redeem` langsung.
 - **Pemberitahuan "perangkat baru" memakai pertanyaan berkala** (tiap 2 detik selama perintah `pair` berjalan), bukan dorongan lewat WebSocket. Notifikasi ke daemon yang sedang berjalan menunggu klien relay.
 - QR dicetak dengan kode warna ANSI (hitam di atas putih). Terminal yang tidak mendukung ANSI menampilkan karakter aneh; alamat tertulis di bawah QR tetap bisa dipakai.
@@ -238,3 +238,36 @@ Ditolak `400` bila alamat langganan bukan layanan push yang dikenal, atau kunci 
 - Pendaftaran yang kebetulan menyusul tepat setelah pencabutan bisa meninggalkan satu baris untuk HP yang sudah dicabut. Baris itu tidak pernah dikirimi apa pun (pengambilan menyaring HP yang dicabut).
 - Dua pendaftaran serentak dari HP yang sama dengan alamat berbeda bisa meninggalkan satu baris lebih; baris itu dibersihkan saat layanan push menjawab 404/410 atau pada pendaftaran berikutnya.
 - Satu HP memegang satu langganan: PWA terpasang dan tab browser di HP yang sama memakai langganan yang sama.
+
+## Pendaftaran laptop
+
+Relay yang baru di-deploy tidak punya laptop. `POST /admin/machines` membuat baris dan token laptop, dan hanya bisa dipakai pemegang **rahasia admin**. Dipakai oleh perintah `register` di laptop (langkah lengkapnya di [`deploy.md`](deploy.md)).
+
+| | |
+|---|---|
+| Menyalakan | variabel `ADMIN_SECRET` di relay, minimal 32 karakter, hanya ASCII tercetak **tanpa spasi** (rahasia bersepasi atau non-ASCII tidak akan pernah cocok dengan header, jadi ditolak sejak awal). Tanpa itu `/admin/*` tidak ada (404). Yang tidak memenuhi syarat tidak dipakai, dan alasannya (tanpa nilai) ada di log. |
+| Permintaan | `POST /admin/machines` dengan `Authorization: Bearer <rahasia>` dan isi `{id, name, rotate?}`. `id` = UUID dari berkas `machine-id` laptop; `name` 1 sampai 64 karakter tanpa karakter kontrol. |
+| Jawaban | `201 {machineId, token}`; token 256 bit acak, dibuat **di relay**, diberikan **sekali**, dan jawabannya `Cache-Control: no-store`. `400` isi tidak sah, `401` rahasia salah, `404` rotate untuk nomor yang belum ada, `409` nomor sudah terdaftar, `413` isi terlalu besar, `429` dibatasi laju. |
+| Nomor laptop | harus sama dengan yang dipakai daemon di setiap event: relay menolak event yang `machineId`-nya berbeda dari identitas koneksi. |
+
+**Yang dijaga**
+- Rahasia dibandingkan dengan **waktu tetap** (lewat hash SHA-256 kedua sisi), supaya tidak bisa ditebak dari selisih waktu jawaban.
+- **Rahasia salah dibatasi laju per alamat IP** (5 percobaan, lalu 1 per menit). Alamat yang sudah kehabisan jatah ditolak (429) **sebelum** rahasianya diperiksa, jadi penebak dari alamat itu tidak tahu apakah tebakannya benar. **Sengaja tidak ada kuncian global** untuk semua alamat: kuncian seperti itu bisa dipakai orang luar untuk mengunci pemilik dari relaynya sendiri (hasil review PR #59); penebakan dari banyak alamat dilawan oleh panjang rahasia, bukan kuncian. Penolakan yang dicatat di log dibatasi (5, lalu 1 per 10 detik) supaya tebakan dari banyak alamat tidak membanjiri log.
+- **Pendaftaran yang berhasil dibatasi** (10, lalu 1 per menit), supaya rahasia yang bocor tidak bisa membanjiri tabel. Jatah **diambil sebelum menunggu database**: bila baru diambil sesudahnya, permintaan serentak lolos bersamaan (terbukti: 100 permintaan serentak menghasilkan 100 pendaftaran), dan sekarang ada tes serentak yang menjaganya. Permintaan yang bentuknya tidak sah (400) tidak memakai jatah; yang ditolak 409 atau 404 memakainya.
+- **Hanya hash token yang disimpan** (batasan CHECK di skema menolak yang lain). Token dan rahasia tidak pernah masuk log; yang tercatat hanya nomor laptop dan fakta bahwa percobaan ditolak.
+- **Nomor yang sudah terdaftar ditolak (409)** kecuali `rotate: true`: mendaftar dua kali tidak diam-diam memutus laptop yang sedang berjalan. `rotate` mengganti token dan nama, dan **memutus sambungan lama seketika** (kode tutup 4003), jadi token yang bocor tidak tetap hidup sampai sambungannya putus sendiri.
+- Tidak ada CORS: loket ini bukan untuk browser.
+
+**Di laptop** (`register`): rahasia hanya dari `AGENTMON_ADMIN_SECRET` (bukan argumen perintah; argumen yang keliru diketik tidak digemakan ke layar). Rahasia tidak dikirim lewat `http://` ke host selain komputer ini kecuali `AGENTMON_RELAY_INSECURE=1`. Hasilnya disimpan di `relay.json` (ditulis ke berkas sementara lalu dipindah; mode 0600 di macOS dan Linux, di Windows mengikuti izin folder profil). Token **tidak dicetak** kecuali `--print-token`, atau bila berkas gagal ditulis (token hanya diberikan sekali, jadi dicetak ke stderr daripada hilang). Bila alamat relay di lingkungan berbeda dari yang tersimpan dan tokennya tidak diisi, token tersimpan **tidak** dikirim ke relay lain.
+
+**Keterbatasan**
+- **Tanpa kuncian global, keamanan terhadap penebakan dari banyak alamat bergantung pada rahasia yang acak.** Buat dengan `randomBytes(32)` seperti di `deploy.md`, bukan frasa sandi buatan sendiri. Per alamat, satu orang hanya dapat 5 tebakan lalu 1 per menit. Bila `TRUST_PROXY` lupa diisi di belakang proxy hosting, semua klien terlihat sebagai satu alamat: lima tebakan salah dari siapa pun mengunci pemilik sampai jatah pulih (di `render.yaml` sudah diisi).
+- **Rahasia admin satu untuk semua**: siapa pun yang memegangnya bisa mendaftarkan laptop apa pun dan mengganti token laptop mana pun (`rotate`). Tidak ada akun admin atau daftar pendaftaran yang bisa dicabut satu per satu; mengganti `ADMIN_SECRET` menutup akses lama. Cocok untuk satu pemilik; belum untuk banyak pengguna (issue self-host dan seterusnya).
+- Token laptop disimpan sebagai teks biasa di `relay.json`. Di Windows tidak ada pembatasan izin berkas selain izin folder profil pengguna.
+- Belum ada perintah menghapus atau menonaktifkan laptop di relay; yang ada hanya mengganti token (`--rotate`).
+- Pembatas laju disimpan di memori satu proses relay: restart mengosongkannya, dan beberapa instance berbagi jatah sendiri-sendiri.
+- Setelah `register --rotate`, daemon yang sedang berjalan diputus relay dan mencoba tersambung ulang dengan token lamanya (ditolak, tercatat di log tiap beberapa detik) sampai dijalankan ulang untuk membaca `relay.json` yang baru.
+- Sambungan yang sedang dalam proses `hello` tepat pada saat `rotate` bisa lolos sebentar dengan token lama (sama seperti pencabutan HP): `disconnectMachine` hanya menutup sambungan yang sudah terdaftar. Jendelanya sempit dan sambungan itu ditutup pada sambungan berikutnya.
+- Pendaftaran yang terputus di tengah jalan (relay sempat mencatatnya tetapi jawabannya tidak sampai) meninggalkan laptop terdaftar tanpa token di laptop; pendaftaran ulang dijawab 409 dan perbaikannya `register --rotate`. `register` membangunkan relay lebih dulu lewat `GET /health` (sampai 90 detik, relay gratis butuh sekitar 40 sampai 50 detik) dan baru mengirim pendaftaran dengan batas waktu pendek, supaya itu jarang terjadi.
+- AGENTMON_RELAY_URL dan AGENTMON_RELAY_TOKEN yang **keduanya** masih diisi di lingkungan (mis. profil shell dari petunjuk lama) mengalahkan `relay.json`: `register` memperingatkan. Token di lingkungan tanpa alamat diabaikan.
+- Uji ujung-ke-ujung (relay, CLI, dan daemon asli sebagai proses terpisah) dijalankan manual dengan `pnpm e2e:register`; tidak ikut CI karena menjalankan beberapa proses.

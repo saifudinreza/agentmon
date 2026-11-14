@@ -5,6 +5,7 @@
 //   directory.ts  direktori pemasangan berbasis database
 export * from "./connect";
 export * from "./directory";
+export * from "./machines";
 export * from "./pairing";
 export * from "./push";
 export * from "./schema";

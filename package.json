@@ -13,6 +13,7 @@
     "build": "pnpm -r --if-present build",
     "check:size": "pnpm --filter @agentmon/web check:size",
     "check:secrets": "node tools/check-no-secrets.mjs",
+    "e2e:register": "pnpm --filter @agentmon/server exec tsx ../../tools/e2e-register.mts",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm check:size && pnpm check:secrets"
   },
   "devDependencies": {

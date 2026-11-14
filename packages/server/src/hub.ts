@@ -484,6 +484,16 @@ export function createRelayHub(options: RelayHubOptions) {
       for (const machineId of [...machines.keys()]) void announcePresence(machineId);
     },
 
+    /**
+     * Memutus laptop yang tokennya baru diganti: sambungan lama (yang memakai token lama) ditutup seketika dengan kode
+     * "tidak berwenang", supaya token yang mungkin bocor tidak tetap hidup sampai sambungannya putus sendiri. Dipanggil
+     * SETELAH token baru tersimpan, sehingga sambungan ulang dengan token lama langsung ditolak.
+     */
+    disconnectMachine(machineId: string): void {
+      const session = machines.get(machineId);
+      if (session) close(session, CLOSE.unauthorized, "token-replaced");
+    },
+
     /** Apakah laptop ini sedang tersambung ke relay? */
     isMachineOnline(machineId: string): boolean {
       return machines.has(machineId);
