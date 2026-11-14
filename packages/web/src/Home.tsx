@@ -10,6 +10,7 @@ import { PairScreen } from "./pairing/PairScreen";
 import { RollbackScreen } from "./rollback/RollbackScreen";
 import { setPendingLink } from "./pairing/pending";
 import { PasteLinkForm } from "./pairing/PasteLinkForm";
+import { NotificationsSection } from "./push/NotificationsSection";
 import { useRelayEntries, useRelayState, type RelayEntry } from "./relay/RelayProvider";
 import { navigate, usePath } from "./router";
 import { formatWhen } from "./timeline/format";
@@ -123,6 +124,9 @@ export function Home({ focusHeading = false }: { focusHeading?: boolean }) {
           <p className="mt-2 text-muted">{t("empty.body")}</p>
         </section>
       )}
+
+      {/* Satu browser hanya bisa berlangganan ke satu kunci, jadi notifikasi terhubung ke relay pertama. */}
+      {hasMachines && entries[0] && <NotificationsSection key={entries[0].pairing.relayUrl} entry={entries[0]} />}
 
       {hasMachines && (
         <Link to="/devices" className="inline-flex min-h-11 items-center self-start text-sm underline">

@@ -12,14 +12,23 @@ import { manifest } from "./pwa/manifest";
 
 const root = join(__dirname, "..");
 let out: string;
+// Build kedua TANPA minifikasi, hanya untuk memeriksa rangkaian service worker: nama fungsi (precacheAndRoute dan seterusnya)
+// hilang di build produksi yang diminifikasi, sedangkan ukuran dan isi aplikasi tetap diperiksa di build produksi (`out`).
+let outReadable: string;
 
 beforeAll(async () => {
   out = mkdtempSync(join(tmpdir(), "agentmon-build-"));
   await build({ root, configFile: join(root, "vite.config.ts"), logLevel: "silent", build: { outDir: out, emptyOutDir: true } });
-}, 120_000);
-afterAll(() => rmSync(out, { recursive: true, force: true }));
+  outReadable = mkdtempSync(join(tmpdir(), "agentmon-build-readable-"));
+  await build({ root, configFile: join(root, "vite.config.ts"), logLevel: "silent", build: { outDir: outReadable, emptyOutDir: true, minify: false } });
+}, 180_000);
+afterAll(() => {
+  rmSync(out, { recursive: true, force: true });
+  rmSync(outReadable, { recursive: true, force: true });
+});
 
 const read = (file: string) => readFileSync(join(out, file), "utf8");
+const readReadable = (file: string) => readFileSync(join(outReadable, file), "utf8");
 
 describe("hasil build", () => {
   test("berkas utama ada: index.html, manifest, service worker, dan ikon", () => {
@@ -52,10 +61,8 @@ describe("hasil build", () => {
 
   test("service worker menyimpan kerangka aplikasi untuk offline: halaman, JS, CSS, dan ikon", () => {
     const sw = read("sw.js");
-    // Daftar berkas yang disimpan (precache) ditulis di sw.js atau berkas workbox yang dimuatnya.
-    const workbox = readdirSync(out).filter((f) => /^workbox-.*\.js$/.test(f)).map(read).join("\n");
-    const code = `${sw}\n${workbox}`;
-    expect(code).toMatch(/precacheAndRoute/);
+    // Service worker kita sendiri (src/sw.ts) sudah memuat kode workbox di dalamnya; nama fungsinya dicek di build tanpa minifikasi.
+    expect(readReadable("sw.js")).toMatch(/precacheAndRoute\(/);
     // Penulisannya berbeda antar mode build (diminifikasi atau tidak): pola ini longgar soal spasi dan tanda kutip.
     const precached = (pathPattern: string) => new RegExp(`["']?url["']?\\s*:\\s*["']${pathPattern}["']`).test(sw);
     expect(precached("index\\.html")).toBe(true);
@@ -66,14 +73,34 @@ describe("hasil build", () => {
   });
 
   test("navigasi ke alamat mana pun dijawab kerangka aplikasi saat offline (navigateFallback ke index.html)", () => {
-    expect(read("sw.js")).toMatch(/NavigationRoute/);
-    expect(read("sw.js")).toMatch(/createHandlerBoundToURL\("\/index\.html"\)/);
+    expect(readReadable("sw.js")).toMatch(/NavigationRoute/);
+    expect(readReadable("sw.js")).toMatch(/createHandlerBoundToURL\("\/index\.html"\)/);
   });
 
   test("versi lama di HP dibersihkan dan versi baru langsung mengambil alih", () => {
+    const sw = readReadable("sw.js");
+    expect(sw).toMatch(/cleanupOutdatedCaches\(\)/);
+    expect(sw).toMatch(/skipWaiting\(\)/);
+    expect(sw).toMatch(/clients\.claim\(\)/);
+  });
+
+  test("service worker menangani push dan ketukan notifikasi, dan teks notifikasi ikut terbawa", () => {
+    const sw = readReadable("sw.js");
+    expect(sw).toMatch(/addEventListener\("push"/);
+    expect(sw).toMatch(/addEventListener\("notificationclick"/);
+    expect(sw).toContain("agentmon:navigate");
+    // Teks notifikasi (kedua bahasa) harus ada di dalam service worker, bukan hanya di aplikasi.
+    expect(sw).toContain("Izin dibutuhkan");
+    expect(sw).toContain("Approval needed");
+    // Service worker yang sama, dalam build produksi, tetap memuat penanganan itu (nama peristiwa tidak diminifikasi).
+    const production = read("sw.js");
+    expect(production).toContain("notificationclick");
+    expect(production).toContain("push");
+  });
+
+  test("service worker terdaftar sebagai skrip klasik yang berdiri sendiri (tanpa import/export di berkasnya)", () => {
     const sw = read("sw.js");
-    expect(sw).toMatch(/cleanupOutdatedCaches/);
-    expect(sw).toMatch(/skipWaiting|clientsClaim/);
+    expect(sw).not.toMatch(/^\s*(import|export)\s/m);
   });
 
   test("tidak ada sourcemap yang ikut terbit", () => {

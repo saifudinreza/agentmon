@@ -1,10 +1,12 @@
 // Pembantu KHUSUS TEST: relay tiruan di sisi data (laptop, sesi, event yang "tersimpan") beserta API yang
 // membacanya. Dipakai test store dan test layar. Tidak dipakai kode aplikasi.
-import type { DeviceMachine, Envelope, ListedDevice, PendingApproval, SessionSummary } from "@agentmon/shared";
+import type { DeviceMachine, Envelope, ListedDevice, PendingApproval, PushConfigResponse, PushSubscriptionRequest, SessionSummary } from "@agentmon/shared";
 import { vi } from "vitest";
 import type { RelayApi } from "./api";
 import { sessionKey } from "./relay-store";
 
+// Kunci publik VAPID tiruan: 65 byte (titik tak terkompresi) dalam base64url, 87 karakter.
+export const FAKE_VAPID_PUBLIC_KEY = `B${"A".repeat(86)}`;
 export const MACHINES: DeviceMachine[] = [{ id: "m1", name: "Laptop Kantor", online: true }];
 export const summary = (id: string, last: string, extra: Partial<SessionSummary> = {}): SessionSummary => ({
   sessionId: id,
@@ -38,8 +40,10 @@ export function fakeRelay() {
     events: { "m1/s1": [] as Envelope[] } as Record<string, Envelope[]>,
     approvals: [] as PendingApproval[],
     devices: [] as ListedDevice[],
+    // Web Push: konfigurasi yang diberikan relay, langganan terakhir yang tersimpan, dan berapa kali dihapus.
+    push: { config: { enabled: true, publicKey: FAKE_VAPID_PUBLIC_KEY } as PushConfigResponse, saved: undefined as PushSubscriptionRequest | undefined, removed: 0 },
   };
-  const fail: { machines?: Error; sessions?: Error; events?: Error; approvals?: Error; devices?: Error; revoke?: Error } = {};
+  const fail: { machines?: Error; sessions?: Error; events?: Error; approvals?: Error; devices?: Error; revoke?: Error; pushConfig?: Error; pushSave?: Error; pushRemove?: Error } = {};
   const calls = { machines: 0, sessions: 0, eventsAfter: [] as number[] };
   let gate: Promise<void> | undefined;
   const api: RelayApi = {
@@ -60,6 +64,19 @@ export function fakeRelay() {
     approvals: vi.fn(async () => {
       if (fail.approvals) throw fail.approvals;
       return [...data.approvals];
+    }),
+    pushConfig: vi.fn(async () => {
+      if (fail.pushConfig) throw fail.pushConfig;
+      return { ...data.push.config };
+    }),
+    savePushSubscription: vi.fn(async (subscription: PushSubscriptionRequest) => {
+      if (fail.pushSave) throw fail.pushSave;
+      data.push.saved = subscription;
+    }),
+    removePushSubscription: vi.fn(async () => {
+      if (fail.pushRemove) throw fail.pushRemove;
+      data.push.saved = undefined;
+      data.push.removed++;
     }),
     sessions: vi.fn(async (machineId: string) => {
       calls.sessions++;
