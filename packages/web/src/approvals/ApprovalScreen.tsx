@@ -18,6 +18,7 @@ import { Heading } from "../ui/Heading";
 import { Link } from "../ui/Link";
 import { cleanLine } from "../timeline/describe";
 import { LazyDiffViewer } from "../diff/LazyDiffViewer";
+import { DiffSummaryView } from "./DiffSummaryView";
 import { RISK_LABEL } from "./ApprovalList";
 import { describeInput, formatDiff } from "./format";
 import { approvalKey, formatRemaining, isExpired, remainingMs, type Resolution } from "./model";
@@ -234,6 +235,11 @@ function ApprovalBody({ entry, machineId, approvalId, focusHeading }: { entry: R
               </div>
             ))}
           </dl>
+        </Section>
+      )}
+      {approval.diffSummary && approval.diffSummary.files.length > 0 && (
+        <Section title={t("summary.title")}>
+          <DiffSummaryView summary={approval.diffSummary} />
         </Section>
       )}
       <Section title={t("approval.diff")}>{approval.diff ? <DiffSection diff={approval.diff} /> : <p className="text-sm text-muted">{t("approval.diff.none")}</p>}</Section>

@@ -20,6 +20,7 @@
 import { z } from "zod";
 import { ApprovalDecisionSchema, FinalApprovalStatusSchema } from "./approval";
 import { FileDiffSchema } from "./diff";
+import { DiffSummarySchema } from "./summary";
 import { RiskSchema } from "./risk";
 
 const isoDate = z.iso.datetime({ offset: true });
@@ -58,6 +59,7 @@ export const PendingApprovalSchema = z.object({
   summary: z.string().optional(),
   risk: RiskSchema.optional(),
   diff: FileDiffSchema.optional(),
+  diffSummary: DiffSummarySchema.optional(),
   truncated: z.boolean().optional(),
   requestedAt: isoDate,
   expiresAt: isoDate,

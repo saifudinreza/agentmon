@@ -609,6 +609,7 @@ describe("diff untuk aksi yang ditahan", () => {
     expect(payload.summary).toMatch(/^\+\d+ -\d+ \(\d+ hunk\)$/);
     expect(payload.diff?.change.type).toBe("text");
     expect(payload.diff?.path).toContain("app.ts");
+    expect((payload as { diffSummary?: { files: Array<{ path: string; change: string; added: number; removed: number }> } }).diffSummary?.files[0]).toMatchObject({ change: "modified", added: 1, removed: 1 });
   });
 
   test("diff yang terlalu besar untuk dikirim dihilangkan (event tetap sampai), ringkasannya tetap ada, dan aksi tetap ditahan", async () => {
@@ -640,6 +641,8 @@ describe("diff untuk aksi yang ditahan", () => {
     expect(payload).not.toHaveProperty("diff");
     expect(requestedPayload(s)).toMatchObject({ truncated: true });
     expect(payload.summary).toBe("berkas baru +6000 -0 (1 hunk)");
+    // Ringkasan terstruktur tetap terkirim walau diff-nya sendiri terlalu besar (itu gunanya ringkasan).
+    expect(requestedPayload(s).diffSummary).toEqual({ files: [{ path: "app.ts", change: "new", added: 6000, removed: 0, hunks: 1, language: "javascript" }] });
   });
 
   test("isi input yang sangat panjang dipotong di event (supaya tidak dibuang relay), dan nilai yang kecil tidak berubah", async () => {
