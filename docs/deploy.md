@@ -2,7 +2,7 @@
 
 Service worker dan Web Push hanya bekerja lewat HTTPS, jadi relay dan PWA perlu alamat HTTPS publik. Dokumen ini memuat dua jalur: **staging** (Render + Neon + Cloudflare Pages, sesuai PRD §15) dan **tunnel** untuk pengembangan di laptop.
 
-> **Status jujur:** isi repo (cetak biru, perintah, pemeriksa rahasia, pengukur waktu bangun) sudah ada dan diuji di sini. Pembuatan akun, layanan, dan deploy pertama dilakukan pemilik proyek, karena butuh akun dan rahasia yang tidak ada di repo. Waktu bangun relay sudah diukur di staging sungguhan (tabel di bagian 4); tambahan: relay bangun lewat HP sungguhan belum dicoba.
+> **Status jujur:** isi repo (cetak biru, perintah, pemeriksa rahasia, pengukur waktu bangun) sudah ada dan diuji di sini. Pembuatan akun, layanan, dan deploy pertama dilakukan pemilik proyek, karena butuh akun dan rahasia yang tidak ada di repo. Waktu bangun relay sudah diukur di staging sungguhan (tabel di bagian 4). Yang belum dicoba: relay dibangunkan oleh HP sungguhan.
 
 ## 1. Staging
 
