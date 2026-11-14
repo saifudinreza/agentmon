@@ -14,12 +14,15 @@ import { ConnectionChip } from "./relay/ConnectionChip";
 import { RelayProvider, type RelayStoreFactory } from "./relay/RelayProvider";
 import { useI18n } from "./i18n/react";
 import { useOnline } from "./hooks/useOnline";
+import { useNotificationNavigation } from "./push/useNotificationNavigation";
 import { useTheme } from "./theme/useTheme";
 
 function Shell() {
   const { t } = useI18n();
   const online = useOnline();
   const { mode, cycle } = useTheme();
+  // Notifikasi yang diketuk saat aplikasi sudah terbuka memindahkan layar lewat pesan dari service worker.
+  useNotificationNavigation();
   // Teks yang terlihat di tombol, misalnya "Tema: Otomatis".
   const themeLabel = t("theme.label", { mode: t(`theme.${mode}`) });
 

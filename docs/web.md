@@ -16,7 +16,7 @@ Service worker hanya aktif di build produksi. Untuk mencoba offline: `build`, `p
 ## Bisa dipasang dan dibuka offline
 
 - **Manifest** (`src/pwa/manifest.ts`): nama, ikon, mode layar penuh (`standalone`), warna. Dibangun menjadi `manifest.webmanifest`.
-- **Service worker** (dibuat `vite-plugin-pwa`): menyimpan semua berkas aplikasi saat pertama dibuka. Setelah itu kerangka terbuka tanpa jaringan, termasuk alamat seperti `/pair#...` (semua navigasi dijawab `index.html`). Versi baru mengganti yang lama otomatis.
+- **Service worker** (`src/sw.ts`, ditulis sendiri dan dibangun `vite-plugin-pwa` dengan strategi `injectManifest`): menyimpan semua berkas aplikasi saat pertama dibuka. Setelah itu kerangka terbuka tanpa jaringan, termasuk alamat seperti `/pair#...` (semua navigasi dijawab `index.html`). Versi baru mengganti yang lama otomatis.
 - **Ikon** (`public/icons/`): dibuat oleh `scripts/make-icons.ts` (`pnpm --filter @agentmon/web icons`) dan ikut di-commit. Ada versi biasa, *maskable* (untuk Android), dan `apple-touch-icon` (iOS). Test memastikan ikon yang di-commit sama dengan hasil skrip.
 - **Pita offline**: muncul di bawah bilah atas saat HP kehilangan jaringan.
 
@@ -105,3 +105,32 @@ Layar keputusan menampilkan diff dengan penampil yang dimuat belakangan (`React.
 Diff 1.500 baris pada 4x: 933 ms, gulir p95 76,5 ms. Jumlah elemen DOM besar (±9.500 untuk 1.000 baris), dan penghematannya (`content-visibility` per hunk sudah dipakai) belum dioptimalkan lebih jauh. **Belum diuji di HP nyata** (Android dan iOS); angka di atas adalah emulasi, dan sudah termasuk pewarnaan (modul warna dimuat setelah gambar awal). Kriteria "responsif di HP kelas menengah" karena itu baru terpenuhi lewat emulasi; pengujian di perangkat nyata dikerjakan di issue 029. Pewarna sempat kuadratik pada baris yang berakhir dengan satu backslash setelah banyak tanda kutip (ditemukan di review, diperbaiki, dijaga tes).
 
 - **Ringkasan perubahan** (`src/approvals/DiffSummaryView.tsx`): di layar keputusan, bagian "Ringkasan perubahan" tampil DI ATAS diff. Komponennya ada di bundle awal (bukan lazy), jadi terbaca tanpa memuat penampil diff, dan tetap tampil walau diff-nya tidak dikirim karena terlalu besar. Kalimat disusun dari data daemon lewat i18n; hal yang ditulis hanya yang terbukti dari diff (lihat `docs/daemon.md`). Diuji dengan jsdom.
+
+## Notifikasi push (`src/push/`, `src/sw.ts`)
+
+Kartu "Notifikasi" di beranda mengaktifkan push untuk HP ini. Backend-nya ada di relay (lihat `relay.md`, bagian Web Push).
+
+**Service worker kustom.** Service worker bawaan `vite-plugin-pwa` tidak bisa menangani `push` dan `notificationclick`, jadi `src/sw.ts` ditulis sendiri dengan perilaku cache yang sama (precache, navigasi dijawab `index.html`, versi baru langsung mengambil alih) ditambah dua penanganan. Isinya tipis; logika yang bisa diuji ada di `push/notification.ts` dan `push/sw-logic.ts`. Ukurannya bertambah (sekitar 43 KB gzip, sebagian besar zod dan kamus teks karena memakai skema dan teks yang sama dengan aplikasi); service worker tidak dihitung dalam batas JS awal 200 KB.
+
+**Setiap push selalu menampilkan notifikasi** (FR-32). Isi kosong, rusak, atau dari versi lain tetap menampilkan notifikasi umum "AgentMon: Ada pembaruan". Di iOS dan Chrome, push yang tidak menampilkan apa pun membuat izin dicabut atau memunculkan notifikasi "situs diperbarui di latar belakang". Teks disusun di HP dari jenis push (izin, selesai, uji), karena kiriman relay hanya berisi jenis dan nomor (FR-34).
+
+**Mengetuk notifikasi:**
+- App **terbuka dan terlihat**: jendelanya difokuskan lalu diminta pindah layar lewat pesan (`agentmon:navigate`), tanpa memuat ulang.
+- App ada tetapi **tidak terlihat** (tersembunyi di latar, dibekukan, atau dibuang OS, yang sering terjadi di Android): halamannya mungkin tidak mendengarkan pesan, jadi alamat tujuan dimuat langsung di jendela itu (`WindowClient.navigate`). Bila itu ditolak (jendela tidak dikendalikan service worker), pesan dikirim sebagai cadangan. Perilaku ini belum dibuktikan di perangkat nyata.
+- App **tertutup**: jendela baru dibuka langsung di layar tujuan: izin ke `/a/<laptop>/<izin>`, selesai ke `/s/<laptop>/<sesi>`, selain itu beranda.
+- Tujuan dibangun dari nomor yang di-encode dan diperiksa sebagai jalur internal (`isSafePath`): tidak pernah dari alamat yang dikirim relay, dan "//host", alamat penuh, serta karakter berbahaya jatuh ke beranda.
+
+**Alur izin** (`push/subscribe.ts`):
+- Izin diminta **hanya dari ketukan tombol "Aktifkan"**, dan sebelum menunggu apa pun (Safari iOS menolak meminta izin tanpa gestur). Tidak pernah otomatis saat halaman dibuka.
+- **iOS di tab Safari**: izin tidak diminta sama sekali; yang tampil panduan "Tambahkan ke Layar Utama" (FR-55). Notifikasi hanya bisa diaktifkan dari aplikasi layar utama.
+- **Izin ditolak**: aplikasi tidak bisa memintanya lagi, jadi hanya penjelasan cara membukanya di pengaturan browser atau HP yang tampil.
+- **Niat pengguna adalah sumber kebenaran** (diingat di `localStorage`, kunci `agentmon.push`; hanya menyala setelah mengaktifkan berhasil). Pengguna yang sudah mengaktifkan lalu kehilangan langganannya (browser membuangnya, atau kunci VAPID relay berganti) dipulihkan diam-diam saat kartu dibuka, karena izin dan niatnya sudah ada. Pengguna yang sudah mematikan tidak pernah dinyalakan lagi: langganan yang tertinggal di browser (mis. `unsubscribe` gagal saat dimatikan) dibuang, bukan didaftarkan ulang. Bila `localStorage` dibersihkan sendirian, niat hilang dan kartu menampilkan belum aktif sampai pengguna mengetuk Aktifkan lagi (data situs yang dibersihkan seluruhnya juga menghapus langganan dan izinnya).
+- **Berlangganan menunggu service worker AKTIF.** `getRegistration()` sudah mengembalikan registrasi selama service worker masih dipasang, tetapi `pushManager.subscribe()` menolak sebelum ia aktif. Itu terjadi pada pemakaian pertama (mis. iOS yang baru menambahkan app ke layar utama lalu langsung mengetuk Aktifkan), jadi ditunggu sampai 10 detik (setelah izin didapat, supaya gestur ketukan tetap utuh); bila tidak kunjung aktif, kartu menyarankan menutup dan membuka ulang aplikasi.
+- **Sinkron ke relay sekali per sesi per alamat langganan**: tiap PUT menulis ke database relay dan memakai jatah laju HP, jadi membuka beranda berkali-kali tidak mengirim ulang (catatan hilang saat halaman dimuat ulang).
+
+### Keterbatasan
+- **Belum diuji di HP sungguhan** (issue uji perangkat nyata). Yang teruji: logika (isi notifikasi, tujuan ketukan, alur izin per keadaan, perangkaian `sw.ts` dengan lingkungan service worker tiruan, dan hasil build), bukan perilaku Android atau iOS asli, mis. apakah Safari benar-benar menampilkan dialog izin dari ketukan itu.
+- **Belum ada pemicu dari relay** (issue pemicu notifikasi): notifikasi baru bisa dicoba dengan `push:test` di relay, dan baru bisa diaktifkan bila relay sudah diberi kunci VAPID.
+- **Satu browser, satu relay.** Langganan push terikat ke satu kunci VAPID, jadi kartu hanya terhubung ke relay pertama bila ada beberapa. Bila relay itu dicabut, kartu menampilkan pesan galat umum, bukan alasan khusus.
+- **Bahasa notifikasi mengikuti bahasa perangkat**, bukan pilihan bahasa di app: service worker tidak bisa membaca `localStorage`.
+- Karena pairing di iOS terpisah antara Safari dan aplikasi layar utama (lihat bagian Pairing), notifikasi harus diaktifkan dari aplikasi layar utama yang sudah dipasangkan.

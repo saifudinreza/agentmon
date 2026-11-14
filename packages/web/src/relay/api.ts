@@ -14,10 +14,13 @@ import {
   type ListedDevice,
   EventsResponseSchema,
   MachinesResponseSchema,
+  PushConfigResponseSchema,
   SessionsResponseSchema,
   type DeviceMachine,
   type Envelope,
   type PendingApproval,
+  type PushConfigResponse,
+  type PushSubscriptionRequest,
   type SessionSummary,
 } from "@agentmon/shared";
 
@@ -44,6 +47,12 @@ export type RelayApi = {
   devices(): Promise<ListedDevice[]>;
   /** Mencabut sebuah perangkat. Berlaku seketika di relay. */
   revokeDevice(deviceId: string): Promise<void>;
+  /** Apakah relay menyalakan push, dan kunci publik VAPID untuk berlangganan. */
+  pushConfig(): Promise<PushConfigResponse>;
+  /** Mendaftarkan langganan push HP ini (menggantikan yang lama). Gagal `bad-response` bila relay menolak bentuknya. */
+  savePushSubscription(subscription: PushSubscriptionRequest): Promise<void>;
+  /** Berhenti menerima notifikasi di HP ini. */
+  removePushSubscription(): Promise<void>;
   sessions(machineId: string): Promise<SessionSummary[]>;
   events(machineId: string, sessionId: string, afterSeq: number, limit?: number): Promise<{ events: Envelope[]; hasMore: boolean }>;
   /** Semua event sesudah `afterSeq`, mengikuti halaman sampai habis. `onPage` dipanggil tiap halaman supaya layar bisa terisi bertahap. */
@@ -67,10 +76,15 @@ export function createRelayApi(options: RelayApiOptions): RelayApi {
   const http = options.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  async function get<T>(path: string, parse: (json: unknown) => T, method: "GET" | "DELETE" = "GET"): Promise<T> {
+  async function get<T>(path: string, parse: (json: unknown) => T, method: "GET" | "DELETE" | "PUT" = "GET", body?: unknown): Promise<T> {
     let response: Response;
     try {
-      response = await http(`${base}${path}`, { method, headers: { authorization: `Bearer ${options.token}` }, signal: AbortSignal.timeout(timeoutMs) });
+      response = await http(`${base}${path}`, {
+        method,
+        headers: { authorization: `Bearer ${options.token}`, ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
     } catch {
       throw new RelayApiError("unreachable");
     }
@@ -97,6 +111,9 @@ export function createRelayApi(options: RelayApiOptions): RelayApi {
     revokeDevice: (deviceId) =>
       get(`/api/devices/${encodeURIComponent(deviceId)}`, () => undefined, "DELETE"),
     approvals: () => get("/api/approvals", (json) => ApprovalsResponseSchema.parse(json).approvals),
+    pushConfig: () => get("/api/push/key", (json) => PushConfigResponseSchema.parse(json)),
+    savePushSubscription: (subscription) => get("/api/push/subscription", () => undefined, "PUT", subscription),
+    removePushSubscription: () => get("/api/push/subscription", () => undefined, "DELETE"),
     sessions: (machineId) => get(`/api/machines/${encodeURIComponent(machineId)}/sessions`, (json) => SessionsResponseSchema.parse(json).sessions),
     events,
     async eventsAfter(machineId, sessionId, afterSeq, onPage) {

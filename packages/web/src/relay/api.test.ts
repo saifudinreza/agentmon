@@ -167,3 +167,63 @@ describe("eventsAfter mengikuti halaman sampai habis", () => {
     expect(all).toHaveLength(200);
   });
 });
+
+describe("push", () => {
+  const SUBSCRIPTION = { endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: { p256dh: `B${"A".repeat(86)}`, auth: "A".repeat(22) } };
+
+  test("pushConfig: GET /api/push/key dengan token, jawabannya divalidasi", async () => {
+    const { api, calls } = setup(json(200, { enabled: true, publicKey: `B${"A".repeat(86)}` }), json(200, { enabled: false }));
+    expect(await api.pushConfig()).toEqual({ enabled: true, publicKey: `B${"A".repeat(86)}` });
+    expect(await api.pushConfig()).toEqual({ enabled: false });
+    expect(calls[0]?.url).toBe(`${RELAY}/api/push/key`);
+    expect(calls[0]?.init.method).toBe("GET");
+    expect((calls[0]?.init.headers as Record<string, string>).authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  test("pushConfig: jawaban yang tidak sesuai kontrak (kunci rusak) -> bad-response", async () => {
+    const { api } = setup(json(200, { enabled: true, publicKey: "pendek" }));
+    expect(await kindOf(api.pushConfig())).toBe("bad-response");
+  });
+
+  test("savePushSubscription: PUT dengan isi JSON, content-type, dan token", async () => {
+    const { api, calls } = setup(json(200, { ok: true }));
+    await api.savePushSubscription(SUBSCRIPTION);
+    expect(calls[0]?.url).toBe(`${RELAY}/api/push/subscription`);
+    expect(calls[0]?.init.method).toBe("PUT");
+    const headers = calls[0]?.init.headers as Record<string, string>;
+    expect(headers.authorization).toBe(`Bearer ${TOKEN}`);
+    expect(headers["content-type"]).toBe("application/json");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual(SUBSCRIPTION);
+  });
+
+  test("savePushSubscription: token tidak pernah masuk ke alamat atau isi", async () => {
+    const { api, calls } = setup(json(200, { ok: true }));
+    await api.savePushSubscription(SUBSCRIPTION);
+    expect(calls[0]?.url).not.toContain(TOKEN);
+    expect(String(calls[0]?.init.body)).not.toContain(TOKEN);
+  });
+
+  test.each([
+    [400, "server"], // langganan ditolak relay
+    [401, "unauthorized"],
+    [429, "rate-limited"],
+    [503, "server"], // push belum dikonfigurasi di relay
+  ] as const)("savePushSubscription: status %i -> %s", async (status, kind) => {
+    const { api } = setup(json(status, { error: "x" }));
+    expect(await kindOf(api.savePushSubscription(SUBSCRIPTION))).toBe(kind);
+  });
+
+  test("removePushSubscription: DELETE tanpa isi, dengan token", async () => {
+    const { api, calls } = setup(json(200, { ok: true }));
+    await api.removePushSubscription();
+    expect(calls[0]?.url).toBe(`${RELAY}/api/push/subscription`);
+    expect(calls[0]?.init.method).toBe("DELETE");
+    expect(calls[0]?.init.body).toBeUndefined();
+    expect((calls[0]?.init.headers as Record<string, string>)["content-type"]).toBeUndefined();
+  });
+
+  test("jaringan putus -> unreachable", async () => {
+    const { api } = setup(new TypeError("fetch gagal"));
+    expect(await kindOf(api.removePushSubscription())).toBe("unreachable");
+  });
+});

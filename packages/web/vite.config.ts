@@ -19,16 +19,18 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
-      // Versi baru aplikasi mengganti yang lama secara otomatis di kunjungan berikutnya.
+      // Service worker ditulis sendiri (src/sw.ts) karena harus menangani push dan ketukan notifikasi, yang tidak
+      // bisa dilakukan service worker bawaan. Daftar berkas yang disimpan disisipkan ke dalamnya saat build.
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.ts",
+      // Versi baru aplikasi mengganti yang lama secara otomatis di kunjungan berikutnya (sw.ts memanggil skipWaiting).
       registerType: "autoUpdate",
       manifest,
-      workbox: {
+      injectManifest: {
         // Semua berkas hasil build disimpan di HP saat pertama dibuka (precache), sehingga
         // kerangka aplikasi terbuka walau tanpa jaringan.
         globPatterns: ["**/*.{js,css,html,png,svg,webmanifest}"],
-        // Navigasi ke alamat mana pun (misalnya /pair#...) dijawab dengan kerangka aplikasi.
-        navigateFallback: "/index.html",
-        cleanupOutdatedCaches: true,
       },
     }),
   ],
