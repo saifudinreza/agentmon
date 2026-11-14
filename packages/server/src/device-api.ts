@@ -9,6 +9,9 @@
 //   GET /api/machines/:machineId/sessions/:sessionId/events?afterSeq=N&limit=M
 //       Event satu sesi, berurutan menurut nomor urut, mulai SETELAH `afterSeq`. HP memakainya untuk
 //       memuat riwayat dan untuk mengambil yang terlewat setelah koneksi putus atau HP dikunci.
+//   GET /api/push/key, PUT /api/push/subscription, DELETE /api/push/subscription
+//       Web Push: apakah push menyala dan kunci publik VAPID, mendaftarkan langganan HP ini (menggantikan yang
+//       lama), dan mencabutnya. Hanya ada bila relay diberi penyimpanan langganan.
 //
 // ANALOGI: arsip kantor. Siapa pun boleh minta berkas, tetapi petugas memeriksa kartu anggota (token HP)
 // dan memastikan laptop yang diminta memang milik anggota itu.
@@ -20,14 +23,17 @@
 //     terdaftar.
 //   - Laju dibatasi per HP, dan ukuran halaman dibatasi (maksimal 500 event).
 //   - CORS hanya untuk asal PWA yang diizinkan.
-import { ApprovalsResponseSchema, DevicesResponseSchema, EventsResponseSchema, type DeviceMachine, type PendingApproval, type SessionSummary } from "@agentmon/shared";
+import { ApprovalsResponseSchema, DevicesResponseSchema, EventsResponseSchema, PushConfigResponseSchema, type DeviceMachine, type PendingApproval, type SessionSummary } from "@agentmon/shared";
 import type { Context, Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { computePendingApprovals } from "./approvals";
 import type { DbDirectory } from "./db/directory";
 import type { PairingService } from "./db/pairing";
+import type { PushStore } from "./db/push";
 import { MAX_PAGE_SIZE, type Store } from "./db/store";
 import { clientAddress } from "./client-ip";
+import { validateSubscription } from "./push";
 import { createKeyedRateLimiter } from "./rate-limit";
 
 export type DeviceApiOptions = {
@@ -38,6 +44,15 @@ export type DeviceApiOptions = {
   devices?: Pick<PairingService, "listPeerDevices" | "revokeDevice">;
   /** Dipanggil setelah sebuah perangkat dicabut, untuk memutus koneksinya seketika. */
   onDeviceRevoked?: (deviceId: string) => void;
+  /**
+   * Web Push. Tanpa ini, /api/push/* tidak dipasang. `vapidPublicKey` kosong berarti push belum dikonfigurasi di relay:
+   * HP diberi tahu `enabled: false` dan pendaftaran langganan ditolak (503).
+   */
+  push?: {
+    store: Pick<PushStore, "replace" | "removeAll">;
+    vapidPublicKey?: string;
+    isAllowedEndpoint: (endpoint: string) => boolean;
+  };
   /** Asal PWA yang boleh memanggil dari browser, misalnya ["https://app.contoh.com"]. */
   allowedOrigins?: string[];
   /** Batas laju per HP (permintaan yang sah). */
@@ -58,6 +73,8 @@ const APPROVAL_LOOKBACK_MS = 30 * 60 * 1000;
 
 const MAX_ID_LENGTH = 200;
 const DEFAULT_EVENTS_LIMIT = 200;
+// Langganan dari browser hanya beberapa ratus byte; batas ini menolak kiriman raksasa sebelum dibaca.
+const MAX_PUSH_BODY_BYTES = 4096;
 
 function bearer(c: Context): string | undefined {
   const match = /^Bearer\s+(\S+)$/i.exec(c.req.header("authorization") ?? "");
@@ -94,8 +111,8 @@ export function mountDeviceApi(app: Hono, options: DeviceApiOptions): void {
     "/api/*",
     cors({
       origin: (origin) => (allowed.has(origin) ? origin : null),
-      allowMethods: ["GET", "DELETE", "OPTIONS"],
-      allowHeaders: ["authorization"],
+      allowMethods: ["GET", "PUT", "DELETE", "OPTIONS"],
+      allowHeaders: ["authorization", "content-type"],
       maxAge: 600,
     }),
   );
@@ -146,6 +163,38 @@ export function mountDeviceApi(app: Hono, options: DeviceApiOptions): void {
       const target = c.req.param("deviceId");
       if (target.length > MAX_ID_LENGTH || !(await peers.revokeDevice({ deviceId: auth.deviceId }, target))) return c.json({ error: "not-found" }, 404);
       options.onDeviceRevoked?.(target);
+      return c.json({ ok: true });
+    });
+  }
+
+  if (options.push) {
+    const push = options.push;
+    // Apakah push menyala, dan kunci publik untuk berlangganan di browser. Kunci publik bukan rahasia, tetapi tetap
+    // hanya diberikan ke HP yang sudah terpasang.
+    app.get("/api/push/key", async (c) => {
+      const auth = await authenticate(c);
+      if (auth instanceof Response) return auth;
+      return c.json(PushConfigResponseSchema.parse(push.vapidPublicKey ? { enabled: true, publicKey: push.vapidPublicKey } : { enabled: false }));
+    });
+    // Mendaftarkan langganan HP ini. Menggantikan langganan lamanya (satu HP, satu langganan).
+    app.put(
+      "/api/push/subscription",
+      bodyLimit({ maxSize: MAX_PUSH_BODY_BYTES, onError: (c) => c.json({ error: "too-large" }, 413) }),
+      async (c) => {
+        const auth = await authenticate(c);
+        if (auth instanceof Response) return auth;
+        if (!push.vapidPublicKey) return c.json({ error: "push-disabled" }, 503);
+        const subscription = validateSubscription(await c.req.json().catch(() => undefined), push.isAllowedEndpoint);
+        if (!subscription) return c.json({ error: "invalid-subscription" }, 400);
+        await push.store.replace(auth.deviceId, { endpoint: subscription.endpoint, p256dh: subscription.keys.p256dh, auth: subscription.keys.auth });
+        return c.json({ ok: true });
+      },
+    );
+    // Berhenti menerima notifikasi di HP ini. Aman dipanggil berulang.
+    app.delete("/api/push/subscription", async (c) => {
+      const auth = await authenticate(c);
+      if (auth instanceof Response) return auth;
+      await push.store.removeAll(auth.deviceId);
       return c.json({ ok: true });
     });
   }

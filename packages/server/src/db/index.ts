@@ -6,5 +6,6 @@
 export * from "./connect";
 export * from "./directory";
 export * from "./pairing";
+export * from "./push";
 export * from "./schema";
 export * from "./store";

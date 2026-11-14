@@ -169,7 +169,7 @@ Relay mengirim frame **`presence`** `{reachable: N}` ke laptop: berapa HP yang d
 
 Daemon memakainya lewat `relayClient.canReachPhone()`: benar hanya bila tersambung ke relay DAN laporan terakhir > 0. Relay mati, belum ada laporan, atau 0 HP berarti daemon **tidak menahan aksi**, sehingga prompt terminal langsung muncul (tidak menunggu 9 menit). Perintah `status` menjelaskan keadaan ini. Tanpa relay yang dikonfigurasi, perilaku lama tetap: jawaban lewat CLI atau halaman lokal.
 
-Keterbatasan: backend push belum ada (issue lain), jadi langganan push belum bisa terdaftar; hitungannya sudah benar begitu tabelnya terisi. Izin yang SUDAH menunggu tidak dilepas bila HP terakhir putus; hanya aksi berikutnya yang kembali ke terminal.
+Keterbatasan: relay sudah bisa menerima langganan push (lihat bagian Web Push), tetapi PWA belum mendaftarkannya (issue service worker), jadi di praktik hitungan ini masih sama dengan HP yang tersambung; hitungannya sudah benar begitu ada langganan. Izin yang SUDAH menunggu tidak dilepas bila HP terakhir putus; hanya aksi berikutnya yang kembali ke terminal.
 
 ## Daftar dan cabut perangkat
 
@@ -186,6 +186,55 @@ Pencabut harus punya hubungan dengan perangkat itu (laptop yang dipasangkan deng
 
 CLI di laptop: `devices` mencetak daftar HP, `revoke <nomor>` mencabutnya (butuh `AGENTMON_RELAY_URL` dan `AGENTMON_RELAY_TOKEN`). Perintah jujur bila relay tidak terjangkau: HP dinyatakan BELUM dicabut.
 
-Keterbatasan: izin yang SUDAH diputuskan oleh HP itu sebelum dicabut tetap berlaku (keputusan lama tidak ditarik). Sambungan yang sedang dalam proses `hello` tepat pada saat pencabutan bisa lolos sebentar; ia tetap tidak bisa memutuskan apa pun karena setiap perintah memeriksa pemasangan, dan ditutup di sambungan berikutnya. Pencabutan diri sendiri dari PWA mengeluarkan HP itu dan memerlukan QR baru. Pemberitahuan push belum ada backend-nya; begitu ada, ia harus memakai `devicesWithPush` yang sudah mengecualikan perangkat tercabut.
+Keterbatasan: izin yang SUDAH diputuskan oleh HP itu sebelum dicabut tetap berlaku (keputusan lama tidak ditarik). Sambungan yang sedang dalam proses `hello` tepat pada saat pencabutan bisa lolos sebentar; ia tetap tidak bisa memutuskan apa pun karena setiap perintah memeriksa pemasangan, dan ditutup di sambungan berikutnya. Pencabutan diri sendiri dari PWA mengeluarkan HP itu dan memerlukan QR baru. Notifikasi push (lihat bagian Web Push) hanya mengambil langganan HP yang masih dipasangkan dan belum dicabut, dan pencabutan juga menghapus langganannya.
 
 Catatan HP hilang: HP yang berbagi laptop yang sama boleh saling mencabut (termasuk pencuri yang memegang HP hilang mencabut HP pemilik). Itu tidak membuka akses baru, dan pemilik pulih dengan `revoke` lalu `pair` di laptop. Untuk HP hilang, jalur yang dianjurkan adalah CLI di laptop.
+
+## Web Push
+
+Relay membangunkan HP yang terkunci lewat layanan push milik browser (Google, Mozilla, Apple), dengan kunci VAPID milik operator relay sendiri: tanpa Firebase atau akun pihak ketiga.
+
+### Menyalakan
+Isi tiga variabel lingkungan (di Render: dashboard, bukan repo). Tanpa ketiganya push mati dan relay tetap berjalan normal.
+
+| Variabel | Isi |
+|---|---|
+| `VAPID_PUBLIC_KEY` | kunci publik (87 karakter) |
+| `VAPID_PRIVATE_KEY` | kunci pribadi (43 karakter), **rahasia** |
+| `VAPID_SUBJECT` | kontak operator yang dilihat layanan push: alamat `https://` (mis. alamat PWA) atau `mailto:` |
+| `PUSH_ALLOWED_HOSTS` | (opsional) akhiran host layanan push tambahan, dipisah koma |
+
+Buat pasangan kunci dengan `pnpm --filter @agentmon/server push:keys` (kunci pribadi ikut tercetak: jangan disalin ke chat, repo, atau log). Relay memeriksa saat mulai bahwa ketiganya lengkap, bentuknya benar, dan kunci publiknya cocok dengan kunci pribadinya; bila tidak, push mati dan alasannya (tanpa nilai kunci) ada di log. **Mengganti kunci membuat semua langganan lama tidak berlaku** (browser mengikat langganan ke kunci publik), jadi HP harus berlangganan ulang.
+
+### Endpoint untuk HP (token HP)
+| Endpoint | Fungsi |
+|---|---|
+| `GET /api/push/key` | `{enabled, publicKey?}`: apakah push menyala dan kunci publik untuk `pushManager.subscribe` |
+| `PUT /api/push/subscription` | mendaftarkan langganan (bentuk `PushSubscription.toJSON()`); **menggantikan** langganan lama HP ini (satu HP, satu langganan) |
+| `DELETE /api/push/subscription` | berhenti menerima notifikasi di HP ini |
+
+Ditolak `400` bila alamat langganan bukan layanan push yang dikenal, atau kunci publik langganan bukan titik P-256 yang sah; `503` bila push belum dikonfigurasi di relay; `413` bila isi lebih dari 4 KiB.
+
+### Yang dijaga
+- **Alamat langganan dibatasi** ke HTTPS di host layanan push yang dikenal (`fcm.googleapis.com`, `*.push.services.mozilla.com`, `*.push.apple.com`, `*.notify.windows.com`, dan subdomainnya). Relay mengirim permintaan HTTP ke alamat itu; tanpa batas, HP yang sudah terpasang bisa menyuruh relay menghubungi alamat internal hosting (SSRF). Layanan sah yang belum ada di daftar bisa ditambah lewat `PUSH_ALLOWED_HOSTS`. Aturan yang sama diperiksa lagi sebelum mengirim, jadi baris lama yang tidak lolos tidak pernah dihubungi dan dihapus.
+  - **Bagian host dibaca langsung dari teksnya** dan hanya huruf, angka, titik, dan strip yang lolos (port 443 boleh). Ini disengaja: pustaka `web-push` menentukan tujuan dengan parser URL lama (`url.parse`), sedangkan `new URL` adalah parser WHATWG, dan keduanya membaca host berbeda untuk alamat seperti `https://169.254.169.254;.fcm.googleapis.com/` atau `https:fcm.googleapis.com/`. Memeriksa lewat satu parser lalu mengirim lewat parser lain akan membuka SSRF. Temuan ini datang dari review PR #55 dan dijaga tes yang menyisipkan setiap karakter ASCII di posisi berbahaya.
+- **Isi push hanya jenis dan nomor** (`{v, kind: approval|done|test, machineId, sessionId?, approvalId?}`): tanpa kode, perintah, nama berkas, atau teks dari agent (FR-34). Skemanya ketat; kolom lain ditolak. Teks notifikasi disusun di HP, dan detailnya dibaca dari relay setelah notifikasi diketuk.
+- **Log tidak memuat alamat langganan** (alamat itu cukup untuk mengirim notifikasi ke HP), kunci, maupun isi push; hanya jumlah dan kode status.
+- **Langganan mati dihapus otomatis**: layanan push menjawab 404 atau 410. Kegagalan sementara (jaringan, 429, 5xx) tidak menghapus apa pun. Jawaban 401 atau 403 (relay ditolak karena salah kunci) tidak menghapus apa pun juga, tetapi dicatat sebagai galat di log.
+- **HP yang dicabut** kehilangan langganannya saat dicabut, dan tidak pernah dihubungi walau barisnya tertinggal. Notifikasi hanya ke HP yang masih dipasangkan dengan laptop terkait.
+- Pengiriman memakai TTL: 10 menit untuk permintaan izin (lebih lama dari itu sudah tidak berguna), 1 jam untuk "agent selesai". Urgensi tinggi hanya untuk izin. Tiap pengiriman punya batas waktu TOTAL (20 detik), karena opsi `timeout` milik `web-push` hanya batas soket diam.
+- **Push mati = langganan tidak dihitung sebagai HP yang bisa dihubungi** (`withPushPresence`): bila VAPID dihapus atau salah isi setelah HP berlangganan, daemon tidak boleh mengira ada HP yang akan diberi notifikasi.
+- Log pengiriman memuat hitungan jawaban per kode (mis. `400x2 410x1`), tanpa alamat. 400 dari layanan push TIDAK menghapus langganan: bila kodenya salah di sisi relay semua jawaban akan 400, dan menghapus berarti kehilangan semua langganan.
+
+### Mencoba pengiriman
+`DATABASE_URL=... VAPID_PUBLIC_KEY=... VAPID_PRIVATE_KEY=... VAPID_SUBJECT=... pnpm --filter @agentmon/server push:test <nomor-hp>` mengirim satu notifikasi uji ke HP itu dan mencetak jumlahnya saja.
+
+### Keterbatasan
+- **Belum terbukti di HP sungguhan.** Yang teruji: enkripsi payload (RFC 8291, dibuka kembali di tes dengan kunci langganan buatan) dan tanda tangan VAPID (RFC 8292) dibuat oleh pustaka `web-push` dan diverifikasi di tes, pengelolaan langganan, serta penghapusan yang mati. Jalur kirim lewat jaringan (`webPushTransport`) hanya diuji dengan pustaka tiruan; aturan alamat dilindungi uji sifat yang memakai parser URL lama yang sama dengan `web-push`. Penerimaan nyata oleh Android dan iOS baru bisa dibuktikan setelah PWA mendaftarkan langganan (issue service worker) dan dicoba di perangkat (issue uji perangkat nyata).
+- **Belum ada pemicu.** Modul pengirim (`createPushService`, `notifyMachine`, `notifyDevice`) sudah ada, tetapi belum dipanggil oleh event izin atau "agent selesai" (issue pemicu notifikasi).
+- Aturan daftar host mengikuti layanan push yang diketahui hari ini. Peramban lain dengan layanan push sendiri perlu `PUSH_ALLOWED_HOSTS`.
+- **Mengganti kunci VAPID.** Langganan lama terikat ke kunci lama: layanan push menjawab 401 atau 403, baris tetap tersimpan (relay tidak bisa membedakan ini dari kunci relay yang salah, jadi tidak menghapus), dan log menjelaskan kemungkinannya. Kunci publik yang dipakai saat berlangganan belum disimpan per baris (butuh migrasi skema), jadi baris lama baru tergantikan saat HP berlangganan ulang. PWA (issue service worker) sebaiknya membandingkan `GET /api/push/key` dengan kunci langganannya dan berlangganan ulang bila berbeda.
+- **Alamat langganan yang sama didaftarkan HP lain dipindahkan ke HP itu** (kasus sah: browser yang sama dipasangkan ulang sebagai HP baru). Menyalahgunakannya butuh mengetahui alamat langganan milik HP lain, yang tidak pernah dikirim ke HP mana pun selain pemiliknya; menolaknya akan memblokir pasang ulang yang sah, jadi dibiarkan.
+- Pendaftaran yang kebetulan menyusul tepat setelah pencabutan bisa meninggalkan satu baris untuk HP yang sudah dicabut. Baris itu tidak pernah dikirimi apa pun (pengambilan menyaring HP yang dicabut).
+- Dua pendaftaran serentak dari HP yang sama dengan alamat berbeda bisa meninggalkan satu baris lebih; baris itu dibersihkan saat layanan push menjawab 404/410 atau pada pendaftaran berikutnya.
+- Satu HP memegang satu langganan: PWA terpasang dan tab browser di HP yang sama memakai langganan yang sama.
