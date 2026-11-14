@@ -20,6 +20,7 @@ import {
   requireMixedHunks,
 } from "./approval";
 import { FileDiffSchema } from "./diff";
+import { DiffSummarySchema } from "./summary";
 import { PolicyResultSchema, RiskSchema } from "./risk";
 
 // Nomor "edisi formulir". Kalau nanti bentuk pesan berubah drastis, naikkan angkanya,
@@ -92,6 +93,9 @@ export const eventPayloads = {
     summary: z.string().optional(), // ringkasan satu aksi untuk dibaca cepat
     // Perubahan berkas yang diusulkan (dihitung daemon), untuk ditampilkan di HP sebelum memutuskan.
     diff: FileDiffSchema.optional(),
+    // Ringkasan deterministik (berkas, jumlah baris, deklarasi yang berubah) untuk dibaca sebelum diff. Tetap ada walau
+    // diff terlalu besar untuk dikirim.
+    diffSummary: DiffSummarySchema.optional(),
     // true bila ada isi (input atau diff) yang terlalu besar dan tidak dikirim utuh ke HP. HP tidak boleh menyetujuinya.
     truncated: z.boolean().optional(),
     expiresAt: isoDate, // batas waktu menjawab

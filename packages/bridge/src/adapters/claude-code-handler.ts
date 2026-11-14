@@ -42,6 +42,7 @@ import type { AgentMonEvent, EventType, FileDiff } from "@agentmon/shared";
 // izin, panel kontrol), HookHandler = bentuk fungsi penangan yang diminta server.
 import { computeToolDiff, type ToolDiffInput } from "../diff";
 import { summarizeDiff } from "../control";
+import { buildDiffSummary } from "../diff-summary";
 import type { HookContext, HookHandler } from "../server";
 // Penerjemah dari file tetangga. "./claude-code" = file claude-code di folder yang sama.
 import type { CheckpointResult } from "../checkpoint";
@@ -312,7 +313,7 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
         toolInput: bounded.input,
         ...(bounded.truncated || diffOmitted ? { truncated: true } : {}),
         // Ringkasan satu baris dan perubahan berkas untuk ditampilkan di HP sebelum memutuskan.
-        ...(diff !== undefined ? { summary: summarizeDiff(diff), ...(diffOmitted ? {} : { diff }) } : {}),
+        ...(diff !== undefined ? { summary: summarizeDiff(diff), diffSummary: buildDiffSummary([diff]), ...(diffOmitted ? {} : { diff }) } : {}),
         expiresAt: ticket.expiresAt,
       },
       hold.sessionId,
