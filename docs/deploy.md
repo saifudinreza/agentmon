@@ -2,7 +2,7 @@
 
 Service worker dan Web Push hanya bekerja lewat HTTPS, jadi relay dan PWA perlu alamat HTTPS publik. Dokumen ini memuat dua jalur: **staging** (Render + Neon + Cloudflare Pages, sesuai PRD §15) dan **tunnel** untuk pengembangan di laptop.
 
-> **Status jujur:** isi repo (cetak biru, perintah, pemeriksa rahasia, pengukur waktu bangun) sudah ada dan diuji di sini. Pembuatan akun, layanan, dan deploy pertama dilakukan pemilik proyek, karena butuh akun dan rahasia yang tidak ada di repo. Angka waktu bangun di bawah kosong sampai diukur di staging sungguhan.
+> **Status jujur:** isi repo (cetak biru, perintah, pemeriksa rahasia, pengukur waktu bangun) sudah ada dan diuji di sini. Pembuatan akun, layanan, dan deploy pertama dilakukan pemilik proyek, karena butuh akun dan rahasia yang tidak ada di repo. Waktu bangun relay sudah diukur di staging sungguhan (tabel di bagian 4). Yang belum dicoba: relay dibangunkan oleh HP sungguhan.
 
 ## 1. Staging
 
@@ -67,6 +67,11 @@ Argumen kedua (menit) membuat skrip mengukur, menunggu sejumlah menit supaya rel
 
 | Tanggal | Layanan | Idle sebelum ukur | Waktu bangun |
 |---|---|---|---|
-| (belum diukur) | | | |
+| 2026-11-14 | Render free, Singapore | 20 menit | 52,3 detik |
+| 2026-11-14 | Render free, Singapore | 20 menit | 41,8 detik |
+
+Diukur dari satu laptop di Indonesia dengan `node tools/measure-wake.mjs <alamat> 20`: ukuran pertama (0,5 detik) bukan cold start karena relay baru dipakai, lalu dua ukuran dingin sesudah 20 menit tanpa permintaan. **Hanya dua sampel dari satu lokasi.** Batas idle sebelum Render menidurkan layanan tidak diverifikasi (jeda 20 menit sudah cukup untuk tidur; jeda yang lebih pendek belum dicoba), dan angka di jam sibuk atau dari lokasi lain bisa berbeda.
+
+**Keputusan untuk staging:** waktu bangun sekitar 40 sampai 50 detik diterima. Event dari laptop tidak hilang (daemon menyimpan antrean dan mengirim ulang), dan pairing atau percobaan manual hanya menunggu sekali setelah relay lama tidak dipakai. Untuk dipakai sehari-hari angka ini terlalu lambat untuk notifikasi yang diharapkan cepat: HP baru diberi tahu setelah relay bangun, jadi izin pertama sesudah relay tidur bisa terlambat hampir satu menit. Opsi sebelum rilis (belum dipilih, butuh keputusan pemilik): paket berbayar yang tidak tidur, atau pemeriksa berkala dari luar yang menjaga relay tetap bangun (tidak diuji di sini, dan mungkin melanggar ketentuan free tier), atau memindahkan relay (PRD §15).
 
 Dasar keputusan: PRD §15 mencatat free tier Render tidur saat idle dan menyebut paket kecil atau Cloudflare Workers + Durable Objects sebagai alternatif. Event dari laptop tidak hilang selama relay tidur (daemon menyimpan antrean dan mengirim ulang), tetapi HP baru menerima notifikasi setelah relay bangun; ukuran di atas menentukan apakah itu bisa diterima.
