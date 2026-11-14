@@ -1,11 +1,12 @@
 import { createECDH, createPublicKey, hkdfSync, createDecipheriv, verify } from "node:crypto";
+import { parse as parseUrl } from "node:url";
 import type { PushPayload } from "@agentmon/shared";
 import webpush from "web-push";
 import { describe, expect, test } from "vitest";
 import type { StoredSubscription } from "./db/push";
 import type { Logger } from "./logger";
 import { fakeBrowser } from "./push-testing";
-import { createEndpointPolicy, createPushService, generateVapidKeys, parseVapidConfig, PushSendError, validateSubscription, type PushTransport, type VapidConfig } from "./push";
+import { createEndpointPolicy, createPushService, generateVapidKeys, parseVapidConfig, PushSendError, validateSubscription, withPushPresence, type PushTransport, type VapidConfig } from "./push";
 
 const keys = generateVapidKeys();
 const env = { VAPID_PUBLIC_KEY: keys.publicKey, VAPID_PRIVATE_KEY: keys.privateKey, VAPID_SUBJECT: "https://agentmon.contoh.com" };
@@ -80,7 +81,55 @@ describe("createEndpointPolicy: hanya layanan push yang dikenal (cegah SSRF)", (
     ["skema lain", "ftp://fcm.googleapis.com/x"],
     ["bukan alamat", "bukan alamat"],
     ["kosong", ""],
+    // Parser lama (dipakai web-push) dan parser WHATWG membaca host berbeda untuk alamat berikut (hasil review PR #55).
+    ["titik koma menyelundupkan host", "https://evil.example;.fcm.googleapis.com/x"],
+    ["titik koma menuju alamat internal", "https://169.254.169.254;.fcm.googleapis.com/latest"],
+    ["tanda petik tunggal", "https://attacker.example'.push.apple.com/x"],
+    ["kurung kurawal", "https://evil.example{.fcm.googleapis.com/x"],
+    ["tanda petik balik", "https://evil.example`.fcm.googleapis.com/x"],
+    ["tanda petik ganda", 'https://evil.example".fcm.googleapis.com/x'],
+    ["titik ideografis (U+3002) dalam bentuk %-sandi", "https://evil.example%E3%80%82fcm.googleapis.com/x"],
+    ["titik ideografis (U+3002) langsung", "https://evil.example。fcm.googleapis.com/x"],
+    ["skema tanpa garis miring", "https:fcm.googleapis.com/x"],
+    ["satu garis miring", "https:/fcm.googleapis.com/x"],
+    ["skema huruf besar", "HTTPS://fcm.googleapis.com/x"],
+    ["spasi di depan", " https://fcm.googleapis.com/x"],
+    ["tab menyelip di host", "https://fcm.goo\tgleapis.com/x"],
+    ["baris baru menyelip di host", "https://evil.example\n.fcm.googleapis.com/x"],
+    ["titik di ujung host", "https://fcm.googleapis.com./x"],
+    ["host kosong", "https:///fcm.googleapis.com/x"],
+    ["IPv6", "https://[::1]/x"],
+    ["backslash menyamar sebagai pemisah dan nama pengguna", "https://fcm.googleapis.com\\@evil.example/x"],
+    ["backslash langsung setelah host", "https://fcm.googleapis.com\\x"],
   ])("ditolak: %s", (_name, endpoint) => expect(allowed(endpoint)).toBe(false));
+
+  test("SIFAT: setiap alamat yang lolos dibaca SAMA oleh parser lama (yang dipakai web-push) dan parser WHATWG, dan host itu layanan push", () => {
+    const legacyHost = (endpoint: string) => parseUrl(endpoint).hostname;
+    // Menyisipkan SETIAP karakter ASCII (dan beberapa non-ASCII) di berbagai posisi alamat yang berbahaya.
+    const specials = [...Array.from({ length: 128 }, (_, code) => String.fromCharCode(code)), "。", "．", "­", "​"];
+    const shapes = [
+      (c: string) => `https://evil.example${c}.fcm.googleapis.com/x`,
+      (c: string) => `https://169.254.169.254${c}.push.apple.com/x`,
+      (c: string) => `https://fcm.googleapis.com${c}.evil.example/x`,
+      (c: string) => `https://${c}fcm.googleapis.com/x`,
+      (c: string) => `https://fcm.googleapis.com${c}/x`,
+      (c: string) => `https:${c}fcm.googleapis.com/x`,
+      (c: string) => `https://evil.example${c}@fcm.googleapis.com/x`,
+    ];
+    let accepted = 0;
+    for (const char of specials) {
+      for (const shape of shapes) {
+        const endpoint = shape(char);
+        if (!allowed(endpoint)) continue;
+        accepted += 1;
+        const host = legacyHost(endpoint);
+        expect(host, JSON.stringify(endpoint)).toBe(new URL(endpoint).hostname);
+        // Host yang dibaca kedua parser harus layanan push itu sendiri atau subdomainnya (DNS-nya di tangan layanan itu).
+        expect(host, JSON.stringify(endpoint)).toMatch(/(^|\.)(fcm\.googleapis\.com|push\.apple\.com)$/);
+      }
+    }
+    expect(accepted).toBeGreaterThan(0); // pengujiannya sendiri tidak kosong
+  });
 
   test("PUSH_ALLOWED_HOSTS menambah layanan, tidak mengganti daftar", () => {
     const extended = createEndpointPolicy(["push.layanan-baru.example", " "]);
@@ -229,6 +278,40 @@ describe("createPushService", () => {
     }
   });
 
+  test("pengiriman yang menggantung dipotong oleh batas waktu total dan slot pekerja bebas lagi", async () => {
+    const logs: string[] = [];
+    const service = createPushService({
+      store: { forMachine: async () => [sub("macet"), sub("lancar")], forDevice: async () => [], removeByIds: async () => undefined },
+      vapid,
+      isAllowedEndpoint: createEndpointPolicy(),
+      transport: async (s) => {
+        if (s.endpoint.endsWith("macet")) await new Promise(() => undefined); // tidak pernah selesai
+      },
+      logger: { info: (m) => logs.push(m), error: (m) => logs.push(m) },
+      concurrency: 1, // bila yang macet menahan satu-satunya pekerja, yang lancar tidak akan pernah terkirim
+      deadlineMs: 40,
+    });
+    const started = Date.now();
+    expect(await service.notifyMachine("m1", payload)).toEqual({ attempted: 2, delivered: 1, removed: 0, failed: 1 });
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(logs.join("\n")).toContain("jaringan");
+  });
+
+  test("log memuat hitungan jawaban per kode, tanpa alamat", async () => {
+    const { service, logs } = setup([sub("a"), sub("b"), sub("c"), sub("d")], async (s) => {
+      const id = s.endpoint.split("/").pop()!;
+      if (id === "a") throw new PushSendError("x", 400);
+      if (id === "b") throw new PushSendError("x", 400);
+      if (id === "c") throw new PushSendError("x", 410);
+    });
+    await service.notifyMachine("m1", payload);
+    const line = logs.find((l) => l.startsWith("INFO push:"))!;
+    expect(line).toContain("1/4 terkirim");
+    expect(line).toContain("400x2");
+    expect(line).toContain("410x1");
+    expect(line).not.toContain("fcm.googleapis.com");
+  });
+
   test("gagal menghapus langganan mati dicatat dan tidak menggagalkan pengiriman", async () => {
     const logs: string[] = [];
     const service = createPushService({
@@ -240,6 +323,22 @@ describe("createPushService", () => {
     });
     expect(await service.notifyMachine("m1", payload)).toEqual({ attempted: 1, delivered: 0, removed: 0, failed: 0 });
     expect(logs.some((l) => l.includes("gagal menghapus"))).toBe(true);
+  });
+});
+
+describe("withPushPresence", () => {
+  const directory = { authenticate: async () => undefined, devicesOf: async () => [], isPaired: async () => false, devicesWithPush: async () => ["d1"] };
+
+  test("push menyala: direktori apa adanya, langganan dihitung", async () => {
+    expect(withPushPresence(directory, true)).toBe(directory);
+    expect(await withPushPresence(directory, true).devicesWithPush?.("m1")).toEqual(["d1"]);
+  });
+
+  test("push mati: langganan yang tertinggal tidak dihitung bisa dihubungi, fungsi lain tetap ada", async () => {
+    const off = withPushPresence(directory, false);
+    expect(off.devicesWithPush).toBeUndefined();
+    expect(await off.devicesOf("m1")).toEqual([]);
+    expect(await off.isPaired("m1", "d1")).toBe(false);
   });
 });
 

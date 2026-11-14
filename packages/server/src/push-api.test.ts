@@ -246,7 +246,17 @@ describe("langganan dan siapa yang dihubungi", () => {
     const { devices } = await import("./db/schema");
     const { eq } = await import("drizzle-orm");
     await handle.db.update(devices).set({ revokedAt: new Date() }).where(eq(devices.id, "d1"));
-    expect(await pushStore.forDevice("d1")).toHaveLength(1);
+    const { pushSubscriptions } = await import("./db/schema");
+    expect(await handle.db.select().from(pushSubscriptions)).toHaveLength(1); // barisnya memang masih ada
+    expect(await pushStore.forDevice("d1")).toEqual([]); // tetapi tidak pernah dikembalikan untuk dikirimi
+    expect(await pushStore.forMachine("m1")).toEqual([]);
+  });
+
+  test("pendaftaran yang menyusul SETELAH pencabutan (balapan) tidak pernah dikirimi notifikasi", async () => {
+    await start();
+    await directory.revokeDevice("d1");
+    await pushStore.replace("d1", { endpoint: fakeBrowser().subscription.endpoint, p256dh: fakeBrowser().subscription.keys.p256dh, auth: fakeBrowser().subscription.keys.auth });
+    expect(await pushStore.forDevice("d1")).toEqual([]);
     expect(await pushStore.forMachine("m1")).toEqual([]);
   });
 

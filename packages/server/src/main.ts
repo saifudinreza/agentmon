@@ -20,7 +20,7 @@ import { createDbDirectory, createPairingService, createPushStore, createStore, 
 import { createMemoryDirectory, type RelayDirectory } from "./directory";
 import { createConsoleLogger } from "./logger";
 import { startRelayServer, type RelayServerOptions } from "./node";
-import { createEndpointPolicy, parseVapidConfig } from "./push";
+import { createEndpointPolicy, parseVapidConfig, withPushPresence } from "./push";
 
 const logger = createConsoleLogger();
 
@@ -45,7 +45,6 @@ if (process.env.DATABASE_URL) {
   const eventStore = createStore(database.db);
   retention = startRetention({ store: eventStore, logger });
   const dbDirectory = createDbDirectory(database.db);
-  directory = dbDirectory;
   // Asal PWA yang boleh memanggil relay dari browser (pairing dan API baca riwayat).
   const allowedOrigins = (process.env.PAIRING_ALLOWED_ORIGINS ?? "")
     .split(",")
@@ -69,6 +68,8 @@ if (process.env.DATABASE_URL) {
     ...(vapid.config ? { vapidPublicKey: vapid.config.publicKey } : {}),
   };
   deviceApi = { directory: dbDirectory, store: eventStore, devices: pairing.pairing, allowedOrigins, trustProxy: process.env.TRUST_PROXY === "1", push };
+  // Push mati: langganan yang masih tersimpan tidak dihitung sebagai HP yang bisa dihubungi (lihat withPushPresence).
+  directory = withPushPresence(dbDirectory, vapid.config !== undefined);
 } else {
   const machineToken = process.env.RELAY_DEV_MACHINE_TOKEN;
   const deviceToken = process.env.RELAY_DEV_DEVICE_TOKEN;

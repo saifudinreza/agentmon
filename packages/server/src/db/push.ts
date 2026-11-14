@@ -26,7 +26,7 @@ export type PushStore = {
   removeByIds(ids: readonly string[]): Promise<void>;
   /** Langganan semua HP yang masih dipasangkan dengan laptop ini dan belum dicabut. */
   forMachine(machineId: string): Promise<StoredSubscription[]>;
-  /** Langganan satu HP (kosong bila belum berlangganan). */
+  /** Langganan satu HP yang belum dicabut (kosong bila belum berlangganan). */
   forDevice(deviceId: string): Promise<StoredSubscription[]>;
 };
 
@@ -71,7 +71,12 @@ export function createPushStore(db: Database): PushStore {
     },
 
     async forDevice(deviceId) {
-      return db.select(columns).from(pushSubscriptions).where(eq(pushSubscriptions.deviceId, deviceId));
+      // HP yang dicabut tidak dikembalikan walau barisnya masih ada (mis. pendaftaran yang menyusul setelah pencabutan).
+      return db
+        .select(columns)
+        .from(pushSubscriptions)
+        .innerJoin(devices, eq(devices.id, pushSubscriptions.deviceId))
+        .where(and(eq(pushSubscriptions.deviceId, deviceId), isNull(devices.revokedAt)));
     },
   };
 }

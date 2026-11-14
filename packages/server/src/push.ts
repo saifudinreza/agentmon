@@ -20,6 +20,7 @@ import { createECDH } from "node:crypto";
 import { PushPayloadSchema, PushSubscriptionRequestSchema, VAPID_PUBLIC_KEY_PATTERN, type PushPayload, type PushSubscriptionRequest } from "@agentmon/shared";
 import webpush from "web-push";
 import type { PushStore, StoredSubscription } from "./db/push";
+import type { RelayDirectory } from "./directory";
 import { silentLogger, type Logger } from "./logger";
 
 // ---- Kunci VAPID -----------------------------------------------------------------------
@@ -73,17 +74,46 @@ const KNOWN_PUSH_HOSTS = [
 export function createEndpointPolicy(extraHosts: readonly string[] = []): (endpoint: string) => boolean {
   const hosts = [...KNOWN_PUSH_HOSTS, ...extraHosts.map((h) => h.trim().toLowerCase()).filter((h) => h !== "")];
   return (endpoint) => {
-    let url: URL;
+    // PENTING: pustaka web-push menentukan tujuan dengan parser URL LAMA (url.parse), sedangkan `new URL` adalah parser
+    // WHATWG, dan keduanya tidak sepakat untuk karakter seperti ; ' { ` " atau "https:host" tanpa garis miring. Memeriksa
+    // host lewat satu parser lalu mengirim lewat parser lain membuka SSRF ("https://169.254.169.254;.fcm.googleapis.com/"
+    // terbaca host fcm di satu sisi dan 169.254.169.254 di sisi lain). Karena itu bagian host dibaca LANGSUNG dari teksnya
+    // dan hanya karakter nama host biasa yang lolos: tidak ada karakter yang bisa ditafsirkan berbeda.
+    if (!endpoint.startsWith("https://")) return false;
+    // Backslash tidak memotong apa pun di sini, jadi alamat yang memuatnya di bagian host ditolak oleh aturan karakter di bawah.
+    const authority = endpoint.slice("https://".length).split(/[/?#]/, 1)[0] ?? "";
+    const match = /^([A-Za-z0-9.-]+)(?::443)?$/.exec(authority);
+    if (!match) return false; // nama pengguna (@), karakter aneh, port lain, atau kosong
+    const host = match[1]!.toLowerCase();
+    // Pengaman kedua: parser WHATWG harus membaca host yang sama.
+    let parsedHost: string;
     try {
-      url = new URL(endpoint);
+      parsedHost = new URL(endpoint).hostname;
     } catch {
       return false;
     }
-    if (url.protocol !== "https:" || url.username !== "" || url.password !== "") return false;
-    if (url.port !== "" && url.port !== "443") return false;
-    const host = url.hostname.toLowerCase();
+    if (parsedHost !== host) return false;
     return hosts.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
   };
+}
+
+/**
+ * Saat push mati (kunci VAPID belum diisi atau salah), langganan yang masih tersimpan tidak boleh dihitung sebagai
+ * HP yang "bisa dihubungi": tidak akan ada notifikasi yang dikirim, dan daemon yang mengira ada HP akan menahan aksi
+ * menunggu keputusan yang tidak pernah diminta.
+ */
+export function withPushPresence<D extends RelayDirectory>(directory: D, pushEnabled: boolean): RelayDirectory {
+  return pushEnabled ? directory : { ...directory, devicesWithPush: undefined };
+}
+
+// Batas waktu TOTAL satu pengiriman. Opsi `timeout` milik web-push hanya batas soket diam: server yang menetes satu
+// byte tiap beberapa detik bisa menahan satu pekerja tanpa batas.
+function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new PushSendError("batas waktu pengiriman terlewati")), ms);
+  });
+  return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
 }
 
 /** Memeriksa langganan dari HP: bentuknya, alamatnya, dan bahwa kunci publiknya benar-benar titik kurva P-256. */
@@ -164,7 +194,10 @@ export type PushServiceOptions = {
   logger?: Logger;
   /** Berapa pengiriman berjalan bersamaan. */
   concurrency?: number;
+  /** Batas soket diam untuk pustaka push. */
   timeoutMs?: number;
+  /** Batas waktu TOTAL satu pengiriman, apa pun yang terjadi di jaringan. */
+  deadlineMs?: number;
 };
 
 // Batas ukuran Web Push 4096 byte setelah dienkripsi; isi yang sah jauh di bawah ini.
@@ -177,6 +210,7 @@ export function createPushService(options: PushServiceOptions): PushService {
   const logger = options.logger ?? silentLogger;
   const concurrency = Math.max(1, options.concurrency ?? 10);
   const timeoutMs = options.timeoutMs ?? 10_000;
+  const deadlineMs = options.deadlineMs ?? 20_000;
 
   async function deliver(subscriptions: StoredSubscription[], payload: PushPayload): Promise<PushResult> {
     // Isi yang tidak sah adalah kesalahan pemanggil, bukan kegagalan jaringan: lempar, jangan diam.
@@ -187,6 +221,9 @@ export function createPushService(options: PushServiceOptions): PushService {
     const result: PushResult = { attempted: 0, delivered: 0, removed: 0, failed: 0 };
     const dead: string[] = [];
     let keyRejected = false;
+    // Hitungan jawaban bukan-sukses per kode (untuk operator: 400 terus-menerus berarti ada yang salah di sisi kita).
+    const outcomes = new Map<string, number>();
+    const tally = (key: string) => outcomes.set(key, (outcomes.get(key) ?? 0) + 1);
 
     // Baris lama yang alamatnya tidak lolos aturan sekarang tidak pernah dihubungi; dihapus saja.
     const sendable = subscriptions.filter((s) => {
@@ -200,10 +237,14 @@ export function createPushService(options: PushServiceOptions): PushService {
       for (let sub = queue.shift(); sub; sub = queue.shift()) {
         result.attempted += 1;
         try {
-          await transport(sub, body, { ttlSeconds: TTL_SECONDS[checked.kind], urgency: checked.kind === "approval" ? "high" : "normal", vapid: options.vapid, timeoutMs });
+          await withDeadline(
+            transport(sub, body, { ttlSeconds: TTL_SECONDS[checked.kind], urgency: checked.kind === "approval" ? "high" : "normal", vapid: options.vapid, timeoutMs }),
+            deadlineMs,
+          );
           result.delivered += 1;
         } catch (error) {
           const status = error instanceof PushSendError ? error.statusCode : undefined;
+          tally(status === undefined ? "jaringan" : String(status));
           if (status === 404 || status === 410) dead.push(sub.id);
           else {
             result.failed += 1;
@@ -223,9 +264,14 @@ export function createPushService(options: PushServiceOptions): PushService {
       }
     }
     // Dicatat sekali per pengiriman, hanya angka. Penolakan kunci dicatat tegas: itu salah konfigurasi relay.
-    if (keyRejected) logger.error("push: layanan push menolak kunci VAPID relay (401/403); periksa VAPID_PUBLIC_KEY dan VAPID_PRIVATE_KEY");
+    if (keyRejected) {
+      logger.error(
+        "push: layanan push menolak relay (401/403). Periksa VAPID_PUBLIC_KEY dan VAPID_PRIVATE_KEY; bila kunci baru saja diganti, HP harus berlangganan ulang karena langganan lama terikat ke kunci lama",
+      );
+    }
     if (result.attempted > 0 || result.removed > 0) {
-      logger.info(`push: ${result.delivered}/${result.attempted} terkirim, ${result.failed} gagal, ${result.removed} langganan mati dihapus`);
+      const codes = [...outcomes].map(([code, count]) => `${code}x${count}`).join(" ");
+      logger.info(`push: ${result.delivered}/${result.attempted} terkirim, ${result.failed} gagal, ${result.removed} langganan mati dihapus${codes ? ` (jawaban: ${codes})` : ""}`);
     }
     return result;
   }
