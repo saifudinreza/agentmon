@@ -54,6 +54,7 @@ function FileLine({ file }: { file: FileSummary }) {
         </p>
       )}
       {textual && file.language === undefined && <p className="mt-0.5 text-xs text-muted">{t("summary.unknownLanguage")}</p>}
+      {textual && file.language !== undefined && <p className="mt-0.5 text-xs text-muted">{t("summary.decl.caveat")}</p>}
     </li>
   );
 }
@@ -63,7 +64,7 @@ export function DiffSummaryView({ summary }: { summary: DiffSummary }) {
   if (summary.files.length === 0) return null;
   return (
     <div className="text-sm">
-      <p className="font-medium">{t("summary.count", { count: summary.files.length })}</p>
+      <p className="font-medium">{summary.moreFiles ? t("summary.countMore", { count: summary.files.length }) : t("summary.count", { count: summary.files.length })}</p>
       <ul className="divide-y divide-line">
         {summary.files.map((file, i) => (
           <FileLine key={`${i}:${file.path}`} file={file} />

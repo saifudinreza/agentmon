@@ -164,3 +164,39 @@ describe("languageOfPath", () => {
     for (const path of ["a.txt", "README", "a.java", "Makefile", "a.ts.bak"]) expect(languageOfPath(path)).toBeUndefined();
   });
 });
+
+describe("tidak mengarang deklarasi (hasil review)", () => {
+  const decls = (lines: L[], path = "a.ts") => only(textDiff(path, [hunk(lines)])).declarations;
+
+  test("kata yang hanya MENGANDUNG 'function' bukan deklarasi (functionality, functions, functionName)", () => {
+    expect(decls([["add", "functionality.enable();"], ["add", "functions.push(x);"], ["add", "functionName();"], ["add", "function_call(1)"]])).toBeUndefined();
+  });
+
+  test("function* (generator) dan function dengan banyak spasi tetap dikenali", () => {
+    expect(decls([["add", "function* gen() {}"], ["add", "function    lebar() {}"], ["add", "async function  tunggu() {}"]])).toEqual([
+      { name: "gen", kind: "function", status: "added" },
+      { name: "lebar", kind: "function", status: "added" },
+      { name: "tunggu", kind: "function", status: "added" },
+    ]);
+  });
+
+  test("nama yang terpotong (non-ASCII atau karakter kontrol) tidak dilaporkan sebagai nama lengkap", () => {
+    expect(decls([["add", "function café() {}"], ["add", "function a‮b() {}"]])).toBeUndefined();
+    expect(decls([["add", "def café():"]], "m.py")).toBeUndefined();
+    expect(decls([["add", "function normal() {}"]])).toEqual([{ name: "normal", kind: "function", status: "added" }]);
+  });
+
+  test("deklarasi yang hanya dipindah atau diindentasi ulang (teks sama) tidak dicantumkan sebagai 'diubah'", () => {
+    expect(decls([["remove", "function pindah(a) {"], ["add", "    function   pindah(a) {"]])).toBeUndefined();
+    // Tanda tangan benar-benar berbeda: tetap 'diubah'.
+    expect(decls([["remove", "function ubah(a) {"], ["add", "function ubah(a, b) {"]])).toEqual([{ name: "ubah", kind: "function", status: "changed" }]);
+  });
+
+  test("Go: nama sama dengan receiver berbeda adalah deklarasi berbeda, bukan 'diubah'", () => {
+    expect(decls([["remove", "func (a *A) Run() {"], ["add", "func (b *B) Run() {"]], "m.go")).toEqual([
+      { name: "Run", kind: "function", status: "removed" },
+      { name: "Run", kind: "function", status: "added" },
+    ]);
+    expect(decls([["remove", "func (a *A) Run() {"], ["add", "func (a *A) Run(x int) {"]], "m.go")).toEqual([{ name: "Run", kind: "function", status: "changed" }]);
+  });
+});

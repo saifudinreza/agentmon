@@ -41,7 +41,7 @@ describe("DiffSummaryView: kalimat dari data ringkasan", () => {
     });
     expect(screen.getByText("1 berkas terlibat")).toBeTruthy();
     expect(screen.getByText("src/a.ts: +12 baris, -3 baris, di 2 bagian")).toBeTruthy();
-    expect(screen.getByText(/Deklarasi pada baris yang berubah:/).textContent).toContain("fungsi salam (diubah), kelas Baru (ditambahkan), tipe Lama (dihapus)");
+    expect(screen.getByText(/Deklarasi yang dikenali pada baris yang berubah:/).textContent).toContain("fungsi salam (baris deklarasinya diubah), kelas Baru (ditambahkan), tipe Lama (dihapus)");
     expect(screen.getByText(/bukan penilaian tentang maksud perubahan/)).toBeTruthy();
   });
 
@@ -49,12 +49,12 @@ describe("DiffSummaryView: kalimat dari data ringkasan", () => {
     renderView({ files: [{ path: "catatan.txt", change: "modified", added: 2, removed: 0, hunks: 1 }] });
     expect(screen.getByText("catatan.txt: +2 baris, -0 baris, di 1 bagian")).toBeTruthy();
     expect(screen.getByText(/Bahasa berkas ini tidak dikenali/)).toBeTruthy();
-    expect(screen.queryByText(/Deklarasi pada baris/)).toBeNull();
+    expect(screen.queryByText(/Deklarasi yang dikenali/)).toBeNull();
   });
 
   test("bahasa dikenal tanpa deklarasi berubah: tanpa baris deklarasi dan tanpa keterangan bahasa", () => {
     renderView({ files: [{ path: "a.ts", change: "modified", added: 1, removed: 1, hunks: 1, language: "javascript" }] });
-    expect(screen.queryByText(/Deklarasi pada baris/)).toBeNull();
+    expect(screen.queryByText(/Deklarasi yang dikenali/)).toBeNull();
     expect(screen.queryByText(/tidak dikenali/)).toBeNull();
   });
 
@@ -79,7 +79,7 @@ describe("DiffSummaryView: kalimat dari data ringkasan", () => {
       ],
       moreFiles: true,
     });
-    expect(screen.getByText("2 berkas terlibat")).toBeTruthy();
+    expect(screen.getByText("2 berkas pertama dicantumkan")).toBeTruthy();
     expect(screen.getByText(/dan lainnya/, { selector: "p" })).toBeTruthy();
     expect(screen.getByText("Berkas lain tidak dicantumkan.")).toBeTruthy();
   });
@@ -155,7 +155,7 @@ describe("ringkasan di layar keputusan", () => {
     await waitFor(() => expect(stores[0]?.getState().approvalsLoaded).toBe(true));
     expect(screen.getByText("Ringkasan perubahan")).toBeTruthy();
     expect(screen.getByText("src/a.ts: +6000 baris, -20 baris, di 40 bagian")).toBeTruthy();
-    expect(container.textContent).toContain("fungsi hitung (diubah)");
+    expect(container.textContent).toContain("fungsi hitung (baris deklarasinya diubah)");
     expect(container.querySelector("[data-diff-viewer]")).toBeNull(); // penampil tidak dimuat sama sekali
     // Urutan: ringkasan sebelum diff.
     const titles = [...container.querySelectorAll("h3")].map((h) => h.textContent);
@@ -173,5 +173,23 @@ describe("ringkasan di layar keputusan", () => {
     await act(async () => connection.onReady());
     await waitFor(() => expect(stores[0]?.getState().approvalsLoaded).toBe(true));
     expect(screen.queryByText("Ringkasan perubahan")).toBeNull();
+  });
+});
+
+describe("DiffSummaryView: kejujuran soal batas deteksi", () => {
+  test("bahasa dikenal: catatan keterbatasan tampil, juga saat daftar deklarasi kosong (kosong bukan bukti tidak ada yang berubah)", () => {
+    renderView({ files: [{ path: "a.ts", change: "modified", added: 1, removed: 1, hunks: 1, language: "javascript" }] });
+    expect(screen.getByText(/daftar kosong bukan bukti tidak ada yang berubah/)).toBeTruthy();
+  });
+
+  test("berkas biner tidak mendapat catatan deteksi", () => {
+    renderView({ files: [{ path: "x.bin", change: "binary" }] });
+    expect(screen.queryByText(/Deteksi per baris/)).toBeNull();
+  });
+
+  test("daftar berkas dipotong: menyebut 'N berkas pertama dicantumkan', bukan seolah jumlah totalnya", () => {
+    renderView({ files: Array.from({ length: 50 }, (_, i) => ({ path: `f${i}.ts`, change: "binary" as const })), moreFiles: true });
+    expect(screen.getByText("50 berkas pertama dicantumkan")).toBeTruthy();
+    expect(screen.queryByText("50 berkas terlibat")).toBeNull();
   });
 });
