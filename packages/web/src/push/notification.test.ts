@@ -2,7 +2,7 @@ import type { PushPayload } from "@agentmon/shared";
 import { describe, expect, test } from "vitest";
 import { en } from "../i18n/en";
 import { id } from "../i18n/id";
-import { describePush, isSafePath, localeFor, NAVIGATE_MESSAGE, parseNavigateMessage, parsePush, pathFor } from "./notification";
+import { describePush, isSafePath, localeFor, MAX_PATH_LENGTH, NAVIGATE_MESSAGE, parseNavigateMessage, parsePush, pathFor } from "./notification";
 
 const raw = (payload: Partial<PushPayload> & { kind: PushPayload["kind"] }) => JSON.stringify({ v: 1, machineId: "m1", ...payload });
 
@@ -118,7 +118,7 @@ describe("isSafePath", () => {
     "/a#frag",
     "/a:b",
     "/‮",
-    `/${"a".repeat(700)}`,
+    `/${"a".repeat(5000)}`,
     undefined,
     null,
     42,
@@ -173,5 +173,19 @@ describe("pathFor: nomor dengan tanda yang tidak di-encode oleh encodeURICompone
     const [, , machine, approval] = path.split("/");
     expect(decodeURIComponent(machine!)).toBe(value);
     expect(decodeURIComponent(approval!)).toBe(value);
+  });
+});
+
+describe("pathFor: nomor terpanjang yang sah tetap lolos (hasil review PR #58)", () => {
+  test.each([
+    ["ASCII dengan karakter yang di-encode", "m".repeat(200), "a:".repeat(100)],
+    ["huruf dua byte", "\u00e9".repeat(200), "\u00e9".repeat(200)],
+    ["huruf tiga byte", "\u65e5".repeat(200), "\u65e5".repeat(200)],
+    ["emoji", "\u{1F600}".repeat(100), "\u{1F600}".repeat(100)],
+  ])("%s", (_name, machineId, approvalId) => {
+    const path = pathFor({ v: 1, kind: "approval", machineId, approvalId });
+    expect(path.length).toBeLessThanOrEqual(MAX_PATH_LENGTH);
+    expect(isSafePath(path)).toBe(true);
+    expect(path.startsWith("/a/")).toBe(true); // tidak jatuh ke beranda
   });
 });

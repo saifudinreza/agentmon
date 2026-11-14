@@ -1,6 +1,6 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { FAKE_VAPID_PUBLIC_KEY } from "../relay/fake-relay";
-import { checkPush, decodeServerKey, disablePush, enablePush } from "./subscribe";
+import { activeRegistration, checkPush, currentPushEnv, decodeServerKey, disablePush, enablePush, type RegistrationLike } from "./subscribe";
 import { AUTH, IOS_APP, IOS_TAB, P256DH, setupPush } from "./testing";
 
 describe("decodeServerKey", () => {
@@ -99,7 +99,7 @@ describe("checkPush: keadaan relay dan izin", () => {
   });
 
   test("izin ada dan langganan masih ada: on, dan relay disamakan (memulihkan relay yang kehilangan langganan)", async () => {
-    const s = setupPush({ permission: "granted", existing: true });
+    const s = setupPush({ permission: "granted", existing: true, intent: true });
     expect(await checkPush(s.env)).toEqual({ kind: "on" });
     expect(s.registration.pushManager.subscribe).not.toHaveBeenCalled();
     expect(s.relay.data.push.saved).toEqual({ endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: { p256dh: P256DH, auth: AUTH } });
@@ -115,7 +115,7 @@ describe("checkPush: keadaan relay dan izin", () => {
   });
 
   test("kunci relay berganti: langganan lama dibuang dan dibuat ulang dengan kunci baru", async () => {
-    const s = setupPush({ permission: "granted", existing: "other-key" });
+    const s = setupPush({ permission: "granted", existing: "other-key", intent: true });
     expect(await checkPush(s.env)).toEqual({ kind: "on" });
     expect(s.log.filter((l) => l.startsWith("browser:"))).toEqual(["browser:unsubscribe", "browser:subscribe"]);
     const used = vi.mocked(s.registration.pushManager.subscribe).mock.calls[0]![0];
@@ -129,15 +129,109 @@ describe("checkPush: keadaan relay dan izin", () => {
   });
 
   test("relay menolak menyimpan: error saat memeriksa", async () => {
-    const s = setupPush({ permission: "granted", existing: true });
+    const s = setupPush({ permission: "granted", existing: true, intent: true });
     s.relay.fail.pushSave = new Error("503");
     expect(await checkPush(s.env)).toEqual({ kind: "error", during: "check" });
   });
 
   test("langganan dari browser yang tidak lengkap (tanpa kunci) tidak dikirim ke relay", async () => {
-    const s = setupPush({ permission: "granted", existing: true, badSubscription: true });
+    const s = setupPush({ permission: "granted", existing: true, intent: true, badSubscription: true });
     expect(await checkPush(s.env)).toEqual({ kind: "error", during: "check" });
     expect(s.api.savePushSubscription).not.toHaveBeenCalled();
+  });
+});
+
+describe("checkPush: niat pengguna adalah sumber kebenaran (hasil review PR #58)", () => {
+  test("langganan masih ada tetapi niat mati (mis. unsubscribe gagal saat dimatikan): off, dibuang, TIDAK didaftarkan ulang ke relay", async () => {
+    const s = setupPush({ permission: "granted", existing: true, intent: false });
+    expect(await checkPush(s.env)).toEqual({ kind: "off" });
+    expect(s.log).toContain("browser:unsubscribe");
+    expect(s.current()).toBeNull();
+    expect(s.api.savePushSubscription).not.toHaveBeenCalled();
+    expect(s.getIntent()).toBe(false);
+  });
+
+  test("langganan yatim yang tidak bisa dibuang tetap tidak didaftarkan ulang dan tidak menyalakan niat", async () => {
+    const s = setupPush({ permission: "granted", existing: true, intent: false, unsubscribeFails: true });
+    expect(await checkPush(s.env)).toEqual({ kind: "off" });
+    expect(s.api.savePushSubscription).not.toHaveBeenCalled();
+    expect(s.getIntent()).toBe(false);
+  });
+
+  test("mematikan lalu membuka kartu lagi, walau unsubscribe di browser gagal: tetap off (skenario temuan)", async () => {
+    const s = setupPush({ permission: "granted", existing: true, intent: true, unsubscribeFails: true });
+    await disablePush(s.env); // unsubscribe gagal, relay berhasil
+    expect(s.current()).not.toBeNull(); // langganannya memang masih ada di browser
+    expect(await checkPush(s.env)).toEqual({ kind: "off" });
+    expect(s.relay.data.push.saved).toBeUndefined();
+  });
+});
+
+describe("sinkron ke relay sekali per sesi (hasil review PR #58)", () => {
+  test("kartu dibuka berkali-kali: relay menerima PUT hanya sekali per alamat", async () => {
+    const s = setupPush({ permission: "granted", existing: true, intent: true });
+    s.env.synced = new Set();
+    expect(await checkPush(s.env)).toEqual({ kind: "on" });
+    expect(await checkPush(s.env)).toEqual({ kind: "on" });
+    expect(await checkPush(s.env)).toEqual({ kind: "on" });
+    expect(s.api.savePushSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  test("alamat berbeda (langganan dibuat ulang) dikirim lagi", async () => {
+    const s = setupPush({ permission: "granted", existing: true, intent: true });
+    s.env.synced = new Set(["https://alamat-lain.example/x"]);
+    await checkPush(s.env);
+    expect(s.api.savePushSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  test("mengaktifkan mencatat alamatnya, mematikan menghapus catatan (aktifkan lagi mengirim ulang)", async () => {
+    const s = setupPush({ permission: "granted" });
+    s.env.synced = new Set();
+    await enablePush(s.env);
+    expect(s.env.synced.size).toBe(1);
+    await checkPush(s.env);
+    expect(s.api.savePushSubscription).toHaveBeenCalledTimes(1); // pemeriksaan sesudah aktifkan tidak mengirim lagi
+    await disablePush(s.env);
+    expect(s.env.synced.size).toBe(0);
+  });
+
+  test("tanpa catatan sesi (env biasa di tes): selalu dikirim", async () => {
+    const s = setupPush({ permission: "granted", existing: true, intent: true });
+    await checkPush(s.env);
+    await checkPush(s.env);
+    expect(s.api.savePushSubscription).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("activeRegistration: menunggu service worker aktif (hasil review PR #58)", () => {
+  const active = { active: {}, pushManager: {} } as unknown as RegistrationLike;
+  const installing = { active: null, pushManager: {} } as unknown as RegistrationLike;
+  const activated = { active: {}, pushManager: {}, id: "aktif" } as unknown as RegistrationLike;
+
+  test("tidak ada registrasi: undefined, tanpa menunggu", async () => {
+    expect(await activeRegistration({ getRegistration: async () => undefined, ready: new Promise(() => undefined) })).toBeUndefined();
+  });
+
+  test("sudah aktif: langsung dikembalikan, ready tidak ditunggu", async () => {
+    expect(await activeRegistration({ getRegistration: async () => active, ready: new Promise(() => undefined) })).toBe(active);
+  });
+
+  test("masih dipasang: menunggu sampai ready, lalu mengembalikan registrasi yang aktif", async () => {
+    let finish!: (registration: RegistrationLike) => void;
+    const ready = new Promise<RegistrationLike>((resolve) => (finish = resolve));
+    const pending = activeRegistration({ getRegistration: async () => installing, ready }, 5_000);
+    finish(activated);
+    expect(await pending).toBe(activated);
+  });
+
+  test("tidak kunjung aktif: undefined setelah batas waktu (bukan menggantung)", async () => {
+    const started = Date.now();
+    expect(await activeRegistration({ getRegistration: async () => installing, ready: new Promise(() => undefined) }, 30)).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  test("ready ditolak: undefined, bukan galat", async () => {
+    expect(await activeRegistration({ getRegistration: async () => installing, ready: Promise.reject(new Error("x")) }, 1000)).toBeUndefined();
   });
 });
 
@@ -248,5 +342,32 @@ describe("disablePush", () => {
     const s = setupPush({ permission: "granted", existing: false });
     expect(await disablePush(s.env)).toEqual({ kind: "off" });
     expect(s.api.removePushSubscription).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("currentPushEnv: perangkaian dengan browser (hasil review PR #58)", () => {
+  const installing = { active: null, pushManager: {}, id: "baru-dipasang" };
+  const activated = { active: {}, pushManager: {}, id: "aktif" };
+
+  afterEach(() => {
+    delete (navigator as unknown as Record<string, unknown>).serviceWorker;
+  });
+
+  test("registrasi yang masih dipasang ditunggu sampai aktif (bukan langsung dipakai subscribe)", async () => {
+    let activate!: (r: unknown) => void;
+    const ready = new Promise((resolve) => (activate = resolve));
+    Object.defineProperty(navigator, "serviceWorker", { value: { getRegistration: async () => installing, ready }, configurable: true });
+    const env = currentPushEnv(setupPush().api);
+    const pending = env.getRegistration!();
+    let settled = false;
+    void pending.then(() => (settled = true));
+    await Promise.resolve();
+    expect(settled).toBe(false); // belum aktif: belum dikembalikan
+    activate(activated);
+    expect(await pending).toBe(activated);
+  });
+
+  test("tanpa service worker di browser: tidak ada getRegistration", () => {
+    expect(currentPushEnv(setupPush().api).getRegistration).toBeUndefined();
   });
 });

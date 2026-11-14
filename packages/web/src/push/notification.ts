@@ -28,8 +28,12 @@ export type NotificationContent = {
  * Jalur layar di dalam aplikasi: diawali SATU garis miring, hanya karakter alamat yang aman. Menolak "//host"
  * (alamat protokol-relatif ke situs lain), backslash, titik dua, dan karakter kontrol.
  */
+// Batas panjang: nomor sah bisa sampai 200 karakter dan di-encode hingga 12 kali lipat (UTF-8), jadi jalur yang sah
+// bisa mencapai beberapa ribu karakter. Batas yang lebih kecil membuat ketukan jatuh ke beranda (ditemukan review PR #58).
+export const MAX_PATH_LENGTH = 4096;
+
 export function isSafePath(path: unknown): path is string {
-  return typeof path === "string" && path.length <= 600 && /^\/(?![/\\])[A-Za-z0-9\-._~%/]*$/.test(path);
+  return typeof path === "string" && path.length <= MAX_PATH_LENGTH && /^\/(?![/\\])[A-Za-z0-9\-._~%/]*$/.test(path);
 }
 
 /** Bahasa notifikasi mengikuti bahasa perangkat: service worker tidak bisa membaca pilihan bahasa di aplikasi. */
@@ -48,7 +52,7 @@ export function parsePush(raw: string | undefined): PushPayload | undefined {
   }
 }
 
-// encodeURIComponent membiarkan ! ' ( ) * apa adanya; di sini ikut di-encode supaya jalur hasilnya selalu lolos isSafePath
+// encodeURIComponent membiarkan ! ' ( ) * apa adanya; di sini ikut di-encode supaya karakter jalurnya selalu lolos isSafePath
 // (nomor yang memuat tanda itu tetap membuka layar yang tepat, bukan jatuh ke beranda). Aplikasi mendekode dengan benar.
 const enc = (part: string) => encodeURIComponent(part).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 

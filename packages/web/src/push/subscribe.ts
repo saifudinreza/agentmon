@@ -38,6 +38,8 @@ export type SubscriptionLike = {
 };
 
 export type RegistrationLike = {
+  /** Ada hanya bila service worker sudah aktif; pushManager.subscribe menolak sebelum itu. */
+  active?: unknown;
   pushManager: {
     getSubscription(): Promise<SubscriptionLike | null>;
     subscribe(options: { userVisibleOnly: true; applicationServerKey: Uint8Array<ArrayBuffer> }): Promise<SubscriptionLike>;
@@ -48,14 +50,42 @@ export type PushEnv = {
   platform: Platform;
   notification: { permission: NotificationPermission; requestPermission(): Promise<NotificationPermission> } | undefined;
   hasPushManager: boolean;
-  /** Registrasi service worker yang aktif, atau undefined bila belum ada. */
+  /** Registrasi service worker yang AKTIF (menunggu sebentar bila baru dipasang), atau undefined bila tidak ada. */
   getRegistration: (() => Promise<RegistrationLike | undefined>) | undefined;
   /** Niat pengguna: true bila ia mengaktifkan notifikasi dan belum mematikannya. */
   intent: { get(): boolean; set(on: boolean): void };
+  /** Alamat langganan yang sudah dikirim ke relay pada sesi ini; menghindari PUT berulang tiap kartu dibuka. Tanpa ini, selalu dikirim. */
+  synced?: Set<string>;
   api: Pick<RelayApi, "pushConfig" | "savePushSubscription" | "removePushSubscription">;
 };
 
 export const PUSH_INTENT_KEY = "agentmon.push";
+
+// Alamat langganan yang sudah disamakan dengan relay sejak halaman ini dimuat (hilang saat dimuat ulang).
+const sessionSynced = new Set<string>();
+
+type ContainerLike = { getRegistration(): Promise<RegistrationLike | undefined>; ready: Promise<RegistrationLike> };
+
+/**
+ * Registrasi service worker yang sudah AKTIF. getRegistration() sudah mengembalikan registrasi selama service worker
+ * masih dipasang, tetapi pushManager.subscribe() menolak (InvalidStateError) sebelum ia aktif. Itu terjadi persis pada
+ * pemakaian pertama (mis. iOS yang baru menambahkan app ke layar utama dan langsung mengetuk Aktifkan), jadi ditunggu
+ * dengan batas waktu; bila tidak kunjung aktif, undefined.
+ */
+export async function activeRegistration(container: ContainerLike, timeoutMs = 10_000): Promise<RegistrationLike | undefined> {
+  const registration = await container.getRegistration();
+  if (!registration) return undefined;
+  if (registration.active) return registration;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), timeoutMs);
+  });
+  try {
+    return await Promise.race([container.ready.catch(() => undefined), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Lingkungan dari browser yang sedang berjalan. */
 export function currentPushEnv(api: PushEnv["api"]): PushEnv {
@@ -64,7 +94,7 @@ export function currentPushEnv(api: PushEnv["api"]): PushEnv {
     platform: currentPlatform(),
     notification: typeof Notification === "undefined" ? undefined : Notification,
     hasPushManager: typeof window !== "undefined" && "PushManager" in window,
-    getRegistration: sw ? async () => (await sw.getRegistration()) as RegistrationLike | undefined : undefined,
+    getRegistration: sw ? () => activeRegistration(sw as unknown as ContainerLike) : undefined,
     intent: {
       get() {
         try {
@@ -82,6 +112,7 @@ export function currentPushEnv(api: PushEnv["api"]): PushEnv {
         }
       },
     },
+    synced: sessionSynced,
     api,
   };
 }
@@ -138,16 +169,25 @@ export async function checkPush(env: PushEnv): Promise<PushStatus> {
     const key = decodeServerKey(config.publicKey);
     let subscription = await registration.pushManager.getSubscription();
     if (notification.permission !== "granted") return { kind: "off" };
-    if (!subscription && !env.intent.get()) return { kind: "off" };
-    // Langganan hilang (mis. data situs dibersihkan) atau terikat ke kunci relay yang lama: buat ulang. Izin sudah ada,
+    // NIAT PENGGUNA adalah sumber kebenaran: yang belum atau sudah dimatikan tidak boleh menyala lagi diam-diam. Langganan
+    // yang tertinggal (mis. unsubscribe gagal saat dimatikan) dibuang, bukan didaftarkan ulang ke relay.
+    if (!env.intent.get()) {
+      await subscription?.unsubscribe().catch(() => undefined);
+      return { kind: "off" };
+    }
+    // Langganan hilang (browser membuangnya) atau terikat ke kunci relay yang lama: buat ulang. Izin dan niat sudah ada,
     // jadi tidak ada pertanyaan ke pengguna.
     if (!subscription || !sameKey(subscription, key)) {
       await subscription?.unsubscribe().catch(() => undefined);
       subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
     }
-    // Menyamakan relay dengan keadaan HP (idempotent): memulihkan relay yang kehilangan langganan, mis. setelah pasang ulang.
-    await env.api.savePushSubscription(toRequest(subscription));
-    env.intent.set(true);
+    // Menyamakan relay dengan keadaan HP (idempotent): memulihkan relay yang kehilangan langganan, mis. setelah pasang
+    // ulang. Cukup sekali per sesi per alamat: tiap PUT menulis ke database relay dan memakai jatah laju HP.
+    const request = toRequest(subscription);
+    if (!env.synced?.has(request.endpoint)) {
+      await env.api.savePushSubscription(request);
+      env.synced?.add(request.endpoint);
+    }
     return { kind: "on" };
   } catch {
     return { kind: "error", during: "check" };
@@ -179,7 +219,9 @@ export async function enablePush(env: PushEnv): Promise<PushStatus> {
       subscription = null;
     }
     subscription ??= await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
-    await env.api.savePushSubscription(toRequest(subscription));
+    const request = toRequest(subscription);
+    await env.api.savePushSubscription(request);
+    env.synced?.add(request.endpoint);
     env.intent.set(true);
     return { kind: "on" };
   } catch {
@@ -190,6 +232,7 @@ export async function enablePush(env: PushEnv): Promise<PushStatus> {
 /** Mematikan notifikasi di HP ini. Berhenti berlangganan di browser dulu, supaya tidak ada lagi yang masuk. */
 export async function disablePush(env: PushEnv): Promise<PushStatus> {
   env.intent.set(false);
+  env.synced?.clear();
   try {
     const registration = await env.getRegistration?.();
     const subscription = await registration?.pushManager.getSubscription();

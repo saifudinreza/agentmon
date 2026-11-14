@@ -19,7 +19,11 @@ export async function handlePush(raw: string | undefined, language: string | und
 
 export type WindowClientLike = {
   url: string;
+  /** "visible" bila jendela sedang terlihat; selain itu (tersembunyi, dibekukan, atau dibuang OS) tidak bisa diandalkan menerima pesan. */
+  visibilityState?: string;
   focus(): Promise<unknown>;
+  /** Memuat alamat di jendela itu. Ditolak bila jendelanya tidak dikendalikan service worker ini. */
+  navigate?(url: string): Promise<unknown>;
   postMessage(message: unknown): void;
 };
 
@@ -30,7 +34,10 @@ export type ClientsLike = {
 
 /**
  * Membuka layar tujuan notifikasi yang diketuk.
- *   - Aplikasi sedang terbuka: jendelanya difokuskan lalu diminta pindah layar (tanpa memuat ulang).
+ *   - Aplikasi sedang TERLIHAT: jendelanya difokuskan lalu diminta pindah layar lewat pesan (tanpa memuat ulang).
+ *   - Aplikasi ada tetapi tidak terlihat (tersembunyi di latar, dibekukan, atau dibuang OS, yang sering di Android):
+ *     halamannya mungkin tidak mendengarkan pesan, jadi alamat tujuan dimuat langsung di jendela itu. Bila itu ditolak
+ *     (jendela tidak dikendalikan service worker ini), pesan dikirim sebagai cadangan.
  *   - Aplikasi tertutup: jendela baru dibuka langsung di layar itu.
  * `data` berasal dari notifikasi yang kita buat sendiri, tetapi jalurnya tetap diperiksa; yang tidak aman jatuh ke beranda.
  */
@@ -47,8 +54,17 @@ export async function openNotificationTarget(clients: ClientsLike, data: unknown
     }
   });
   if (existing) {
-    // focus() boleh ditolak (mis. tidak dalam gestur pengguna); pindah layar tetap dikirim.
+    const visible = existing.visibilityState === "visible";
+    // focus() boleh ditolak (mis. tidak dalam gestur pengguna); perpindahan layar tetap dilanjutkan.
     await existing.focus().catch(() => undefined);
+    if (!visible && existing.navigate) {
+      try {
+        await existing.navigate(new URL(path, origin).href);
+        return;
+      } catch {
+        // jendela tidak dikendalikan service worker ini: coba lewat pesan
+      }
+    }
     existing.postMessage({ type: NAVIGATE_MESSAGE, path });
     return;
   }

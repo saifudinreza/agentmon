@@ -54,7 +54,7 @@ describe("NotificationsSection", () => {
     s.relay.api.pushConfig = async () => (await gate, { enabled: true, publicKey: s.relay.data.push.config.publicKey! });
     fireEvent.click(button);
     const busy = await screen.findByRole("button", { name: "Mengaktifkan…" });
-    expect((busy as HTMLButtonElement).disabled).toBe(true);
+    expect(busy.getAttribute("aria-disabled")).toBe("true");
     await act(async () => release());
     expect(await screen.findByText("Aktif di perangkat ini.")).toBeTruthy();
   });
@@ -146,7 +146,7 @@ describe("NotificationsSection", () => {
   });
 
   test("sudah aktif: menampilkan Aktif dan tombol Matikan; mematikan berhasil kembali ke belum aktif", async () => {
-    const s = renderSection({ permission: "granted", existing: true });
+    const s = renderSection({ permission: "granted", existing: true, intent: true });
     expect(await screen.findByText("Aktif di perangkat ini.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Matikan notifikasi" }));
     expect(await screen.findByText("Belum aktif di perangkat ini.")).toBeTruthy();
@@ -155,7 +155,7 @@ describe("NotificationsSection", () => {
   });
 
   test("mematikan saat relay tidak terjangkau: tetap mati di HP, dengan catatan relay belum menerima", async () => {
-    const setup = setupPush({ permission: "granted", existing: true });
+    const setup = setupPush({ permission: "granted", existing: true, intent: true });
     render(
       <I18nProvider>
         <NotificationsSection entry={entry} env={setup.env} />
@@ -166,6 +166,41 @@ describe("NotificationsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Matikan notifikasi" }));
     await waitFor(() => expect(screen.getByText("Belum aktif di perangkat ini.")).toBeTruthy());
     expect(screen.getByText(/relay belum menerima pembatalannya/)).toBeTruthy();
+  });
+
+  test("aksesibilitas: tombol yang sama tetap terpasang dan berfokus selama dan sesudah proses (hasil review PR #58)", async () => {
+    renderSection({ permission: "default", asks: "granted" });
+    const button = await enableButton();
+    button.focus();
+    fireEvent.click(button);
+    await screen.findByText("Aktif di perangkat ini.");
+    const after = screen.getByRole("button", { name: "Matikan notifikasi" });
+    expect(after).toBe(button); // elemen yang sama, hanya label yang berganti
+    expect(document.activeElement).toBe(button);
+  });
+
+  test("aksesibilitas: wilayah status yang sama selalu ada, dan ketukan saat sibuk diabaikan", async () => {
+    const s = renderSection({ permission: "default", asks: "granted" });
+    const region = screen.getByRole("status");
+    const button = await enableButton();
+    expect(screen.getByRole("status")).toBe(region);
+    fireEvent.click(button);
+    fireEvent.click(button); // ketukan kedua saat proses berjalan tidak menjalankan apa-apa lagi
+    await screen.findByText("Aktif di perangkat ini.");
+    expect(s.requestPermission).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status")).toBe(region);
+  });
+
+  test("service worker belum aktif memakai status biasa (bukan alert)", async () => {
+    renderSection({ noRegistration: true });
+    const message = await screen.findByText(/service worker belum aktif/);
+    expect(message.closest('[role="alert"]')).toBeNull();
+    expect(message.closest('[role="status"]')).not.toBeNull();
+  });
+
+  test("teks tidak menyuruh 'muat ulang' saja (app layar utama iOS tidak punya tombol muat ulang)", async () => {
+    renderSection({ noRegistration: true });
+    expect(await screen.findByText(/Tutup dan buka lagi aplikasinya/)).toBeTruthy();
   });
 
   test("teks tampil dalam bahasa Inggris bila bahasa app Inggris", async () => {

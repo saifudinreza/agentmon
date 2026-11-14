@@ -5,6 +5,7 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import vm from "node:vm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { build } from "vite";
 import { measureInitialJs } from "../scripts/check-bundle-size";
@@ -92,15 +93,19 @@ describe("hasil build", () => {
     // Teks notifikasi (kedua bahasa) harus ada di dalam service worker, bukan hanya di aplikasi.
     expect(sw).toContain("Izin dibutuhkan");
     expect(sw).toContain("Approval needed");
-    // Service worker yang sama, dalam build produksi, tetap memuat penanganan itu (nama peristiwa tidak diminifikasi).
+    // Build produksi yang diminifikasi tetap memasang penanganan itu. Polanya spesifik: kata "push" saja ada di banyak
+    // tempat (mis. Array.prototype.push) sehingga tidak membuktikan apa pun.
     const production = read("sw.js");
-    expect(production).toContain("notificationclick");
-    expect(production).toContain("push");
+    expect(production).toMatch(/addEventListener\(\s*["'`]push["'`]\s*,/);
+    expect(production).toMatch(/addEventListener\(\s*["'`]notificationclick["'`]\s*,/);
   });
 
   test("service worker terdaftar sebagai skrip klasik yang berdiri sendiri (tanpa import/export di berkasnya)", () => {
     const sw = read("sw.js");
-    expect(sw).not.toMatch(/^\s*(import|export)\s/m);
+    // Dikompilasi sebagai skrip klasik (bukan modul): import, export, atau import.meta di berkasnya akan melempar SyntaxError.
+    expect(() => new vm.Script(sw, { filename: "sw.js" })).not.toThrow();
+    // Pembuktian bahwa pemeriksaan ini sungguh membedakan: modul yang sah bukan skrip klasik.
+    expect(() => new vm.Script("export const a = 1;")).toThrow(SyntaxError);
   });
 
   test("tidak ada sourcemap yang ikut terbit", () => {

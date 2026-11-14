@@ -110,3 +110,47 @@ describe("openNotificationTarget", () => {
     expect(opened).toEqual([`${ORIGIN}/`]);
   });
 });
+
+describe("openNotificationTarget: jendela yang tidak terlihat (hasil review PR #58)", () => {
+  test("jendela TERLIHAT: pesan dikirim, tanpa memuat ulang", async () => {
+    const navigate = vi.fn(async () => undefined);
+    const open = win(`${ORIGIN}/`, { visibilityState: "visible", navigate });
+    const { clients } = fakeClients([open.client]);
+    await openNotificationTarget(clients, { path: "/a/m1/a1" }, ORIGIN);
+    expect(open.messages).toEqual([{ type: NAVIGATE_MESSAGE, path: "/a/m1/a1" }]);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  test.each(["hidden", "prerender", undefined])("jendela %s: alamat dimuat langsung (pesan bisa hilang di tab yang dibekukan atau dibuang)", async (visibilityState) => {
+    const navigate = vi.fn(async () => undefined);
+    const open = win(`${ORIGIN}/`, { ...(visibilityState ? { visibilityState } : {}), navigate });
+    const { clients, opened } = fakeClients([open.client]);
+    await openNotificationTarget(clients, { path: "/a/m1/a1" }, ORIGIN);
+    expect(open.client.focus).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith(`${ORIGIN}/a/m1/a1`);
+    expect(open.messages).toEqual([]);
+    expect(opened).toEqual([]);
+  });
+
+  test("navigate ditolak (jendela tidak dikendalikan service worker): pesan dikirim sebagai cadangan", async () => {
+    const open = win(`${ORIGIN}/`, { visibilityState: "hidden", navigate: async () => Promise.reject(new TypeError("tidak dikendalikan")) });
+    const { clients } = fakeClients([open.client]);
+    await openNotificationTarget(clients, { path: "/s/m1/s1" }, ORIGIN);
+    expect(open.messages).toEqual([{ type: NAVIGATE_MESSAGE, path: "/s/m1/s1" }]);
+  });
+
+  test("tanpa navigate di jendelanya: pesan dikirim", async () => {
+    const open = win(`${ORIGIN}/`, { visibilityState: "hidden" });
+    const { clients } = fakeClients([open.client]);
+    await openNotificationTarget(clients, { path: "/" }, ORIGIN);
+    expect(open.messages).toHaveLength(1);
+  });
+
+  test("jalur tidak aman tidak pernah di-navigate: jatuh ke beranda", async () => {
+    const navigate = vi.fn(async () => undefined);
+    const open = win(`${ORIGIN}/`, { visibilityState: "hidden", navigate });
+    const { clients } = fakeClients([open.client]);
+    await openNotificationTarget(clients, { path: "//evil.example" }, ORIGIN);
+    expect(navigate).toHaveBeenCalledWith(`${ORIGIN}/`);
+  });
+});
