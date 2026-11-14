@@ -17,6 +17,7 @@ export function paths(home: string) {
     state: join(home, "daemon.json"),
     log: join(home, "daemon.log"),
     machineId: join(home, "machine-id"),
+    relay: join(home, "relay.json"),
   };
 }
 

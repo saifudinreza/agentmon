@@ -122,7 +122,7 @@ const DROP_LOG_WINDOW_MS = 5000;
 const RATE_LIMIT_PAUSE_MS = 1000;
 
 // Alamat yang menunjuk ke komputer ini sendiri: lalu lintasnya tidak keluar ke jaringan.
-function isLoopbackHost(hostname: string): boolean {
+export function isLoopbackHost(hostname: string): boolean {
   const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
   return host === "localhost" || host === "::1" || /^127(\.\d{1,3}){3}$/.test(host);
 }

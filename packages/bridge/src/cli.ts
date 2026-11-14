@@ -7,6 +7,7 @@
 //   resume                      lanjutkan penahanan
 //   approve [id] [komentar]     setujui satu permintaan yang menunggu
 //   deny    [id] [komentar]     tolak, dengan komentar yang dibaca agent
+//   register                    daftarkan laptop ini ke relay (sekali; butuh rahasia admin relay)
 //   devices                     daftar HP yang terpasang dengan laptop ini
 //   revoke <nomor>              cabut sebuah HP (HP hilang): langsung diputus dan tidak bisa tersambung lagi
 //   ui                          cetak alamat halaman web lokal (alat pengembangan), lengkap dengan kredensial
@@ -26,6 +27,8 @@ import { DEFAULT_PORT } from "./daemon";
 import { agentmonHome, paths } from "./home";
 import type { DaemonStatus } from "./control";
 import { runListDevices, runPair, runRevokeDevice, type PairOptions } from "./pairing";
+import { runRegister } from "./register";
+import { resolveRelayConfig } from "./relay-config";
 
 // Bekal yang bisa diganti di test: lingkungan, tempat menulis keluaran.
 export type CliDeps = {
@@ -34,6 +37,8 @@ export type CliDeps = {
   err: (text: string) => void;
   // Hanya diisi test, untuk perintah `pair` (jaringan, jam, dan pencetak QR palsu).
   pair?: Partial<Pick<PairOptions, "fetch" | "sleep" | "now" | "pollMs" | "renderQr">>;
+  // Hanya diisi test, untuk perintah `register` (nama komputer palsu).
+  hostname?: () => string;
 };
 
 type Reply = { status: number; body: unknown };
@@ -82,34 +87,98 @@ const USAGE = [
   "  approve [id] [komentar]   setujui permintaan yang menunggu",
   "  deny [id] [komentar]      tolak permintaan, dengan komentar untuk agent",
   "  ui                        cetak alamat halaman web lokal (alat pengembangan)",
-  "  devices                   daftar HP yang terpasang (butuh AGENTMON_RELAY_URL, AGENTMON_RELAY_TOKEN)",
-  "  revoke <nomor>            cabut sebuah HP yang hilang (butuh AGENTMON_RELAY_URL, AGENTMON_RELAY_TOKEN)",
-  "  pair                      pasangkan HP lewat QR (butuh AGENTMON_RELAY_URL, AGENTMON_RELAY_TOKEN, AGENTMON_APP_URL)",
+  "  register [--name <nama>] [--rotate] [--print-token]",
+  "                            daftarkan laptop ini ke relay (butuh AGENTMON_RELAY_URL dan AGENTMON_ADMIN_SECRET)",
+  "  devices                   daftar HP yang terpasang (butuh laptop yang sudah terdaftar di relay)",
+  "  revoke <nomor>            cabut sebuah HP yang hilang (butuh laptop yang sudah terdaftar di relay)",
+  "  pair                      pasangkan HP lewat QR (butuh relay terdaftar dan AGENTMON_APP_URL)",
 ].join("\n");
 
 /** Menjalankan satu perintah. Mengembalikan kode keluar (0 = berhasil). */
 export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   const [command, ...rest] = argv;
-  if (!command || !["status", "pause", "resume", "approve", "deny", "ui", "pair", "devices", "revoke"].includes(command)) {
+  if (!command || !["status", "pause", "resume", "approve", "deny", "ui", "pair", "devices", "revoke", "register"].includes(command)) {
     deps.err(USAGE);
     return command ? 2 : 0;
   }
+  const home = deps.env.AGENTMON_HOME ?? agentmonHome();
+
+  // `register` berbicara dengan relay memakai RAHASIA ADMIN (bukan token laptop, yang justru dibuat oleh perintah ini).
+  if (command === "register") {
+    let name: string | undefined;
+    let relayFlag: string | undefined;
+    let rotate = false;
+    let printToken = false;
+    for (let i = 0; i < rest.length; i++) {
+      const arg = rest[i] as string;
+      if (arg === "--rotate") rotate = true;
+      else if (arg === "--print-token") printToken = true;
+      else if (arg === "--name" || arg === "--relay") {
+        const value = rest[++i];
+        if (value === undefined || value.startsWith("--")) {
+          deps.err(`${arg} butuh nilai.`);
+          return 2;
+        }
+        if (arg === "--name") name = value;
+        else relayFlag = value;
+      } else {
+        // Argumen yang bukan pilihan TIDAK dicetak: bisa saja rahasia admin yang keliru diketik sebagai argumen.
+        deps.err(arg.startsWith("--") ? `Pilihan tidak dikenal: ${arg}` : "Argumen tidak dikenal. Rahasia admin diisi lewat AGENTMON_ADMIN_SECRET, bukan sebagai argumen.");
+        deps.err(USAGE);
+        return 2;
+      }
+    }
+    const relayUrl = relayFlag ?? deps.env.AGENTMON_RELAY_URL;
+    const adminSecret = deps.env.AGENTMON_ADMIN_SECRET;
+    if (!relayUrl || !adminSecret) {
+      deps.err(`Belum diisi: ${[!relayUrl && "alamat relay (AGENTMON_RELAY_URL atau --relay)", !adminSecret && "AGENTMON_ADMIN_SECRET"].filter(Boolean).join(", ")}`);
+      deps.err("  AGENTMON_RELAY_URL      alamat relay, misalnya https://relay.contoh.com");
+      deps.err("  AGENTMON_ADMIN_SECRET   rahasia admin relay (ADMIN_SECRET di relay). Isi lewat lingkungan, bukan argumen perintah,");
+      deps.err("                          supaya tidak tercatat di riwayat shell.");
+      return 1;
+    }
+    return runRegister({
+      relayUrl,
+      adminSecret,
+      home,
+      ...(name !== undefined ? { name } : {}),
+      rotate,
+      printToken,
+      allowInsecure: deps.env.AGENTMON_RELAY_INSECURE === "1",
+      out: deps.out,
+      err: deps.err,
+      ...(deps.pair?.fetch ? { fetch: deps.pair.fetch } : {}),
+      ...(deps.hostname ? { hostname: deps.hostname } : {}),
+    });
+  }
+
+  // Pengaturan relay: dari lingkungan, atau dari berkas yang disimpan `register`.
+  const relayConfigOrExplain = (): { relayUrl: string; token: string } | undefined => {
+    try {
+      const config = resolveRelayConfig(deps.env, home);
+      if (config) return config;
+    } catch (error) {
+      deps.err(error instanceof Error ? error.message : String(error));
+      return undefined;
+    }
+    deps.err("Laptop ini belum terhubung ke relay. Daftarkan dulu dengan perintah register, atau isi AGENTMON_RELAY_URL dan AGENTMON_RELAY_TOKEN.");
+    return undefined;
+  };
 
   // `pair` berbicara dengan RELAY, bukan dengan daemon lokal, jadi tidak butuh token daemon
   // dan tetap bisa dijalankan walau daemon belum pernah dinyalakan.
   if (command === "pair") {
-    const missing = ["AGENTMON_RELAY_URL", "AGENTMON_RELAY_TOKEN", "AGENTMON_APP_URL"].filter((name) => !deps.env[name]);
-    if (missing.length > 0) {
-      deps.err(`Variabel lingkungan belum diisi: ${missing.join(", ")}`);
-      deps.err("  AGENTMON_RELAY_URL     alamat relay, misalnya https://relay.contoh.com");
-      deps.err("  AGENTMON_RELAY_TOKEN   token laptop ini di relay");
+    const relayConfig = relayConfigOrExplain();
+    if (!relayConfig) return 1;
+    if (!deps.env.AGENTMON_APP_URL) {
+      deps.err("Variabel lingkungan belum diisi: AGENTMON_APP_URL");
       deps.err("  AGENTMON_APP_URL       alamat aplikasi HP (PWA)");
       return 1;
     }
     return runPair({
-      relayUrl: deps.env.AGENTMON_RELAY_URL as string,
-      machineToken: deps.env.AGENTMON_RELAY_TOKEN as string,
-      appUrl: deps.env.AGENTMON_APP_URL as string,
+      relayUrl: relayConfig.relayUrl,
+      machineToken: relayConfig.token,
+      appUrl: deps.env.AGENTMON_APP_URL,
       out: deps.out,
       err: deps.err,
       ...deps.pair,
@@ -118,14 +187,11 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
 
   // `devices` dan `revoke` juga berbicara dengan relay (token laptop), bukan dengan daemon lokal.
   if (command === "devices" || command === "revoke") {
-    const missing = ["AGENTMON_RELAY_URL", "AGENTMON_RELAY_TOKEN"].filter((name) => !deps.env[name]);
-    if (missing.length > 0) {
-      deps.err(`Variabel lingkungan belum diisi: ${missing.join(", ")}`);
-      return 1;
-    }
+    const relayConfig = relayConfigOrExplain();
+    if (!relayConfig) return 1;
     const common = {
-      relayUrl: deps.env.AGENTMON_RELAY_URL as string,
-      machineToken: deps.env.AGENTMON_RELAY_TOKEN as string,
+      relayUrl: relayConfig.relayUrl,
+      machineToken: relayConfig.token,
       out: deps.out,
       err: deps.err,
       ...(deps.pair?.fetch ? { fetch: deps.pair.fetch } : {}),
@@ -146,7 +212,6 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     deps.err(`AGENTMON_PORT tidak valid: ${portText}`);
     return 1;
   }
-  const home = deps.env.AGENTMON_HOME ?? agentmonHome();
   let token: string;
   try {
     token = readFileSync(paths(home).token, "utf8").trim();

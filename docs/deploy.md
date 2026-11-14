@@ -26,13 +26,26 @@ Service worker dan Web Push hanya bekerja lewat HTTPS, jadi relay dan PWA perlu 
 2. PWA tidak butuh alamat relay saat build: alamat relay dibawa oleh tautan pairing (QR) dan disimpan di perangkat.
 3. Pakai alamat Pages itu sebagai `AGENTMON_APP_URL` di laptop dan sebagai `PAIRING_ALLOWED_ORIGINS` di relay.
 
-### Laptop
-```
-AGENTMON_RELAY_URL=https://agentmon-relay.onrender.com
-AGENTMON_RELAY_TOKEN=<token laptop di relay>
-AGENTMON_APP_URL=https://agentmon.pages.dev
-```
-Catatan: pendaftaran laptop ke relay produksi (membuat baris dan token laptop) belum punya alur otomatis; lihat "Keterbatasan" di [`relay.md`](relay.md).
+### Laptop: mendaftar ke relay (sekali per laptop)
+Relay yang baru di-deploy tidak mengenal laptop mana pun. Pemilik relay mendaftarkan laptop dengan **rahasia admin**:
+
+1. **Buat rahasia admin** (minimal 32 karakter, acak) di laptop, mis. `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. Jangan tempel di chat atau repo.
+2. **Pasang di relay:** tambahkan variabel `ADMIN_SECRET` di dashboard Render (Environment > Add), isi dengan rahasia itu. Relay restart sendiri. Tanpa variabel ini pendaftaran **tertutup** (404), dan rahasia yang kurang dari 32 karakter ditolak dengan pesan di log. Variabel ini sengaja tidak ditulis di `render.yaml` (alasannya sama dengan variabel VAPID).
+3. **Daftarkan laptop** (rahasia lewat lingkungan, bukan argumen perintah, supaya tidak tercatat di riwayat shell):
+   ```
+   AGENTMON_RELAY_URL=https://agentmon-relay.onrender.com AGENTMON_ADMIN_SECRET=<rahasia> pnpm --filter @agentmon/bridge cli register
+   ```
+   Di PowerShell: `$env:AGENTMON_RELAY_URL="https://..."; $env:AGENTMON_ADMIN_SECRET="..."; pnpm --filter @agentmon/bridge cli register`. Opsi: `--name "Laptop Kantor"` (bawaan: nama komputer), `--print-token` (menampilkan token), `--rotate` (ganti token).
+4. Perintah itu menyimpan alamat relay dan token di `relay.json` di folder data daemon (`~/.agentmon`, atau `AGENTMON_HOME`). **Daemon dan perintah `pair`, `devices`, dan `revoke` membacanya otomatis**: tidak ada token yang perlu disalin. Variabel `AGENTMON_RELAY_URL` dan `AGENTMON_RELAY_TOKEN` (kalau diisi lengkap) tetap menang atas berkas.
+5. Bersihkan rahasia admin dari terminal (tutup sesi, atau `Remove-Item Env:AGENTMON_ADMIN_SECRET`). Rahasia itu hanya dibutuhkan saat mendaftar.
+6. Jalankan daemon, lalu pasangkan HP:
+   ```
+   AGENTMON_APP_URL=https://agentmon.pages.dev pnpm --filter @agentmon/bridge cli pair
+   ```
+
+**Token hilang atau dicurigai bocor:** jalankan `register --rotate` lagi. Token lama langsung tidak berlaku dan sambungan daemon lama diputus relay; jalankan ulang daemon. **Rahasia admin bocor:** ganti nilai `ADMIN_SECRET` di Render (laptop yang sudah terdaftar tidak terpengaruh).
+
+Detail keamanan dan batas ada di [`relay.md`](relay.md#pendaftaran-laptop).
 
 ## 2. Rahasia tidak masuk repo
 - Semua nilai rahasia hanya ada di dashboard layanan (Render, Neon, Cloudflare) atau di lingkungan laptop. Berkas `.env*` di-ignore git (kecuali `.env.example`).
