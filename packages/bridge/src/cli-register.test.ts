@@ -23,6 +23,8 @@ function fakeRelay() {
   const state: { token?: string } = {};
   const fetchFake = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
+    // Pemeriksaan /health (membangunkan relay) tidak dihitung sebagai permintaan yang diperiksa tes.
+    if (url.pathname === "/health") return new Response(JSON.stringify({ status: "ok" }), { status: 200 });
     const headers = (init?.headers ?? {}) as Record<string, string>;
     const body = typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
     seen.push({ url: String(input), method: init?.method ?? "GET", headers, ...(body ? { body } : {}) });
@@ -129,6 +131,21 @@ describe("perintah register", () => {
     expect(r.all()).not.toContain(SECRET);
     expect(r.err.join("\n")).toContain("AGENTMON_ADMIN_SECRET");
     expect(relay.seen).toEqual([]);
+  });
+
+  test("AGENTMON_RELAY_URL dan AGENTMON_RELAY_TOKEN keduanya diisi: register memperingatkan bahwa lingkungan mengalahkan berkas", async () => {
+    const relay = fakeRelay();
+    const r = run(["register"], { AGENTMON_RELAY_URL: RELAY, AGENTMON_RELAY_TOKEN: "x".repeat(40), AGENTMON_ADMIN_SECRET: SECRET }, relay.fetchFake);
+    expect(await r.code).toBe(0);
+    expect(r.err.join("\n")).toContain("MENGALAHKAN");
+    expect(r.all()).not.toContain("x".repeat(40));
+  });
+
+  test("hanya AGENTMON_RELAY_URL diisi (cara yang dianjurkan): tanpa peringatan", async () => {
+    const relay = fakeRelay();
+    const r = run(["register"], { AGENTMON_RELAY_URL: RELAY, AGENTMON_ADMIN_SECRET: SECRET }, relay.fetchFake);
+    expect(await r.code).toBe(0);
+    expect(r.err).toEqual([]);
   });
 
   test("tampil di bantuan pemakaian", async () => {

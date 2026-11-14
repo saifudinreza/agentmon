@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -40,6 +40,13 @@ describe("saveRelayConfig dan loadRelayConfig", () => {
     saveRelayConfig(home, { relayUrl: "https://relay.contoh.com", token: TOKEN });
     saveRelayConfig(home, { relayUrl: "https://relay.contoh.com", token: OTHER });
     expect(loadRelayConfig(home)?.token).toBe(OTHER);
+    expect(readdirSync(home).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+  });
+
+  test("rename gagal: galat dilempar dan berkas sementara berisi token TIDAK tertinggal (hasil review PR #59)", () => {
+    // Folder di tempat berkas tujuan membuat rename gagal di semua sistem operasi.
+    mkdirSync(paths(home).relay);
+    expect(() => saveRelayConfig(home, { relayUrl: "https://relay.contoh.com", token: TOKEN })).toThrow();
     expect(readdirSync(home).filter((f) => f.endsWith(".tmp"))).toEqual([]);
   });
 
@@ -120,9 +127,13 @@ describe("resolveRelayConfig: memilih sumber", () => {
     expect(resolveRelayConfig({ AGENTMON_RELAY_URL: "https://relay-lain.example" }, home)).toBeUndefined();
   });
 
-  test("hanya token dari lingkungan: alamat dari berkas, token dari lingkungan", () => {
+  test("hanya token dari lingkungan: DIABAIKAN, berkas dipakai utuh (token lama di profil shell tidak mengalahkan hasil register)", () => {
     saveRelayConfig(home, saved);
-    expect(resolveRelayConfig({ AGENTMON_RELAY_TOKEN: OTHER }, home)).toEqual({ relayUrl: saved.relayUrl, token: OTHER, source: "env" });
+    expect(resolveRelayConfig({ AGENTMON_RELAY_TOKEN: OTHER }, home)).toEqual({ ...saved, source: "file" });
+  });
+
+  test("hanya token dari lingkungan dan tidak ada berkas: tidak ada pengaturan", () => {
+    expect(resolveRelayConfig({ AGENTMON_RELAY_TOKEN: OTHER }, home)).toBeUndefined();
   });
 
   test("berkas rusak tanpa lingkungan lengkap: melempar galat (berhenti dengan penjelasan, bukan diam-diam tanpa relay)", () => {

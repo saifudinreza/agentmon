@@ -18,11 +18,23 @@ afterEach(() => rmSync(home, { recursive: true, force: true }));
 
 type Call = { url: string; method: string; headers: Record<string, string>; body: Record<string, unknown> | undefined };
 
-function setup(respond: (call: Call) => Response | Promise<Response> | Error, extra: Partial<RegisterOptions> = {}) {
+// Pemeriksaan /health (membangunkan relay) dicatat terpisah dari pendaftarannya.
+function setup(
+  respond: (call: Call) => Response | Promise<Response> | Error,
+  extra: Partial<RegisterOptions> = {},
+  health: () => Response | Promise<Response> | Error = () => new Response("{}", { status: 200 }),
+) {
   const out: string[] = [];
   const err: string[] = [];
   const calls: Call[] = [];
+  const healthCalls: Array<{ method: string; signal: AbortSignal | undefined }> = [];
   const fetchFake = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input).endsWith("/health")) {
+      healthCalls.push({ method: init?.method ?? "GET", signal: init?.signal ?? undefined });
+      const reply = await health();
+      if (reply instanceof Error) throw reply;
+      return reply;
+    }
     const call: Call = {
       url: String(input),
       method: init?.method ?? "GET",
@@ -37,7 +49,7 @@ function setup(respond: (call: Call) => Response | Promise<Response> | Error, ex
   const run = (overrides: Partial<RegisterOptions> = {}) =>
     runRegister({ relayUrl: RELAY, adminSecret: SECRET, home, out: (t) => out.push(t), err: (t) => err.push(t), fetch: fetchFake, hostname: () => "Laptop-Budi", ...extra, ...overrides });
   const all = () => [...out, ...err].join("\n");
-  return { run, out, err, calls, all };
+  return { run, out, err, calls, healthCalls, all };
 }
 
 const created = (call: Call, token = TOKEN) => new Response(JSON.stringify({ machineId: call.body?.id, token }), { status: 201 });
@@ -200,11 +212,20 @@ describe("galat dari relay", () => {
     expect(t.all()).not.toContain(SECRET);
   });
 
-  test("relay tidak terjangkau: kode 1, menyebut bahwa relay gratis butuh waktu bangun", async () => {
-    const t = setup(() => new TypeError("fetch failed"));
+  test("relay tidak terjangkau saat dibangunkan: kode 1, dan pendaftarannya tidak dikirim sama sekali", async () => {
+    const t = setup((call) => created(call), {}, () => new TypeError("fetch failed"));
     expect(await t.run()).toBe(1);
     expect(t.err.join("\n")).toContain("tidak terjangkau");
-    expect(t.err.join("\n")).toContain("bangun");
+    expect(t.calls).toEqual([]);
+    expect(loadRelayConfig(home)).toBeUndefined();
+    expect(t.all()).not.toContain(SECRET);
+  });
+
+  test("pendaftaran gagal di tengah jalan padahal relay sudah bangun: dijelaskan, dengan petunjuk --rotate bila ternyata sudah tercatat", async () => {
+    const t = setup(() => new TypeError("fetch failed"));
+    expect(await t.run()).toBe(1);
+    expect(t.err.join("\n")).toContain("gagal di tengah jalan");
+    expect(t.err.join("\n")).toContain("--rotate");
     expect(loadRelayConfig(home)).toBeUndefined();
   });
 
@@ -253,5 +274,93 @@ describe("token hanya diberikan sekali", () => {
     const t = setup(vi.fn(() => new TypeError("fetch failed")));
     await t.run();
     expect(t.all()).not.toContain(TOKEN);
+  });
+});
+
+describe("membangunkan relay dulu (hasil review PR #59)", () => {
+  test("GET /health dikirim SEBELUM pendaftaran, dengan batas waktu panjang untuk relay yang baru bangun", async () => {
+    const order: string[] = [];
+    const t = setup(
+      (call) => (order.push("POST"), created(call)),
+      {},
+      () => (order.push("health"), new Response("{}", { status: 200 })),
+    );
+    expect(await t.run()).toBe(0);
+    expect(order).toEqual(["health", "POST"]);
+    expect(t.healthCalls).toHaveLength(1);
+    expect(t.healthCalls[0]!.method).toBe("GET");
+    // Batas waktu panjang (lebih dari waktu bangun terukur ~52 detik): sinyalnya belum batal, dan bukan batas 15 detik.
+    expect(t.healthCalls[0]!.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  test("jawaban HTTP apa pun dari /health (termasuk 404 atau 503) berarti relay sudah bangun: pendaftaran dilanjutkan", async () => {
+    for (const code of [200, 404, 502, 503]) {
+      rmSync(paths(home).relay, { force: true });
+      const t = setup((call) => created(call), {}, () => new Response("x", { status: code }));
+      expect(await t.run()).toBe(0);
+    }
+  });
+
+  test("relay butuh waktu bangun: pengguna diberi tahu setelah beberapa detik (bukan layar kosong)", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = setup(
+        (call) => created(call),
+        {},
+        () => new Promise<Response>((resolve) => setTimeout(() => resolve(new Response("{}", { status: 200 })), 5000)),
+      );
+      const running = t.run();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(t.out.join("\n")).not.toContain("sedang bangun");
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(t.out.join("\n")).toContain("sedang bangun");
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await running).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("relay yang langsung menjawab: tidak ada pemberitahuan menunggu", async () => {
+    const t = setup((call) => created(call));
+    await t.run();
+    expect(t.all()).not.toContain("sedang bangun");
+  });
+});
+
+describe("rahasia admin yang tidak bisa dikirim (hasil review PR #59)", () => {
+  test.each([
+    ["spasi di dalam", "kata sandi yang panjang dengan spasi di dalamnya 123"],
+    ["karakter non-ASCII", `rahasia-dengan-huruf-${"\u00e9"}-yang-cukup-panjang-12345`],
+    ["baris baru", "rahasia\nyang-panjang-0123456789abcdef-xyz"],
+    ["kosong", ""],
+  ])("%s: kode 2, relay tidak dihubungi sama sekali, dan nilainya tidak dicetak", async (_name, adminSecret) => {
+    const t = setup((call) => created(call));
+    expect(await t.run({ adminSecret })).toBe(2);
+    expect(t.calls).toEqual([]);
+    expect(t.healthCalls).toEqual([]);
+    expect(t.err.join("\n")).toContain("ASCII");
+    if (adminSecret) expect(t.all()).not.toContain(adminSecret);
+  });
+});
+
+describe("token lama di lingkungan (hasil review PR #59)", () => {
+  test("lingkungan lengkap mengalahkan berkas: pengguna diperingatkan, dan pendaftaran tetap berhasil", async () => {
+    const t = setup((call) => created(call));
+    expect(await t.run({ envOverridesSaved: true })).toBe(0);
+    expect(t.err.join("\n")).toContain("PERINGATAN");
+    expect(t.err.join("\n")).toContain("MENGALAHKAN");
+    expect(loadRelayConfig(home)?.token).toBe(TOKEN);
+    expect(t.all()).not.toContain(TOKEN);
+  });
+
+  test("tanpa lingkungan yang mengalahkan: tidak ada peringatan", async () => {
+    const t = setup((call) => created(call));
+    await t.run({ envOverridesSaved: false });
+    expect(t.err).toEqual([]);
+    const u = setup((call) => created(call));
+    rmSync(paths(home).relay, { force: true });
+    await u.run();
+    expect(u.err).toEqual([]);
   });
 });

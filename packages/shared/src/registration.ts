@@ -11,8 +11,19 @@
 import { z } from "zod";
 import { CONTROL_CHARACTERS } from "./pairing";
 
-// Bentuk UUID standar (8-4-4-4-12 karakter heksadesimal), sama dengan yang dibuat daemon untuk machine-id.
-export const MACHINE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Bentuk UUID standar (8-4-4-4-12 karakter heksadesimal) HURUF KECIL, sama dengan yang dibuat daemon untuk machine-id.
+// Huruf besar sengaja tidak diterima: nomor disimpan sebagai teks dan dibandingkan apa adanya, jadi "ABC..." dan "abc..."
+// akan menjadi dua laptop berbeda.
+export const MACHINE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Rahasia admin dikirim sebagai `Authorization: Bearer <rahasia>`, jadi hanya ASCII tercetak tanpa spasi (kode 33 sampai
+ * 126) yang bisa cocok. Spasi membuat header tidak pernah cocok, dan karakter non-ASCII membuat fetch melempar galat header.
+ * Dipakai relay (saat membaca ADMIN_SECRET) dan laptop (sebelum mengirim), supaya pemilik tidak mengunci dirinya sendiri.
+ */
+export function isHeaderSafeSecret(secret: string): boolean {
+  return /^[\x21-\x7e]+$/.test(secret);
+}
 
 // Token laptop: 256 bit acak sebagai 64 karakter heksadesimal huruf kecil.
 export const MACHINE_TOKEN_PATTERN = /^[0-9a-f]{64}$/;

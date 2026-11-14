@@ -145,6 +145,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       rotate,
       printToken,
       allowInsecure: deps.env.AGENTMON_RELAY_INSECURE === "1",
+      envOverridesSaved: Boolean(deps.env.AGENTMON_RELAY_URL?.trim() && deps.env.AGENTMON_RELAY_TOKEN?.trim()),
       out: deps.out,
       err: deps.err,
       ...(deps.pair?.fetch ? { fetch: deps.pair.fetch } : {}),

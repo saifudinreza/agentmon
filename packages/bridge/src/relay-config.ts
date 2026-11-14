@@ -9,11 +9,13 @@
 //   - AGENTMON_RELAY_URL dan AGENTMON_RELAY_TOKEN keduanya diisi: dipakai apa adanya (lingkungan menang).
 //   - Hanya AGENTMON_RELAY_URL diisi: token dari berkas dipakai HANYA bila alamatnya sama dengan yang di berkas.
 //     Token milik satu relay tidak boleh terkirim ke relay lain hanya karena alamatnya diganti sementara.
+//   - Hanya AGENTMON_RELAY_TOKEN diisi: DIABAIKAN (token tanpa alamat tidak bisa dipasangkan dengan relay mana pun, dan
+//     token lama di profil shell tidak boleh diam-diam mengalahkan hasil `register`).
 //   - Tidak ada yang diisi: berkas.
 //
 // KEAMANAN: token disimpan sebagai teks biasa di berkas yang hanya bisa dibaca pemilik (mode 0600 di macOS dan Linux;
 // Windows mengikuti izin folder profil pengguna). Token tidak pernah dicetak atau dicatat oleh modul ini.
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { paths } from "./home";
 
@@ -64,7 +66,14 @@ export function saveRelayConfig(home: string, config: RelayConfig): string {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const temp = `${file}.${process.pid}.tmp`;
   writeFileSync(temp, `${JSON.stringify({ relayUrl: config.relayUrl, token: config.token }, null, 2)}\n`, { mode: 0o600 });
-  renameSync(temp, file);
+  try {
+    renameSync(temp, file);
+  } catch (error) {
+    // Di Windows rename bisa gagal (berkas sedang dibuka antivirus, dan sebagainya): jangan meninggalkan berkas sementara
+    // berisi token.
+    rmSync(temp, { force: true });
+    throw error;
+  }
   return file;
 }
 
@@ -81,9 +90,8 @@ export function resolveRelayConfig(env: Record<string, string | undefined>, home
 
   const saved = loadRelayConfig(home);
   if (!saved) return undefined;
-  // Token tanpa alamat dari lingkungan tidak masuk akal (alamat berasal dari berkas); alamat lingkungan yang berbeda
-  // dari berkas berarti token berkas bukan untuk relay itu.
+  // Alamat lingkungan yang berbeda dari berkas berarti token berkas bukan untuk relay itu. Token lingkungan tanpa alamat
+  // diabaikan (lihat aturan di atas).
   if (envUrl && !sameRelay(envUrl, saved.relayUrl)) return undefined;
-  if (envToken && !envUrl) return { ...saved, token: envToken, source: "env" };
   return { ...saved, source: "file" };
 }

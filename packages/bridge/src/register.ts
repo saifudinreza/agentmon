@@ -17,7 +17,7 @@
 //   - Nomor yang sudah terdaftar tidak ditimpa kecuali --rotate (token hilang atau bocor): daftar dua kali tidak boleh
 //     diam-diam memutus laptop yang sedang berjalan.
 import { hostname as osHostname } from "node:os";
-import { MachineRegisterResponseSchema, sanitizeForTerminal } from "@agentmon/shared";
+import { isHeaderSafeSecret, MachineRegisterResponseSchema, sanitizeForTerminal } from "@agentmon/shared";
 import { loadOrCreateMachineId, paths } from "./home";
 import { loadRelayConfig, saveRelayConfig } from "./relay-config";
 import { isLoopbackHost } from "./relay-client";
@@ -40,6 +40,11 @@ export type RegisterOptions = {
   out: (text: string) => void;
   err: (text: string) => void;
   fetch?: typeof fetch;
+  /**
+   * AGENTMON_RELAY_URL dan AGENTMON_RELAY_TOKEN dua-duanya diisi di lingkungan: keduanya MENGALAHKAN relay.json yang baru disimpan,
+   * jadi daemon tetap memakai token lama itu. Bila benar, pengguna diperingatkan.
+   */
+  envOverridesSaved?: boolean;
   /** Hanya untuk test. */
   hostname?: () => string;
   /** Hanya untuk test: penyimpan pengaturan (bawaannya menulis relay.json). */
@@ -47,6 +52,11 @@ export type RegisterOptions = {
 };
 
 const REQUEST_TIMEOUT_MS = 15_000;
+// Relay gratis tidur saat tidak dipakai dan butuh sekitar 40 sampai 50 detik untuk bangun (diukur di docs/deploy.md). Menunggu
+// bangun dipisah dari pendaftarannya: satu batas waktu pendek untuk POST, supaya permintaan yang batal di tengah jalan
+// tidak meninggalkan laptop yang terdaftar tanpa tokennya sampai ke sini.
+const WAKE_TIMEOUT_MS = 90_000;
+const WAKE_NOTICE_AFTER_MS = 3_000;
 
 /** Nama bawaan dari nama komputer: dipangkas 64 karakter, karakter kontrol dan format dibuang, dan tidak pernah kosong. */
 export function defaultMachineName(hostname: string): string {
@@ -72,6 +82,12 @@ export async function runRegister(options: RegisterOptions): Promise<number> {
     err(
       `Alamat relay ${url.hostname} tidak memakai enkripsi (http), sehingga rahasia admin akan terkirim sebagai teks biasa. Pakai https://. Hanya untuk jaringan tepercaya, izinkan dengan AGENTMON_RELAY_INSECURE=1.`,
     );
+    return 2;
+  }
+  // Rahasia yang memuat spasi atau karakter non-ASCII tidak akan pernah cocok (atau membuat fetch melempar galat header yang
+  // tampak seperti relay tidak terjangkau). Nilainya tidak pernah dicetak.
+  if (!isHeaderSafeSecret(options.adminSecret)) {
+    err("AGENTMON_ADMIN_SECRET memuat spasi atau karakter di luar ASCII, sehingga tidak bisa dikirim sebagai rahasia admin. Periksa isinya (ADMIN_SECRET di relay harus berupa ASCII tanpa spasi).");
     return 2;
   }
   const base = options.relayUrl.replace(/\/+$/, "");
@@ -102,6 +118,17 @@ export async function runRegister(options: RegisterOptions): Promise<number> {
 
   const name = options.name?.trim() || defaultMachineName((options.hostname ?? osHostname)());
 
+  // Membangunkan relay dulu. Respons HTTP apa pun (termasuk 404) berarti relay sudah bangun; yang gagal hanya jaringan.
+  const notice = setTimeout(() => out("Relay sedang bangun (relay gratis bisa butuh sekitar satu menit)…"), WAKE_NOTICE_AFTER_MS);
+  try {
+    await http(`${base}/health`, { signal: AbortSignal.timeout(WAKE_TIMEOUT_MS) });
+  } catch {
+    err(`Relay tidak terjangkau di ${base}. Periksa alamatnya dan koneksi internet, lalu coba lagi.`);
+    return 1;
+  } finally {
+    clearTimeout(notice);
+  }
+
   let response: Response;
   try {
     response = await http(`${base}/admin/machines`, {
@@ -111,7 +138,9 @@ export async function runRegister(options: RegisterOptions): Promise<number> {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch {
-    err(`Relay tidak terjangkau di ${base}. Periksa alamatnya dan koneksi internet (relay gratis bisa butuh sekitar satu menit untuk bangun; coba lagi).`);
+    // Relay sudah bangun (pemeriksaan di atas lolos), tetapi permintaan pendaftarannya sendiri gagal. Bila sempat sampai ke
+    // relay, pendaftaran mungkin sudah tercatat tanpa tokennya sampai ke sini; percobaan ulang lalu dijawab 409.
+    err(`Permintaan pendaftaran ke ${base} gagal di tengah jalan. Coba lagi; bila dijawab "sudah terdaftar", jalankan dengan --rotate.`);
     return 1;
   }
 
@@ -173,6 +202,9 @@ export async function runRegister(options: RegisterOptions): Promise<number> {
     out("Token ditampilkan karena diminta. Jangan dibagikan atau disimpan di tempat lain yang bisa dibaca orang.");
   } else {
     out("Token tidak ditampilkan. Tambahkan --print-token bila perlu menyalinnya ke tempat lain.");
+  }
+  if (options.envOverridesSaved) {
+    err("PERINGATAN: AGENTMON_RELAY_URL dan AGENTMON_RELAY_TOKEN diisi di lingkungan dan MENGALAHKAN berkas ini, jadi daemon tetap memakai token lama itu. Hapus keduanya dari lingkungan (mis. profil shell) supaya relay.json yang baru dipakai.");
   }
   out(options.rotate ? "Jalankan ulang daemon bila sedang berjalan: sambungan lamanya sudah diputus relay." : "Mulai (atau jalankan ulang) daemon untuk menyambung, lalu pasangkan HP dengan perintah pair.");
   return 0;

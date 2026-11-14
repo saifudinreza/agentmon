@@ -29,14 +29,15 @@ Service worker dan Web Push hanya bekerja lewat HTTPS, jadi relay dan PWA perlu 
 ### Laptop: mendaftar ke relay (sekali per laptop)
 Relay yang baru di-deploy tidak mengenal laptop mana pun. Pemilik relay mendaftarkan laptop dengan **rahasia admin**:
 
-1. **Buat rahasia admin** (minimal 32 karakter, acak) di laptop, mis. `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. Jangan tempel di chat atau repo.
+1. **Buat rahasia admin** acak di laptop: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` (64 karakter heksadesimal). Pakai hasil perintah itu, bukan frasa sandi buatan sendiri: keamanan terhadap penebakan bergantung pada acaknya, dan rahasia harus ASCII tanpa spasi. Jangan tempel di chat atau repo.
 2. **Pasang di relay:** tambahkan variabel `ADMIN_SECRET` di dashboard Render (Environment > Add), isi dengan rahasia itu. Relay restart sendiri. Tanpa variabel ini pendaftaran **tertutup** (404), dan rahasia yang kurang dari 32 karakter ditolak dengan pesan di log. Variabel ini sengaja tidak ditulis di `render.yaml` (alasannya sama dengan variabel VAPID).
 3. **Daftarkan laptop** (rahasia lewat lingkungan, bukan argumen perintah, supaya tidak tercatat di riwayat shell):
    ```
    AGENTMON_RELAY_URL=https://agentmon-relay.onrender.com AGENTMON_ADMIN_SECRET=<rahasia> pnpm --filter @agentmon/bridge cli register
    ```
    Di PowerShell: `$env:AGENTMON_RELAY_URL="https://..."; $env:AGENTMON_ADMIN_SECRET="..."; pnpm --filter @agentmon/bridge cli register`. Opsi: `--name "Laptop Kantor"` (bawaan: nama komputer), `--print-token` (menampilkan token), `--rotate` (ganti token).
-4. Perintah itu menyimpan alamat relay dan token di `relay.json` di folder data daemon (`~/.agentmon`, atau `AGENTMON_HOME`). **Daemon dan perintah `pair`, `devices`, dan `revoke` membacanya otomatis**: tidak ada token yang perlu disalin. Variabel `AGENTMON_RELAY_URL` dan `AGENTMON_RELAY_TOKEN` (kalau diisi lengkap) tetap menang atas berkas.
+   Bila relay sedang tidur, `register` menunggu ia bangun (sampai 90 detik; relay gratis butuh sekitar 40 sampai 50 detik) dan memberi tahu bila lebih dari beberapa detik.
+4. Perintah itu menyimpan alamat relay dan token di `relay.json` di folder data daemon (`~/.agentmon`, atau `AGENTMON_HOME`). **Daemon dan perintah `pair`, `devices`, dan `revoke` membacanya otomatis**: tidak ada token yang perlu disalin. Variabel `AGENTMON_RELAY_URL` dan `AGENTMON_RELAY_TOKEN` yang **keduanya** diisi tetap menang atas berkas, jadi hapus keduanya dari profil shell bila dulu pernah mengisinya (`register` memperingatkan).
 5. Bersihkan rahasia admin dari terminal (tutup sesi, atau `Remove-Item Env:AGENTMON_ADMIN_SECRET`). Rahasia itu hanya dibutuhkan saat mendaftar.
 6. Jalankan daemon, lalu pasangkan HP:
    ```

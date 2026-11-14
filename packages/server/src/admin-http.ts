@@ -10,16 +10,20 @@
 // KEAMANAN:
 //   - Loket ini HANYA ada bila relay diberi ADMIN_SECRET (minimal 32 karakter). Tanpa itu, /admin/* tidak ada (404).
 //   - Rahasia dibandingkan dengan waktu tetap (lewat hash), supaya tidak bisa ditebak dari selisih waktu jawaban.
-//   - Percobaan dengan rahasia salah dibatasi lajunya per alamat IP DAN secara keseluruhan; yang sudah kehabisan
-//     jatah ditolak (429) SEBELUM rahasianya diperiksa, jadi penebak tidak bisa terus mencoba.
-//   - Pendaftaran yang berhasil juga dibatasi lajunya, supaya rahasia yang bocor tidak bisa dipakai membanjiri tabel.
+//   - Percobaan dengan rahasia salah dibatasi lajunya PER ALAMAT IP; alamat yang sudah kehabisan jatah ditolak (429)
+//     SEBELUM rahasianya diperiksa, jadi penebak dari alamat itu tidak bisa terus mencoba. Sengaja TIDAK ada kuncian
+//     global: kuncian yang berlaku untuk semua alamat bisa dipakai orang luar untuk mengunci pemilik sah dari relaynya
+//     sendiri (cukup satu permintaan salah per 30 detik dari dua alamat). Penebakan dari banyak alamat dilawan oleh
+//     panjang rahasia (minimal 32 karakter; buat acak, lihat docs/deploy.md), bukan oleh kuncian.
+//   - Pendaftaran yang berhasil juga dibatasi lajunya (jatah DIAMBIL sebelum menunggu database, supaya permintaan
+//     serentak tidak lolos bersamaan), supaya rahasia yang bocor tidak bisa dipakai membanjiri tabel.
 //   - Token dibuat DI RELAY (acak 256 bit), hanya hash-nya yang disimpan, dan token dikembalikan SEKALI. Tidak
 //     pernah masuk log, dan jawabannya tidak boleh disimpan cache.
 //   - Tidak ada CORS: loket ini bukan untuk browser.
 //   - Nomor yang sudah terdaftar ditolak (409) kecuali diminta mengganti token (`rotate`), supaya pendaftaran ganda
 //     tidak diam-diam memutus laptop yang sedang berjalan. Mengganti token memutus sambungan lama seketika.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { MachineRegisterRequestSchema, type MachineRegisterResponse } from "@agentmon/shared";
+import { isHeaderSafeSecret, MachineRegisterRequestSchema, type MachineRegisterResponse } from "@agentmon/shared";
 import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { clientAddress } from "./client-ip";
@@ -28,6 +32,7 @@ import { silentLogger, type Logger } from "./logger";
 import { createKeyedRateLimiter } from "./rate-limit";
 
 export const MIN_ADMIN_SECRET_LENGTH = 32;
+
 
 /**
  * Membaca ADMIN_SECRET dari lingkungan. Kosong = loket tidak dibuka (bukan galat). Terlalu pendek = tidak dibuka
@@ -38,6 +43,11 @@ export function parseAdminSecret(env: Record<string, string | undefined>): { sec
   const raw = env.ADMIN_SECRET;
   if (raw === undefined || raw === "") return {};
   const secret = raw.trim();
+  // Rahasia dikirim sebagai `Authorization: Bearer <rahasia>`: spasi di dalamnya membuat header tidak pernah cocok, dan karakter
+  // di luar ASCII membuat fetch di laptop melempar galat header. Ditolak di sini supaya pemilik tidak mengunci dirinya sendiri.
+  if (!isHeaderSafeSecret(secret)) {
+    return { problem: "ADMIN_SECRET hanya boleh berisi karakter ASCII yang tercetak tanpa spasi; pendaftaran laptop TIDAK dibuka" };
+  }
   if (secret.length < MIN_ADMIN_SECRET_LENGTH) {
     return { problem: `ADMIN_SECRET terlalu pendek (minimal ${MIN_ADMIN_SECRET_LENGTH} karakter); pendaftaran laptop TIDAK dibuka` };
   }
@@ -48,9 +58,9 @@ export type AdminLimits = {
   /** Percobaan rahasia salah per alamat IP. */
   failureBurstPerIp: number;
   failureRefillPerSecondPerIp: number;
-  /** Percobaan rahasia salah dari semua alamat sekaligus (penebak yang berganti alamat). */
-  failureBurstGlobal: number;
-  failureRefillPerSecondGlobal: number;
+  /** Berapa banyak penolakan dari semua alamat yang dicatat di log (pengerem log; TIDAK memblokir siapa pun). */
+  logBurst: number;
+  logRefillPerSecond: number;
   /** Pendaftaran yang berhasil, secara keseluruhan. */
   successBurst: number;
   successRefillPerSecond: number;
@@ -59,8 +69,8 @@ export type AdminLimits = {
 export const DEFAULT_ADMIN_LIMITS: AdminLimits = {
   failureBurstPerIp: 5,
   failureRefillPerSecondPerIp: 1 / 60, // 1 percobaan per menit setelah lonjakan awal
-  failureBurstGlobal: 30,
-  failureRefillPerSecondGlobal: 1 / 30,
+  logBurst: 5,
+  logRefillPerSecond: 1 / 10,
   successBurst: 10,
   successRefillPerSecond: 1 / 60,
 };
@@ -97,7 +107,9 @@ export function mountAdminRoutes(app: Hono, options: AdminRoutesOptions): void {
   const newToken = options.newToken ?? (() => randomBytes(32).toString("hex"));
 
   const failuresPerIp = createKeyedRateLimiter({ capacity: limits.failureBurstPerIp, refillPerSecond: limits.failureRefillPerSecondPerIp, ...clock });
-  const failuresGlobal = createKeyedRateLimiter({ capacity: limits.failureBurstGlobal, refillPerSecond: limits.failureRefillPerSecondGlobal, ...clock });
+  // Hanya menentukan apakah satu penolakan dicatat di log; penolakannya sendiri tetap dijawab. Tanpa ini, penebak dari
+  // banyak alamat bisa membanjiri log hosting.
+  const logBudget = createKeyedRateLimiter({ capacity: limits.logBurst, refillPerSecond: limits.logRefillPerSecond, ...clock });
   const successes = createKeyedRateLimiter({ capacity: limits.successBurst, refillPerSecond: limits.successRefillPerSecond, ...clock });
 
   // Jawaban yang membawa token tidak boleh disimpan cache perantara.
@@ -111,23 +123,25 @@ export function mountAdminRoutes(app: Hono, options: AdminRoutesOptions): void {
     bodyLimit({ maxSize: MAX_BODY_BYTES, onError: (c) => json(c, { error: "too-large" }, 413) }),
     async (c) => {
       const address = clientAddress(c, options.trustProxy);
-      // Jatah kegagalan habis: ditolak SEBELUM rahasia diperiksa, supaya penebak tidak tahu apakah tebakannya benar.
-      if (!failuresPerIp.canTake(address) || !failuresGlobal.canTake(GLOBAL_KEY)) return json(c, { error: "rate-limited" }, 429);
+      // Jatah kegagalan alamat ini habis: ditolak SEBELUM rahasia diperiksa, supaya penebak tidak tahu apakah tebakannya benar.
+      if (!failuresPerIp.canTake(address)) return json(c, { error: "rate-limited" }, 429);
 
       const given = bearer(c);
       // Hash 32 byte di kedua sisi: panjang sama, jadi timingSafeEqual aman dan tidak membocorkan panjang rahasia.
       if (!given || !timingSafeEqual(digest(given), secretDigest)) {
         failuresPerIp.take(address);
-        failuresGlobal.take(GLOBAL_KEY);
-        logger.error("pendaftaran laptop ditolak: rahasia admin salah atau tidak ada");
+        if (logBudget.take(GLOBAL_KEY)) logger.error("pendaftaran laptop ditolak: rahasia admin salah atau tidak ada");
         return json(c, { error: "unauthorized" }, 401);
       }
-
-      if (!successes.canTake(GLOBAL_KEY)) return json(c, { error: "rate-limited" }, 429);
 
       const parsed = MachineRegisterRequestSchema.safeParse(await c.req.json().catch(() => undefined));
       if (!parsed.success) return json(c, { error: "bad-request" }, 400);
       const { id, name, rotate } = parsed.data;
+
+      // Jatah DIAMBIL di sini, sebelum menunggu database. Bila baru diambil sesudahnya, semua permintaan serentak yang tiba
+      // sebelum pendaftaran pertama selesai lolos pemeriksaan bersama (100 permintaan serentak = 100 pendaftaran).
+      // Permintaan yang bentuknya tidak sah (400) tidak memakai jatah; yang ditolak 409 atau 404 memakainya.
+      if (!successes.take(GLOBAL_KEY)) return json(c, { error: "rate-limited" }, 429);
 
       const token = newToken();
       if (rotate) {
@@ -137,7 +151,6 @@ export function mountAdminRoutes(app: Hono, options: AdminRoutesOptions): void {
         return json(c, { error: "already-registered" }, 409);
       }
 
-      successes.take(GLOBAL_KEY);
       // Hanya nomor (bukan rahasia) yang dicatat; tidak pernah token atau rahasia admin.
       logger.info(`laptop ${rotate ? "diganti tokennya" : "terdaftar"}: ${id}`);
       return json(c, { machineId: id, token } satisfies MachineRegisterResponse, 201);

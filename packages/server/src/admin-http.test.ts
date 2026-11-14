@@ -101,8 +101,24 @@ describe("parseAdminSecret", () => {
     expect(result.problem).toContain("terlalu pendek");
     expect(result.problem).not.toContain(short);
   });
-  test("hanya spasi dianggap terlalu pendek (bukan 'diisi')", () => {
+  test("hanya spasi dianggap tidak sah (bukan 'diisi')", () => {
     expect(parseAdminSecret({ ADMIN_SECRET: " ".repeat(40) }).secret).toBeUndefined();
+  });
+  test.each([
+    ["spasi di dalam", "kata sandi yang panjang dengan spasi di dalamnya 123"],
+    ["karakter non-ASCII", `rahasia-dengan-huruf-${"\u00e9"}-yang-cukup-panjang-12345`],
+    ["tab di dalam", "rahasia\tyang-panjang-0123456789abcdef-xyz"],
+    ["baris baru di dalam", "rahasia\nyang-panjang-0123456789abcdef-xyz"],
+    ["emoji", `rahasia-yang-panjang-0123456789abcdef-${"\u{1F600}"}`],
+  ])("rahasia dengan %s: ditolak sejak awal (tidak akan pernah cocok dengan header), tanpa mencetak nilainya", (_name, raw) => {
+    const result = parseAdminSecret({ ADMIN_SECRET: raw });
+    expect(result.secret).toBeUndefined();
+    expect(result.problem).toContain("ASCII");
+    expect(result.problem).not.toContain(raw);
+  });
+  test("karakter simbol ASCII yang lazim di rahasia acak (base64, heksadesimal, tanda baca) diterima", () => {
+    const secret = "aB3_-.~!@#$%^&*()+=/:;,<>?[]{}|abcdefghijklmnopqrstuvwxyz";
+    expect(parseAdminSecret({ ADMIN_SECRET: secret })).toEqual({ secret });
   });
 });
 
@@ -211,15 +227,69 @@ describe("POST /admin/machines: pembatasan laju", () => {
     expect((await register(base, { id: ID, name: "X" })).status).toBe(201);
   });
 
-  test("penebak yang berganti-ganti alamat tetap dibatasi secara keseluruhan", async () => {
-    const base = await start({ trustProxy: true, limits: { failureBurstGlobal: 6 } });
-    for (let i = 0; i < 6; i++) {
-      const res = await register(base, { id: ID, name: "X" }, { authorization: "Bearer salah", "x-forwarded-for": `10.0.0.${i}` });
-      expect(res.status).toBe(401);
+  test("orang luar yang menebak dari banyak alamat TIDAK bisa mengunci pemilik di alamat lain (hasil review PR #59)", async () => {
+    const base = await start({ trustProxy: true });
+    // 8 alamat berbeda masing-masing 5 tebakan salah: tiap alamat itu sendiri terkunci...
+    for (let ip = 0; ip < 8; ip++) {
+      for (let i = 0; i < 5; i++) {
+        const res = await register(base, { id: ID, name: "X" }, { authorization: "Bearer salah", "x-forwarded-for": `10.0.0.${ip}` });
+        expect(res.status).toBe(401);
+      }
+      const locked = await register(base, { id: ID, name: "X" }, { authorization: "Bearer salah", "x-forwarded-for": `10.0.0.${ip}` });
+      expect(locked.status).toBe(429);
     }
-    const fresh = await register(base, { id: ID, name: "X" }, { authorization: `Bearer ${SECRET}`, "x-forwarded-for": "10.9.9.9" });
-    expect(fresh.status).toBe(429);
-    expect(await rows()).toEqual([]);
+    // ...tetapi pemilik dari alamat lain tetap bisa mendaftar.
+    const owner = await register(base, { id: ID, name: "Laptop" }, { authorization: `Bearer ${SECRET}`, "x-forwarded-for": "10.9.9.9" });
+    expect(owner.status).toBe(201);
+  });
+
+  test("tebakan dari banyak alamat tidak membanjiri log: hanya beberapa baris pertama yang dicatat", async () => {
+    const base = await start({ trustProxy: true });
+    for (let ip = 0; ip < 60; ip++) await register(base, { id: ID, name: "X" }, { authorization: "Bearer salah", "x-forwarded-for": `10.1.0.${ip}` });
+    const rejected = logs.filter((l) => l.includes("pendaftaran laptop ditolak"));
+    expect(rejected.length).toBeGreaterThan(0);
+    expect(rejected.length).toBeLessThanOrEqual(5);
+  });
+
+  test("permintaan SERENTAK tidak menembus batas pendaftaran yang berhasil (hasil review PR #59)", async () => {
+    const base = await start({ limits: { successBurst: 3 } });
+    const ids = Array.from({ length: 30 }, (_, i) => `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`);
+    const responses = await Promise.all(ids.map((id) => register(base, { id, name: "Serentak" })));
+    const statuses = responses.map((r) => r.status);
+    expect(statuses.filter((s) => s === 201)).toHaveLength(3);
+    expect(statuses.filter((s) => s === 429)).toHaveLength(27);
+    expect(await rows()).toHaveLength(3);
+  });
+
+  test("permintaan serentak dengan registry yang lambat pun tetap dibatasi (database baru menjawab sesudah semuanya tiba)", async () => {
+    const slow = createMachineRegistry(handle.db);
+    relay = await startRelayServer({
+      directory,
+      port: 0,
+      host: "127.0.0.1",
+      admin: {
+        secret: SECRET,
+        registry: {
+          register: async (input) => (await new Promise((resolve) => setTimeout(resolve, 80)), slow.register(input)),
+          rotate: (input) => slow.rotate(input),
+        },
+        now: () => clock.ms,
+        limits: { successBurst: 2 },
+      },
+    });
+    const base = `http://127.0.0.1:${relay.port}`;
+    const ids = Array.from({ length: 12 }, (_, i) => `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`);
+    const statuses = (await Promise.all(ids.map((id) => register(base, { id, name: "Lambat" })))).map((r) => r.status);
+    expect(statuses.filter((s) => s === 201)).toHaveLength(2);
+    expect(await rows()).toHaveLength(2);
+  });
+
+  test("permintaan yang bentuknya tidak sah tidak memakai jatah pendaftaran, yang bentuknya sah tetapi ditolak 409 memakainya", async () => {
+    const base = await start({ limits: { successBurst: 2 } });
+    for (let i = 0; i < 4; i++) expect((await register(base, { id: "bukan-uuid", name: "X" })).status).toBe(400);
+    expect((await register(base, { id: ID, name: "A" })).status).toBe(201);
+    expect((await register(base, { id: ID, name: "A" })).status).toBe(409); // jatah kedua terpakai
+    expect((await register(base, { id: ID2, name: "B" })).status).toBe(429);
   });
 
   test("pendaftaran yang berhasil juga dibatasi (rahasia bocor tidak bisa membanjiri tabel)", async () => {
