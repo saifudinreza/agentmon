@@ -126,6 +126,8 @@ export function createDbDirectory(db: Database, options: { now?: () => Date } = 
 
     async revokeDevice(deviceId) {
       await db.update(devices).set({ revokedAt: now() }).where(and(eq(devices.id, deviceId), isNull(devices.revokedAt)));
+      // HP yang dicabut tidak boleh lagi menerima notifikasi, dan alamat notifikasinya tidak perlu disimpan.
+      await db.delete(pushSubscriptions).where(eq(pushSubscriptions.deviceId, deviceId));
     },
   };
 }

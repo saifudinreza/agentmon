@@ -8,14 +8,19 @@
 //                                 (misalnya https://app.contoh.com)
 //        TRUST_PROXY=1            relay di belakang proxy hosting; IP penelepon dibaca dari
 //                                 X-Forwarded-For. Jangan nyalakan bila relay terbuka langsung.
+//        VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT
+//                                 kunci Web Push (buat dengan `pnpm --filter @agentmon/server push:keys`);
+//                                 subjek berupa https:// atau mailto:. Tanpa ketiganya push mati.
+//        PUSH_ALLOWED_HOSTS       (opsional) akhiran host layanan push tambahan, dipisah koma
 //
 //   2. MODE PENGEMBANGAN (tanpa database): direktori hanya di memori dengan satu laptop dan satu HP
 //      yang tokennya diambil dari variabel lingkungan. Untuk mencoba relay secara manual.
 //      Pairing TIDAK tersedia di mode ini.
-import { createDbDirectory, createPairingService, createStore, openPostgres, startRetention, type DatabaseHandle } from "./db";
+import { createDbDirectory, createPairingService, createPushStore, createStore, openPostgres, startRetention, type DatabaseHandle } from "./db";
 import { createMemoryDirectory, type RelayDirectory } from "./directory";
 import { createConsoleLogger } from "./logger";
 import { startRelayServer, type RelayServerOptions } from "./node";
+import { createEndpointPolicy, parseVapidConfig } from "./push";
 
 const logger = createConsoleLogger();
 
@@ -54,7 +59,16 @@ if (process.env.DATABASE_URL) {
   };
   // Event dari laptop disimpan sebelum diteruskan dan di-ack, dan HP membaca riwayatnya lewat /api/*.
   persist = (event) => eventStore.saveEvent(event);
-  deviceApi = { directory: dbDirectory, store: eventStore, devices: pairing.pairing, allowedOrigins, trustProxy: process.env.TRUST_PROXY === "1" };
+  // Web Push: menyala hanya bila ketiga VAPID_* diisi dan benar. Selain itu relay tetap jalan tanpa push.
+  const vapid = parseVapidConfig(process.env);
+  if (vapid.problem) logger.error(`Web Push mati: ${vapid.problem}`);
+  else if (!vapid.config) logger.info("Web Push mati: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, dan VAPID_SUBJECT belum diisi");
+  const push = {
+    store: createPushStore(database.db),
+    isAllowedEndpoint: createEndpointPolicy((process.env.PUSH_ALLOWED_HOSTS ?? "").split(",")),
+    ...(vapid.config ? { vapidPublicKey: vapid.config.publicKey } : {}),
+  };
+  deviceApi = { directory: dbDirectory, store: eventStore, devices: pairing.pairing, allowedOrigins, trustProxy: process.env.TRUST_PROXY === "1", push };
 } else {
   const machineToken = process.env.RELAY_DEV_MACHINE_TOKEN;
   const deviceToken = process.env.RELAY_DEV_DEVICE_TOKEN;

@@ -7,6 +7,8 @@
     "start": "tsx src/main.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate-cli.ts",
+    "push:keys": "tsx src/push-cli.ts keys",
+    "push:test": "tsx src/push-cli.ts test",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run"
   },
@@ -17,10 +19,12 @@
     "drizzle-orm": "0.45.4",
     "hono": "4.13.17",
     "pg": "8.23.1",
+    "web-push": "3.6.7",
     "ws": "8.22.2"
   },
   "devDependencies": {
     "@types/pg": "8.23.1",
+    "@types/web-push": "3.6.4",
     "@types/ws": "8.18.2",
     "drizzle-kit": "0.31.11",
     "tsx": "^4.23.15"

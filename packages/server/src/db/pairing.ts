@@ -20,7 +20,7 @@ import { and, asc, eq, gt, inArray, isNull, min, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { hashToken } from "../directory";
 import type { Database } from "./connect";
-import { devices, machines, pairingCodes, pairings } from "./schema";
+import { devices, machines, pairingCodes, pairings, pushSubscriptions } from "./schema";
 
 export const DEFAULT_CODE_TTL_MS = 5 * 60 * 1000; // kode berlaku 5 menit
 export const DEFAULT_MAX_ACTIVE_CODES = 5; // kode yang belum terpakai per laptop
@@ -168,6 +168,8 @@ export function createPairingService(db: Database, options: PairingOptions = {})
       }
       if (!related) return false;
       await db.update(devices).set({ revokedAt: now() }).where(and(eq(devices.id, targetId), isNull(devices.revokedAt)));
+      // HP yang dicabut tidak boleh lagi menerima notifikasi, dan alamat notifikasinya tidak perlu disimpan.
+      await db.delete(pushSubscriptions).where(eq(pushSubscriptions.deviceId, targetId));
       return true;
     },
 
