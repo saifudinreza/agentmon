@@ -15,11 +15,14 @@ import {
   EventsResponseSchema,
   MachinesResponseSchema,
   PushConfigResponseSchema,
+  PushPreferencesSchema,
   SessionsResponseSchema,
   type DeviceMachine,
   type Envelope,
   type PendingApproval,
   type PushConfigResponse,
+  type PushPreferences,
+  type PushPreferencesUpdate,
   type PushSubscriptionRequest,
   type SessionSummary,
 } from "@agentmon/shared";
@@ -53,6 +56,10 @@ export type RelayApi = {
   savePushSubscription(subscription: PushSubscriptionRequest): Promise<void>;
   /** Berhenti menerima notifikasi di HP ini. */
   removePushSubscription(): Promise<void>;
+  /** Jenis notifikasi yang diinginkan HP ini. Gagal `not-found` bila belum berlangganan. */
+  pushPreferences(): Promise<PushPreferences>;
+  /** Mengubah jenis notifikasi (yang tidak disebut tetap) dan mengembalikan hasilnya. */
+  savePushPreferences(update: PushPreferencesUpdate): Promise<PushPreferences>;
   sessions(machineId: string): Promise<SessionSummary[]>;
   events(machineId: string, sessionId: string, afterSeq: number, limit?: number): Promise<{ events: Envelope[]; hasMore: boolean }>;
   /** Semua event sesudah `afterSeq`, mengikuti halaman sampai habis. `onPage` dipanggil tiap halaman supaya layar bisa terisi bertahap. */
@@ -114,6 +121,8 @@ export function createRelayApi(options: RelayApiOptions): RelayApi {
     pushConfig: () => get("/api/push/key", (json) => PushConfigResponseSchema.parse(json)),
     savePushSubscription: (subscription) => get("/api/push/subscription", () => undefined, "PUT", subscription),
     removePushSubscription: () => get("/api/push/subscription", () => undefined, "DELETE"),
+    pushPreferences: () => get("/api/push/preferences", (json) => PushPreferencesSchema.parse(json)),
+    savePushPreferences: (update) => get("/api/push/preferences", (json) => PushPreferencesSchema.parse(json), "PUT", update),
     sessions: (machineId) => get(`/api/machines/${encodeURIComponent(machineId)}/sessions`, (json) => SessionsResponseSchema.parse(json).sessions),
     events,
     async eventsAfter(machineId, sessionId, afterSeq, onPage) {

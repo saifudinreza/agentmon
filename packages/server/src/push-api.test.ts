@@ -271,3 +271,103 @@ describe("langganan dan siapa yang dihubungi", () => {
     await pushStore.removeByIds([]); // tidak melempar
   });
 });
+
+describe("pengaturan jenis notifikasi (FR-33)", () => {
+  const subscribe = async (base: string, token: string) => request(base, "PUT", "/api/push/subscription", token, fakeBrowser().subscription);
+  const prefs = (base: string, token: string | null) => request(base, "GET", "/api/push/preferences", token);
+
+  test("belum berlangganan: 404 (belum ada yang diatur)", async () => {
+    const base = await start();
+    const res = await prefs(base, T.d1);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "no-subscription" });
+    expect((await request(base, "PUT", "/api/push/preferences", T.d1, { approvals: false })).status).toBe(404);
+  });
+
+  test("sudah berlangganan: semua jenis menyala secara bawaan", async () => {
+    const base = await start();
+    await subscribe(base, T.d1);
+    const res = await prefs(base, T.d1);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ approvals: true, done: true });
+  });
+
+  test("mengubah satu jenis: yang lain tidak berubah, dan tersimpan", async () => {
+    const base = await start();
+    await subscribe(base, T.d1);
+    const res = await request(base, "PUT", "/api/push/preferences", T.d1, { done: false });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ approvals: true, done: false });
+    expect(await (await prefs(base, T.d1)).json()).toEqual({ approvals: true, done: false });
+    await request(base, "PUT", "/api/push/preferences", T.d1, { approvals: false });
+    expect(await (await prefs(base, T.d1)).json()).toEqual({ approvals: false, done: false });
+    expect(await pushStore.getPreferences("d1")).toEqual({ approvals: false, done: false });
+  });
+
+  test("pengaturan milik tiap HP: mengubah satu HP tidak menyentuh HP lain", async () => {
+    const base = await start();
+    await subscribe(base, T.d1);
+    await subscribe(base, T.d2);
+    await request(base, "PUT", "/api/push/preferences", T.d1, { approvals: false, done: false });
+    expect(await (await prefs(base, T.d2)).json()).toEqual({ approvals: true, done: true });
+  });
+
+  test("berlangganan ulang (alamat berganti) mewarisi pengaturan: notifikasi yang sengaja dimatikan tidak menyala lagi", async () => {
+    const base = await start();
+    await subscribe(base, T.d1);
+    await request(base, "PUT", "/api/push/preferences", T.d1, { approvals: false });
+    await subscribe(base, T.d1); // alamat baru menggantikan yang lama
+    expect(await (await prefs(base, T.d1)).json()).toEqual({ approvals: false, done: true });
+    expect((await pushStore.forDevice("d1"))[0]).toMatchObject({ notifyApprovals: false, notifyDone: true });
+  });
+
+  test("mencabut langganan menghapus pengaturannya (404 lagi)", async () => {
+    const base = await start();
+    await subscribe(base, T.d1);
+    await request(base, "DELETE", "/api/push/subscription", T.d1);
+    expect((await prefs(base, T.d1)).status).toBe(404);
+  });
+
+  test.each([
+    ["kosong", {}],
+    ["bukan boolean", { approvals: "ya" }],
+    ["angka", { done: 1 }],
+    ["null", { approvals: null }],
+    ["array", []],
+    ["teks", '"halo"'],
+    ["bukan JSON", "{rusak"],
+  ])("isi tidak sah (%s): 400 dan tidak ada yang berubah", async (_name, body) => {
+    const base = await start();
+    await subscribe(base, T.d1);
+    const res = await request(base, "PUT", "/api/push/preferences", T.d1, body);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid-preferences" });
+    expect(await (await prefs(base, T.d1)).json()).toEqual({ approvals: true, done: true });
+  });
+
+  test("kolom tambahan diabaikan, dan isi terlalu besar ditolak 413", async () => {
+    const base = await start();
+    await subscribe(base, T.d1);
+    expect((await request(base, "PUT", "/api/push/preferences", T.d1, { done: false, sampah: "x" })).status).toBe(200);
+    expect((await request(base, "PUT", "/api/push/preferences", T.d1, { done: true, sampah: "x".repeat(10_000) })).status).toBe(413);
+    expect(await (await prefs(base, T.d1)).json()).toEqual({ approvals: true, done: false });
+  });
+
+  test("penyimpanan: pembaruan kosong tidak melempar (satu klausa SET kosong ditolak SQL) dan hanya memberi tahu ada tidaknya langganan", async () => {
+    const base = await start();
+    expect(await pushStore.setPreferences("d1", {})).toBe(false); // belum berlangganan
+    await subscribe(base, T.d1);
+    expect(await pushStore.setPreferences("d1", {})).toBe(true);
+    expect(await pushStore.getPreferences("d1")).toEqual({ approvals: true, done: true });
+  });
+
+  test("tanpa token atau token salah: 401", async () => {
+    const base = await start();
+    await subscribe(base, T.d1);
+    for (const token of [null, "token-salah-0000000000000000000000"]) {
+      expect((await prefs(base, token)).status).toBe(401);
+      expect((await request(base, "PUT", "/api/push/preferences", token, { approvals: false })).status).toBe(401);
+    }
+    expect(await (await prefs(base, T.d1)).json()).toEqual({ approvals: true, done: true });
+  });
+});

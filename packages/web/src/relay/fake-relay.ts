@@ -1,6 +1,6 @@
 // Pembantu KHUSUS TEST: relay tiruan di sisi data (laptop, sesi, event yang "tersimpan") beserta API yang
 // membacanya. Dipakai test store dan test layar. Tidak dipakai kode aplikasi.
-import type { DeviceMachine, Envelope, ListedDevice, PendingApproval, PushConfigResponse, PushSubscriptionRequest, SessionSummary } from "@agentmon/shared";
+import type { DeviceMachine, Envelope, ListedDevice, PendingApproval, PushConfigResponse, PushPreferences, PushSubscriptionRequest, SessionSummary } from "@agentmon/shared";
 import { vi } from "vitest";
 import type { RelayApi } from "./api";
 import { sessionKey } from "./relay-store";
@@ -41,9 +41,9 @@ export function fakeRelay() {
     approvals: [] as PendingApproval[],
     devices: [] as ListedDevice[],
     // Web Push: konfigurasi yang diberikan relay, langganan terakhir yang tersimpan, dan berapa kali dihapus.
-    push: { config: { enabled: true, publicKey: FAKE_VAPID_PUBLIC_KEY } as PushConfigResponse, saved: undefined as PushSubscriptionRequest | undefined, removed: 0 },
+    push: { config: { enabled: true, publicKey: FAKE_VAPID_PUBLIC_KEY } as PushConfigResponse, saved: undefined as PushSubscriptionRequest | undefined, removed: 0, prefs: { approvals: true, done: true } as PushPreferences },
   };
-  const fail: { machines?: Error; sessions?: Error; events?: Error; approvals?: Error; devices?: Error; revoke?: Error; pushConfig?: Error; pushSave?: Error; pushRemove?: Error } = {};
+  const fail: { machines?: Error; sessions?: Error; events?: Error; approvals?: Error; devices?: Error; revoke?: Error; pushConfig?: Error; pushSave?: Error; pushRemove?: Error; pushPrefsLoad?: Error; pushPrefsSave?: Error } = {};
   const calls = { machines: 0, sessions: 0, eventsAfter: [] as number[] };
   let gate: Promise<void> | undefined;
   const api: RelayApi = {
@@ -72,6 +72,15 @@ export function fakeRelay() {
     savePushSubscription: vi.fn(async (subscription: PushSubscriptionRequest) => {
       if (fail.pushSave) throw fail.pushSave;
       data.push.saved = subscription;
+    }),
+    pushPreferences: vi.fn(async () => {
+      if (fail.pushPrefsLoad) throw fail.pushPrefsLoad;
+      return { ...data.push.prefs };
+    }),
+    savePushPreferences: vi.fn(async (update: Partial<PushPreferences>) => {
+      if (fail.pushPrefsSave) throw fail.pushPrefsSave;
+      data.push.prefs = { ...data.push.prefs, ...update };
+      return { ...data.push.prefs };
     }),
     removePushSubscription: vi.fn(async () => {
       if (fail.pushRemove) throw fail.pushRemove;

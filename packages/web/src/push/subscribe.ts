@@ -56,7 +56,7 @@ export type PushEnv = {
   intent: { get(): boolean; set(on: boolean): void };
   /** Alamat langganan yang sudah dikirim ke relay pada sesi ini; menghindari PUT berulang tiap kartu dibuka. Tanpa ini, selalu dikirim. */
   synced?: Set<string>;
-  api: Pick<RelayApi, "pushConfig" | "savePushSubscription" | "removePushSubscription">;
+  api: Pick<RelayApi, "pushConfig" | "savePushSubscription" | "removePushSubscription" | "pushPreferences" | "savePushPreferences">;
 };
 
 export const PUSH_INTENT_KEY = "agentmon.push";

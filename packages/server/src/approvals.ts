@@ -11,6 +11,11 @@
 // Fungsi ini murni (tanpa database) supaya mudah diuji.
 import { EventSchema, type Envelope, type PendingApproval } from "@agentmon/shared";
 
+// Permintaan izin yang lebih tua dari ini tidak mungkin masih menunggu (batas waktu bawaan 9 menit), jadi tidak perlu dibaca.
+export const APPROVAL_LOOKBACK_MS = 30 * 60 * 1000;
+
+export const APPROVAL_EVENT_TYPES = ["approval.requested", "approval.resolved", "approval.auto_resolved"] as const;
+
 const LEVEL_RANK = { high: 0, medium: 1, low: 2 } as const;
 
 /**

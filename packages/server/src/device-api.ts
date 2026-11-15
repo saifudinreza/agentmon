@@ -12,6 +12,8 @@
 //   GET /api/push/key, PUT /api/push/subscription, DELETE /api/push/subscription
 //       Web Push: apakah push menyala dan kunci publik VAPID, mendaftarkan langganan HP ini (menggantikan yang
 //       lama), dan mencabutnya. Hanya ada bila relay diberi penyimpanan langganan.
+//   GET /api/push/preferences, PUT /api/push/preferences
+//       Jenis notifikasi yang diinginkan HP ini (izin, selesai). 404 bila HP belum berlangganan.
 //
 // ANALOGI: arsip kantor. Siapa pun boleh minta berkas, tetapi petugas memeriksa kartu anggota (token HP)
 // dan memastikan laptop yang diminta memang milik anggota itu.
@@ -23,11 +25,11 @@
 //     terdaftar.
 //   - Laju dibatasi per HP, dan ukuran halaman dibatasi (maksimal 500 event).
 //   - CORS hanya untuk asal PWA yang diizinkan.
-import { ApprovalsResponseSchema, DevicesResponseSchema, EventsResponseSchema, PushConfigResponseSchema, type DeviceMachine, type PendingApproval, type SessionSummary } from "@agentmon/shared";
+import { ApprovalsResponseSchema, DevicesResponseSchema, EventsResponseSchema, PushConfigResponseSchema, PushPreferencesSchema, PushPreferencesUpdateSchema, type DeviceMachine, type PendingApproval, type SessionSummary } from "@agentmon/shared";
 import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
-import { computePendingApprovals } from "./approvals";
+import { APPROVAL_EVENT_TYPES, APPROVAL_LOOKBACK_MS, computePendingApprovals } from "./approvals";
 import type { DbDirectory } from "./db/directory";
 import type { PairingService } from "./db/pairing";
 import type { PushStore } from "./db/push";
@@ -49,7 +51,7 @@ export type DeviceApiOptions = {
    * HP diberi tahu `enabled: false` dan pendaftaran langganan ditolak (503).
    */
   push?: {
-    store: Pick<PushStore, "replace" | "removeAll">;
+    store: Pick<PushStore, "replace" | "removeAll" | "getPreferences" | "setPreferences">;
     vapidPublicKey?: string;
     isAllowedEndpoint: (endpoint: string) => boolean;
   };
@@ -67,9 +69,6 @@ export type DeviceApiOptions = {
 export const DEFAULT_DEVICE_API_LIMITS = { burst: 60, refillPerSecond: 5 };
 // Longgar untuk pengguna sah yang sesekali salah (token basi di satu HP), ketat untuk penyerang.
 export const DEFAULT_AUTH_FAILURE_LIMITS = { burst: 30, refillPerSecond: 1 };
-
-// Permintaan izin yang lebih tua dari ini tidak mungkin masih menunggu (batas waktu bawaan 9 menit), jadi tidak perlu dibaca.
-const APPROVAL_LOOKBACK_MS = 30 * 60 * 1000;
 
 const MAX_ID_LENGTH = 200;
 const DEFAULT_EVENTS_LIMIT = 200;
@@ -190,6 +189,27 @@ export function mountDeviceApi(app: Hono, options: DeviceApiOptions): void {
         return c.json({ ok: true });
       },
     );
+    // Jenis notifikasi yang diinginkan HP ini. Milik langganan HP itu: belum berlangganan berarti belum ada yang diatur.
+    app.get("/api/push/preferences", async (c) => {
+      const auth = await authenticate(c);
+      if (auth instanceof Response) return auth;
+      const preferences = await push.store.getPreferences(auth.deviceId);
+      if (!preferences) return c.json({ error: "no-subscription" }, 404);
+      return c.json(PushPreferencesSchema.parse(preferences));
+    });
+    app.put(
+      "/api/push/preferences",
+      bodyLimit({ maxSize: MAX_PUSH_BODY_BYTES, onError: (c) => c.json({ error: "too-large" }, 413) }),
+      async (c) => {
+        const auth = await authenticate(c);
+        if (auth instanceof Response) return auth;
+        const update = PushPreferencesUpdateSchema.safeParse(await c.req.json().catch(() => undefined));
+        if (!update.success) return c.json({ error: "invalid-preferences" }, 400);
+        if (!(await push.store.setPreferences(auth.deviceId, update.data))) return c.json({ error: "no-subscription" }, 404);
+        const preferences = await push.store.getPreferences(auth.deviceId);
+        return c.json(PushPreferencesSchema.parse(preferences));
+      },
+    );
     // Berhenti menerima notifikasi di HP ini. Aman dipanggil berulang.
     app.delete("/api/push/subscription", async (c) => {
       const auth = await authenticate(c);
@@ -208,7 +228,7 @@ export function mountDeviceApi(app: Hono, options: DeviceApiOptions): void {
     const machines = await directory.machinesOf(auth.deviceId);
     const lists = await Promise.all(
       machines.map(async (machine) =>
-        computePendingApprovals(await store.listRecentByType(machine.id, ["approval.requested", "approval.resolved", "approval.auto_resolved"], since), now),
+        computePendingApprovals(await store.listRecentByType(machine.id, [...APPROVAL_EVENT_TYPES], since), now),
       ),
     );
     const approvals: PendingApproval[] = lists.flat();

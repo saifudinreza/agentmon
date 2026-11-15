@@ -212,6 +212,8 @@ Buat pasangan kunci dengan `pnpm --filter @agentmon/server push:keys` (kunci pri
 | `GET /api/push/key` | `{enabled, publicKey?}`: apakah push menyala dan kunci publik untuk `pushManager.subscribe` |
 | `PUT /api/push/subscription` | mendaftarkan langganan (bentuk `PushSubscription.toJSON()`); **menggantikan** langganan lama HP ini (satu HP, satu langganan) |
 | `DELETE /api/push/subscription` | berhenti menerima notifikasi di HP ini |
+| `GET /api/push/preferences` | jenis notifikasi HP ini: `{approvals, done}`; `404` bila belum berlangganan |
+| `PUT /api/push/preferences` | mengubah satu atau dua jenis (`{approvals?, done?}`; yang tidak disebut tetap) dan mengembalikan hasilnya; `400` bila isi kosong atau bukan boolean, `404` bila belum berlangganan |
 
 Ditolak `400` bila alamat langganan bukan layanan push yang dikenal, atau kunci publik langganan bukan titik P-256 yang sah; `503` bila push belum dikonfigurasi di relay; `413` bila isi lebih dari 4 KiB.
 
@@ -226,12 +228,30 @@ Ditolak `400` bila alamat langganan bukan layanan push yang dikenal, atau kunci 
 - **Push mati = langganan tidak dihitung sebagai HP yang bisa dihubungi** (`withPushPresence`): bila VAPID dihapus atau salah isi setelah HP berlangganan, daemon tidak boleh mengira ada HP yang akan diberi notifikasi.
 - Log pengiriman memuat hitungan jawaban per kode (mis. `400x2 410x1`), tanpa alamat. 400 dari layanan push TIDAK menghapus langganan: bila kodenya salah di sisi relay semua jawaban akan 400, dan menghapus berarti kehilangan semua langganan.
 
+### Kapan notifikasi dikirim (`notifier.ts`)
+Semua keputusan "bangunkan HP atau tidak" ada di satu modul, `createNotifier`, yang dipanggil hanya untuk event yang **baru** tersimpan (event kiriman ulang dari daemon, `inserted: false`, tidak memicu). Hanya aktif bila push dikonfigurasi.
+
+| Event | Notifikasi | Jendela penggabungan |
+|---|---|---|
+| `approval.requested` | "Izin dibutuhkan", memuat jumlah izin yang menunggu di sesi itu | 10 detik |
+| `agent.stopped` | "Agent selesai" | 60 detik (Claude Code berhenti di akhir **setiap giliran**) |
+
+**Sepuluh permintaan beruntun tidak menjadi sepuluh notifikasi.** Per sesi dan per jenis: kejadian pertama langsung dikirim; kejadian berikutnya selama jendela hanya menandai; saat jendela berakhir dan ada yang baru, **satu** pesan ringkasan (jumlah terkini) dikirim, lalu jendela baru dimulai; setelah satu jendela penuh tanpa kejadian, sesi dilupakan (memori tidak menimbun). Ringkasan yang himpunan izinnya sama dengan yang terakhir dikirim, dan ringkasan saat semua izin sudah diputuskan, tidak dikirim. Notifikasinya memakai **tag per sesi** (`approval:<laptop>:<sesi>`), sehingga pesan ringkasan **menggantikan** yang sebelumnya di layar HP, bukan menumpuk. Dengan jendela 10 detik, sepuluh permintaan sekaligus menjadi paling banyak dua notifikasi.
+
+**Isi push hanya nomor dan jumlah** (FR-34). `notifier.ts` sengaja tidak membaca isi event (payload): ia hanya melihat jenis, nomor laptop, dan nomor sesi. Perintah, kode, nama berkas, atau pesan terakhir agent tidak mungkin ikut karena tidak pernah dibaca; skema push juga ketat. Dijaga tes dengan perintah dan rahasia di dalam event.
+
+**Satu titik untuk kebijakan (#037).** Setiap keputusan lewat `filter` (`NotifyDecision = {kind, machineId, sessionId, count?}`), yang bisa menolaknya (mis. "jangan bangunkan untuk risiko rendah", "jam tenang"). Penyaring yang melempar galat berarti **diam**, bukan membanjiri.
+
+**Jenis notifikasi per HP (FR-33).** Dua pilihan, `approvals` dan `done`, tersimpan per langganan HP (kolom `notify_approvals` dan `notify_done`, bawaan menyala; migrasi `0001`). HP yang mematikan satu jenis tidak dikirimi jenis itu dan langganannya tidak dihapus. Berlangganan ulang (alamat atau kunci berganti) **mewarisi** pengaturannya, jadi notifikasi yang sengaja dimatikan tidak menyala lagi. Uji kirim dari operator (`push:test`) tidak ikut diatur.
+
+**Kenapa notifikasi tidak dihapus dari jauh saat izin diputuskan di perangkat lain** (langkah 3 issue): iOS mewajibkan **setiap** push menampilkan notifikasi. Push "senyap" untuk menghapus akan membuat notifikasi baru di setiap keputusan (juga di HP yang memutuskan) dan bisa membuat Apple mencabut langganan. Penggantinya: (1) notifikasi diganti per sesi, (2) kedaluwarsa sendiri (TTL 10 menit untuk izin), dan (3) **dibersihkan oleh aplikasi saat dibuka**: setelah antrean izin dimuat dari relay, notifikasi izin yang sesinya tidak lagi punya izin menunggu ditutup (`web/src/push/stale.tsx`). Bila notifikasi usang tetap diketuk, layar keputusan menyebut bahwa izinnya sudah diputuskan.
+
 ### Mencoba pengiriman
 `DATABASE_URL=... VAPID_PUBLIC_KEY=... VAPID_PRIVATE_KEY=... VAPID_SUBJECT=... pnpm --filter @agentmon/server push:test <nomor-hp>` mengirim satu notifikasi uji ke HP itu dan mencetak jumlahnya saja.
 
 ### Keterbatasan
 - **Belum terbukti di HP sungguhan.** Yang teruji: enkripsi payload (RFC 8291, dibuka kembali di tes dengan kunci langganan buatan) dan tanda tangan VAPID (RFC 8292) dibuat oleh pustaka `web-push` dan diverifikasi di tes, pengelolaan langganan, serta penghapusan yang mati. Jalur kirim lewat jaringan (`webPushTransport`) hanya diuji dengan pustaka tiruan; aturan alamat dilindungi uji sifat yang memakai parser URL lama yang sama dengan `web-push`. PWA kini mendaftarkan langganan dan menampilkan notifikasi (lihat `web.md`), tetapi penerimaan nyata oleh Android dan iOS baru bisa dibuktikan setelah dicoba di perangkat (issue uji perangkat nyata).
-- **Belum ada pemicu.** Modul pengirim (`createPushService`, `notifyMachine`, `notifyDevice`) sudah ada, tetapi belum dipanggil oleh event izin atau "agent selesai" (issue pemicu notifikasi).
+- **Notifikasi tidak dihapus dari jauh** saat izin diputuskan di perangkat lain; lihat "Kapan notifikasi dikirim" untuk alasan dan penggantinya.
 - Aturan daftar host mengikuti layanan push yang diketahui hari ini. Peramban lain dengan layanan push sendiri perlu `PUSH_ALLOWED_HOSTS`.
 - **Mengganti kunci VAPID.** Langganan lama terikat ke kunci lama: layanan push menjawab 401 atau 403, baris tetap tersimpan (relay tidak bisa membedakan ini dari kunci relay yang salah, jadi tidak menghapus), dan log menjelaskan kemungkinannya. Kunci publik yang dipakai saat berlangganan belum disimpan per baris (butuh migrasi skema), jadi baris lama baru tergantikan saat HP berlangganan ulang. PWA sudah melakukannya: saat kartu Notifikasi dibuka, kunci dari `GET /api/push/key` dibandingkan dengan kunci langganannya dan langganan dibuat ulang bila berbeda (hanya untuk HP yang pernah mengaktifkan notifikasi).
 - **Alamat langganan yang sama didaftarkan HP lain dipindahkan ke HP itu** (kasus sah: browser yang sama dipasangkan ulang sebagai HP baru). Menyalahgunakannya butuh mengetahui alamat langganan milik HP lain, yang tidak pernah dikirim ke HP mana pun selain pemiliknya; menolaknya akan memblokir pasang ulang yang sah, jadi dibiarkan.
@@ -271,3 +291,6 @@ Relay yang baru di-deploy tidak punya laptop. `POST /admin/machines` membuat bar
 - Pendaftaran yang terputus di tengah jalan (relay sempat mencatatnya tetapi jawabannya tidak sampai) meninggalkan laptop terdaftar tanpa token di laptop; pendaftaran ulang dijawab 409 dan perbaikannya `register --rotate`. `register` membangunkan relay lebih dulu lewat `GET /health` (sampai 90 detik, relay gratis butuh sekitar 40 sampai 50 detik) dan baru mengirim pendaftaran dengan batas waktu pendek, supaya itu jarang terjadi.
 - AGENTMON_RELAY_URL dan AGENTMON_RELAY_TOKEN yang **keduanya** masih diisi di lingkungan (mis. profil shell dari petunjuk lama) mengalahkan `relay.json`: `register` memperingatkan. Token di lingkungan tanpa alamat diabaikan.
 - Uji ujung-ke-ujung (relay, CLI, dan daemon asli sebagai proses terpisah) dijalankan manual dengan `pnpm e2e:register`; tidak ikut CI karena menjalankan beberapa proses.
+- **Notifikasi "agent selesai" dikirim di akhir setiap giliran Claude Code** (digabung per 60 detik), bukan hanya saat sesi berakhir, karena hook `SessionEnd` belum menghasilkan event (lihat keterbatasan sesi "Aktif" di timeline). Pengguna yang merasa terlalu sering bisa mematikan jenis itu di kartu Notifikasi.
+- Jendela dan hitungan ada di memori satu proses relay: restart mengosongkannya (paling buruk, satu notifikasi tambahan), dan beberapa instance relay tidak berbagi.
+- Notifikasi izin membawa jumlah yang dihitung dari riwayat 30 menit terakhir; izin yang lebih lama dari itu tidak mungkin masih menunggu (batas bawaan 9 menit).

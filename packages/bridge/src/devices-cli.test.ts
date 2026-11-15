@@ -12,7 +12,8 @@ function harness(respond: (url: string, init: RequestInit | undefined) => Respon
     calls.push({ url, method: init?.method ?? "GET", auth: (init?.headers as Record<string, string> | undefined)?.authorization });
     return respond(url, init);
   }) as typeof fetch;
-  const run = (argv: string[]) => runCli(argv, { env, out: (t) => out.push(t), err: (t) => err.push(t), pair: { fetch: fetchFake } });
+  // Folder data sengaja diarahkan ke tempat yang tidak ada: tes ini tidak boleh membaca pengaturan relay milik pengguna sungguhan.
+  const run = (argv: string[]) => runCli(argv, { env: { AGENTMON_HOME: "/folder/yang/tidak/ada", ...env }, out: (t) => out.push(t), err: (t) => err.push(t), pair: { fetch: fetchFake } });
   return { run, out, err, calls };
 }
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
