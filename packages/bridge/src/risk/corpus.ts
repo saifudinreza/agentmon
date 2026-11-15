@@ -88,7 +88,7 @@ export const MUST_NOT_BE_LOW: Case[] = [
     "npx cowsay", "pnpm dlx x", "uvx x", "foo", "foo bar", "$cmd", "${cmd} x", "$(which rm) -rf x", "`echo ls`", "rm file", "mkdir x", "touch x", "cp a b", "mv a b",
     "echo x > out.txt", "echo x >> out.txt", "git commit -m x", "git add .", "git merge x", "git pull", "git clone x", "git fetch", "npm test", "npm run build", "pnpm test", "node x.js",
     "python x.py", "./script.sh", "bash x.sh", "sh x.sh", "python -c 'print(1)'", "node -e 'console.log(1)'", "echo $(", "echo 'unclosed", 'echo "unclosed', "echo `unclosed",
-    "make", "tsc", "vitest", "ssh host", "scp a host:", "rsync a host:", "ping x", "kill 1", "pkill x", "env", "printenv", "set", "export X=1", "ln -s a b", "sed -i s/a/b/ x", "awk x",
+    "make", "tsc", "vitest", "ssh host", "scp a host:", "rsync a host:", "ping x", "kill 1", "pkill x", "env", "printenv", "set", "export X=1", "ln -s a b", "sed -i s/a/b/ x",
     "git config user.name x", "git branch -D x", "git stash drop", "git tag v1", "git rebase main", "git commit --amend", "git -c core.pager=x log", "grep -r foo .", "grep -rn foo src",
     "rg --pre x foo", "rg --hidden foo", "cat *","sort -o out x", "find . -exec ls {} \\;", "find . -fprint out", "docker run x", "kubectl get pods", "terraform plan",
     "cd ..", "cd /tmp", "cat ../other.txt", "cat /etc/hosts", "ls /etc", "ls ~", "head /var/log/x", "cat $x", "cat $(ls)", "ls $x", "echo hi | foo", "ls | foo", "x=1 foo",

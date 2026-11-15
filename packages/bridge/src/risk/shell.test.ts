@@ -37,9 +37,32 @@ describe("lexShell: penyamaran kata", () => {
     expect(words("rm${IFS}-rf${IFS}/")).toEqual([[["rm", "-rf", "/"]]]);
     expect(words("rm$IFS-rf$IFS/")).toEqual([[["rm", "-rf", "/"]]]);
   });
-  test("garis miring terbalik dipertahankan di teks (jalur Windows tetap terbaca)", () => {
-    expect(words("cat C:\\proyek\\.env")[0]![0]![1]).toBe("C:\\proyek\\.env");
-    expect(words("\\rm")[0]![0]![0]).toBe("\\rm");
+  test("garis miring terbalik dilepas seperti shell (teks = nilai sesungguhnya), bentuk mentahnya disimpan di raw untuk jalur Windows", () => {
+    const [cat, path] = lexShell("cat C:\\proyek\\.env", "bash").pipelines[0]![0]!.words;
+    expect(cat!.text).toBe("cat");
+    expect(path!.text).toBe("C:proyek.env");
+    expect(path!.raw).toBe("C:\\proyek\\.env");
+    expect(words("\\rm")[0]![0]![0]).toBe("rm");
+    expect(words(".e\\nv")[0]![0]![0]).toBe(".env");
+    expect(words("'a'\\''b'")[0]![0]![0]).toBe("a'b");
+  });
+  test("komentar (#) sampai akhir baris tidak membuka string dan tidak dibaca sebagai perintah", () => {
+    expect(words("ls #'\nrm -rf x\n#'")).toEqual([[["ls"]], [["rm", "-rf", "x"]]]);
+    expect(words("echo a#b")).toEqual([[["echo", "a#b"]]]);
+    expect(words("echo $#")).toEqual([[["echo", "$#"]]]);
+    expect(words("ls <# blok ' #> -la", "powershell")).toEqual([[["ls", "-la"]]]);
+  });
+  test("$(( ... )) tetap mengeluarkan substitusi di dalamnya", () => {
+    expect(lexShell("echo $(( $(rm -rf ~) + 1 ))", "bash").substitutions).toEqual(["rm -rf ~"]);
+    expect(lexShell("echo $((1+2))", "bash").substitutions).toEqual([]);
+  });
+  test("heredoc tanpa kutip pada delimiter mengeluarkan substitusi di isinya; yang berkutip tidak", () => {
+    expect(lexShell("cat <<EOF\n$(a)\nEOF", "bash").substitutions).toEqual(["a"]);
+    expect(lexShell("cat <<'EOF'\n$(a)\nEOF", "bash").substitutions).toEqual([]);
+  });
+  test(">&berkas menulis berkas, 2>&1 tidak", () => {
+    expect(lexShell("ls >&out", "bash").pipelines[0]![0]!.redirects[0]?.target?.text).toBe("out");
+    expect(lexShell("ls 2>&1", "bash").pipelines[0]![0]!.redirects).toEqual([]);
   });
   test("PowerShell: tanda kutip balik adalah escape, garis miring terbalik adalah jalur", () => {
     expect(words("r`m C:\\x\\.env", "powershell")).toEqual([[["rm", "C:\\x\\.env"]]]);

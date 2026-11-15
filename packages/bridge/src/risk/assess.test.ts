@@ -9,39 +9,44 @@ import { RiskSchema, type RiskLevel } from "@agentmon/shared";
 import { afterAll, describe, expect, test } from "vitest";
 import { assessRisk, MAX_ASSESSABLE_LENGTH, MAX_SCANNED_LENGTH, type AssessOptions } from "./assess";
 import { COMMON_MEDIUM_BY_DESIGN, COMMON_SAFE, MUST_BE_HIGH, MUST_NOT_BE_LOW, type Case } from "./corpus";
+import { REVIEW_HIGH, REVIEW_NOT_LOW, REVIEW_SAFE } from "./corpus-review";
+
+const HIGH = [...MUST_BE_HIGH, ...REVIEW_HIGH];
+const NOT_LOW = [...MUST_NOT_BE_LOW, ...REVIEW_NOT_LOW];
+const SAFE = [...COMMON_SAFE, ...REVIEW_SAFE];
 
 const levelOf = (c: Case, options?: AssessOptions): RiskLevel => assessRisk({ toolName: c.tool, toolInput: c.input, ...(c.cwd !== undefined ? { cwd: c.cwd } : {}) }, options).level;
 const label = (c: Case) => `${c.tool}: ${c.note.replace(/\n/g, "\\n")}`;
 
 describe("korpus berbahaya", () => {
   test("korpus cukup besar (jangan diam-diam mengecil)", () => {
-    expect(MUST_BE_HIGH.length).toBeGreaterThanOrEqual(250);
-    expect(MUST_NOT_BE_LOW.length).toBeGreaterThanOrEqual(150);
-    expect(COMMON_SAFE.length).toBeGreaterThanOrEqual(140);
+    expect(HIGH.length).toBeGreaterThanOrEqual(250);
+    expect(NOT_LOW.length).toBeGreaterThanOrEqual(150);
+    expect(SAFE.length).toBeGreaterThanOrEqual(140);
   });
 
-  test.each(MUST_BE_HIGH.map((c) => [label(c), c] as const))("TINGGI: %s", (_name, c) => {
+  test.each(HIGH.map((c) => [label(c), c] as const))("TINGGI: %s", (_name, c) => {
     expect(levelOf(c)).toBe("high");
   });
 
-  test.each(MUST_NOT_BE_LOW.map((c) => [label(c), c] as const))("tidak pernah rendah: %s", (_name, c) => {
+  test.each(NOT_LOW.map((c) => [label(c), c] as const))("tidak pernah rendah: %s", (_name, c) => {
     expect(levelOf(c)).not.toBe("low");
   });
 
   test("TIDAK ADA satu pun perintah berbahaya (tinggi atau sedang) yang bernilai rendah", () => {
-    const low = [...MUST_BE_HIGH, ...MUST_NOT_BE_LOW].filter((c) => levelOf(c) === "low").map(label);
+    const low = [...HIGH, ...NOT_LOW].filter((c) => levelOf(c) === "low").map(label);
     expect(low).toEqual([]);
   });
 });
 
 describe("alarm palsu pada perintah aman yang umum", () => {
-  test.each(COMMON_SAFE.map((c) => [label(c), c] as const))("rendah: %s", (_name, c) => {
+  test.each(SAFE.map((c) => [label(c), c] as const))("rendah: %s", (_name, c) => {
     expect(levelOf(c)).toBe("low");
   });
 
   test("tingkat alarm palsu diukur: 0 dari seluruh korpus aman", () => {
-    const flagged = COMMON_SAFE.filter((c) => levelOf(c) !== "low");
-    const rate = flagged.length / COMMON_SAFE.length;
+    const flagged = SAFE.filter((c) => levelOf(c) !== "low");
+    const rate = flagged.length / SAFE.length;
     expect(flagged.map(label)).toEqual([]);
     expect(rate).toBe(0);
   });
@@ -69,7 +74,7 @@ describe("penjelasan agent tidak dibaca (FR-73)", () => {
 
 describe("alasan", () => {
   test("setiap hasil memenuhi skema Risk dan alasan non-rendah tidak kosong", () => {
-    for (const c of [...MUST_BE_HIGH, ...MUST_NOT_BE_LOW, ...COMMON_SAFE]) {
+    for (const c of [...HIGH, ...NOT_LOW, ...SAFE]) {
       const risk = assessRisk({ toolName: c.tool, toolInput: c.input, ...(c.cwd !== undefined ? { cwd: c.cwd } : {}) });
       expect(RiskSchema.safeParse(risk).success, label(c)).toBe(true);
       if (risk.level !== "low") expect(risk.reasons.length, label(c)).toBeGreaterThan(0);
@@ -114,7 +119,7 @@ describe("aturan yang ditegaskan secara khusus (hasil uji mutasi)", () => {
     let nested = "ls";
     for (let i = 0; i < 6; i++) nested = `bash -c '${nested.replace(/'/g, "'\\''")}'`;
     const risk = assessRisk({ toolName: "Bash", toolInput: { command: nested }, cwd: "/work/proj" });
-    expect(risk.level).toBe("medium");
+    expect(risk.level).toBe("high");
     expect(risk.reasons.map((r) => r.code)).toContain("too-complex");
   });
 
@@ -329,9 +334,86 @@ describe("tautan simbolik (symlink)", () => {
   });
 });
 
+describe("ketahanan terhadap input jahat (hasil review PR #65)", () => {
+  const run = (toolName: string, toolInput: Record<string, unknown>, options?: AssessOptions, cwd = "/work/proj") => {
+    const start = performance.now();
+    const risk = assessRisk({ toolName, toolInput, cwd }, options);
+    return { ms: performance.now() - start, risk };
+  };
+
+  test.each([8, 20, 40, 200])("%i tanda * berurutan tidak membuat pencocokan wildcard meledak (dulu 38 detik untuk 20)", (n) => {
+    for (const command of [`cat .${"*".repeat(n)}z`, `cat ${"*".repeat(n)}z`, `cat ${"*?".repeat(n)}z`]) {
+      const { ms, risk } = run("Bash", { command });
+      expect(ms, command.slice(0, 30)).toBeLessThan(200);
+      if (n > 8) expect(risk.level).not.toBe("low"); // lebih dari 8 wildcard: bisa cocok dengan rahasia, jadi tidak pernah rendah
+    }
+    const tool = run("Write", { file_path: `${"*".repeat(n)}z` });
+    expect(tool.ms).toBeLessThan(200);
+  });
+
+  test.each([20_000, 150_000])("nama berisi %i titik tidak membuat waktu penilaian kuadratik", (n) => {
+    const { ms } = run("Bash", { command: `cat ${".".repeat(n)}x` });
+    expect(ms).toBeLessThan(500);
+    expect(run("Write", { file_path: `${".".repeat(n)}x` }).ms).toBeLessThan(500);
+  });
+
+  test("jalur jaringan (UNC) tidak pernah diteruskan ke realpath (bisa memblokir puluhan detik dan membocorkan hash)", () => {
+    const seen: string[] = [];
+    const realpath = (p: string) => {
+      seen.push(p);
+      return undefined;
+    };
+    for (const p of ["\\\\10.255.255.1\\s\\x", "//10.255.255.1/s/x", "\\\\?\\UNC\\host\\s\\x"]) {
+      const write = run("Write", { file_path: p }, { realpath }, "C:\\Proj");
+      expect(write.risk.level, p).toBe("high");
+      expect(run("Bash", { command: `cat ${p}` }, { realpath }, "C:\\Proj").risk.level, p).not.toBe("low");
+    }
+    expect(seen.filter((p) => /^[\\/]{2}/.test(p))).toEqual([]);
+  });
+
+  test("panggilan realpath (menyentuh disk) dibatasi per penilaian", () => {
+    let calls = 0;
+    const realpath = () => {
+      calls += 1;
+      return undefined;
+    };
+    const command = Array.from({ length: 200 }, (_, i) => `a/b/c/d${i}`).join(" ");
+    run("Bash", { command: `cat ${command}` }, { realpath });
+    expect(calls).toBeLessThanOrEqual(8);
+  });
+
+  test("lebih dari 150 perintah dalam satu rangkaian dinilai tinggi, bukan sedang", () => {
+    const command = `${Array.from({ length: 151 }, () => "true;").join(" ")} rm -rf ~`;
+    expect(run("Bash", { command }).risk.level).toBe("high");
+  });
+
+  test("terlalu banyak argumen (anggaran kerja habis) dinilai tinggi", () => {
+    const command = `ls ${Array.from({ length: 4500 }, () => "ab").join(" ")}`;
+    const { ms, risk } = run("Bash", { command });
+    expect(risk.level).toBe("high");
+    expect(risk.reasons.map((r) => r.code)).toContain("too-complex");
+    expect(ms).toBeLessThan(1000);
+  });
+
+  test("bahaya yang dibungkus lebih dari batas kedalaman dinilai tinggi", () => {
+    let nested = "rm -rf ~";
+    for (let i = 0; i < 5; i++) nested = `bash -c '${nested.replace(/'/g, "'\\''")}'`;
+    expect(run("Bash", { command: nested }).risk.level).toBe("high");
+  });
+});
+
+describe("alamat bukan jalur berkas", () => {
+  test("URL di argumen tidak dianggap berkas di luar proyek", () => {
+    for (const command of ["git clone https://x.example/r", "curl https://x.example/a.json", "wget -q https://x.example/.well-known/x"]) {
+      const risk = assessRisk({ toolName: "Bash", toolInput: { command }, cwd: "/work/proj" });
+      expect(risk.reasons.map((r) => r.code), command).not.toContain("outside-project");
+    }
+  });
+});
+
 describe("kinerja (PRD §14: p95 < 20 ms)", () => {
   test("p95 waktu penilaian di seluruh korpus jauh di bawah target", () => {
-    const all = [...MUST_BE_HIGH, ...MUST_NOT_BE_LOW, ...COMMON_SAFE];
+    const all = [...HIGH, ...NOT_LOW, ...SAFE];
     const times: number[] = [];
     for (let round = 0; round < 3; round++) {
       for (const c of all) {

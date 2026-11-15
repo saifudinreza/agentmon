@@ -15,8 +15,12 @@
 
 export type ShellKind = "bash" | "powershell";
 
-/** Satu kata setelah kutip dilepas. `dynamic` = berisi ekspansi ($var, $(..), tanda kutip balik) yang nilainya tidak diketahui. */
-export type Word = { text: string; dynamic: boolean };
+/**
+ * Satu kata setelah kutip dan escape dilepas, seperti shell melepasnya (`\rm` menjadi `rm`, `.e\nv` menjadi `.env`).
+ * `raw` = bentuk sebelum escape dilepas, hanya ada bila berbeda; dipakai untuk jalur gaya Windows di Bash (C:\proyek\.env).
+ * `dynamic` = berisi ekspansi ($var, $(..), tanda kutip balik) yang nilainya tidak diketahui.
+ */
+export type Word = { text: string; dynamic: boolean; raw?: string };
 export type Redirect = { op: string; target?: Word };
 /** Satu perintah dalam rangkaian pipa. `heredoc` = isi blok <<EOF yang menempel padanya. */
 export type Stage = { words: Word[]; redirects: Redirect[]; heredoc?: string };
@@ -70,6 +74,33 @@ function decodeAnsiC(body: string): string {
   return out;
 }
 
+/** Mengeluarkan isi $(...), $((...)) bersarang, dan tanda kutip balik dari teks (isi heredoc, aritmetika). */
+function extractSubstitutions(text: string, shell: ShellKind, depth = 0): string[] {
+  const out: string[] = [];
+  if (depth > 8) return out;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === "\\") {
+      i += 1;
+    } else if (c === "$" && text[i + 1] === "(") {
+      const close = findClosingParen(text, i + 2);
+      if (close < 0) {
+        out.push(text.slice(i + 2));
+        break;
+      }
+      if (text[i + 2] === "(" && text[close - 1] === ")") out.push(...extractSubstitutions(text.slice(i + 3, close - 1), shell, depth + 1));
+      else out.push(text.slice(i + 2, close));
+      i = close;
+    } else if (c === "`" && shell === "bash") {
+      const close = text.indexOf("`", i + 1);
+      out.push(text.slice(i + 1, close < 0 ? text.length : close));
+      if (close < 0) break;
+      i = close;
+    }
+  }
+  return out;
+}
+
 /** Mencari tanda kurung penutup yang cocok (mulai dari `from`, tepat setelah kurung buka). -1 bila tidak ada. */
 function findClosingParen(input: string, from: number): number {
   let depth = 1;
@@ -98,16 +129,19 @@ export function lexShell(raw: string, shell: ShellKind): Lexed {
   let stages: Stage[] = [];
   let stage: Stage = { words: [], redirects: [] };
   let word: string | undefined; // undefined = tidak ada kata yang sedang dibaca ('' = kata kosong dari kutip kosong)
+  let rawWord = ""; // bentuk kata sebelum escape tanpa kutip dilepas
   let dynamic = false;
   let pendingRedirect: Redirect | undefined;
-  let pendingHeredoc: { delimiter: string; stage: Stage; strip: boolean } | undefined;
+  let pendingHeredoc: { delimiter: string; stage: Stage; strip: boolean; quoted: boolean } | undefined;
 
   const append = (s: string) => {
     word = (word ?? "") + s;
+    rawWord += s;
   };
   const endWord = () => {
     if (word === undefined) return;
-    const finished: Word = { text: word, dynamic };
+    const finished: Word = { text: word, dynamic, ...(rawWord !== word ? { raw: rawWord } : {}) };
+    rawWord = "";
     if (pendingRedirect) {
       stage.redirects.push({ ...pendingRedirect, target: finished });
       pendingRedirect = undefined;
@@ -146,7 +180,7 @@ export function lexShell(raw: string, shell: ShellKind): Lexed {
       endPipeline();
       i += 1;
       if (pendingHeredoc) {
-        const { delimiter, stage: owner, strip } = pendingHeredoc;
+        const { delimiter, stage: owner, strip, quoted } = pendingHeredoc;
         pendingHeredoc = undefined;
         const lines: string[] = [];
         let closed = false;
@@ -163,7 +197,18 @@ export function lexShell(raw: string, shell: ShellKind): Lexed {
         }
         if (!closed) unbalanced = true;
         owner.heredoc = lines.join("\n");
+        // Isi heredoc tanpa kutip pada delimiternya DIEKSPANSI shell: $(...) dan `...` di dalamnya ikut berjalan.
+        if (!quoted) substitutions.push(...extractSubstitutions(owner.heredoc, shell));
       }
+    } else if (c === "#" && word === undefined) {
+      // Komentar: sampai akhir baris. Tanda kutip di dalamnya tidak boleh dibaca sebagai pembuka string.
+      const end = input.indexOf("\n", i);
+      i = end < 0 ? input.length : end;
+    } else if (shell === "powershell" && c === "<" && next === "#") {
+      const end = input.indexOf("#>", i + 2);
+      if (end < 0) unbalanced = true;
+      i = end < 0 ? input.length : end + 2;
+      endWord();
     } else if (c === "'") {
       const end = input.indexOf("'", i + 1);
       if (end < 0) {
@@ -242,11 +287,18 @@ export function lexShell(raw: string, shell: ShellKind): Lexed {
       word = word ?? "";
     } else if (c === "$" && next === "(") {
       if (input[i + 2] === "(") {
-        // $(( aritmetika )): bukan perintah. Nilainya tidak diketahui, tetapi tidak dijalankan sebagai perintah.
-        const close = input.indexOf("))", i + 3);
+        // $(( aritmetika )): bukan perintah, tetapi $(...) dan `...` DI DALAMNYA tetap dijalankan shell.
+        const close = findClosingParen(input, i + 2);
         dynamic = true;
         word = word ?? "";
-        i = close < 0 ? input.length : close + 2;
+        if (close < 0) {
+          unbalanced = true;
+          substitutions.push(...extractSubstitutions(input.slice(i + 3), shell));
+          i = input.length;
+        } else {
+          substitutions.push(...extractSubstitutions(input.slice(i + 3, close - 1), shell));
+          i = close + 1;
+        }
       } else {
         const close = findClosingParen(input, i + 2);
         if (close < 0) {
@@ -284,10 +336,10 @@ export function lexShell(raw: string, shell: ShellKind): Lexed {
       if (next === "\n") i += 2;
       else if (next === undefined) i += 1;
       else {
-        // Sebelum huruf, angka, titik, garis, atau garis miring: dipertahankan (\rm, C:\proyek\.env). Sebelum karakter
-        // khusus (kutip, spasi, $, ;, ...): garis miringnya dilepas seperti shell, supaya '\'' dan "\"" memberi
-        // teks asli ke perintah bersarang (bash -c 'cat '\''.env'\''').
-        append(/[A-Za-z0-9._\-/]/.test(next) ? `\\${next}` : next);
+        // Teks kata memakai nilai SESUNGGUHNYA (garis miring dilepas seperti shell: \rm = rm, .e\nv = .env, '\'' = '),
+        // sedangkan `raw` mempertahankan garis miringnya untuk jalur gaya Windows (C:\proyek\.env) di Bash.
+        word = (word ?? "") + next;
+        rawWord += /[A-Za-z0-9._\-/]/.test(next) ? `\\${next}` : next;
         i += 2;
       }
       word = word ?? "";
@@ -331,7 +383,10 @@ export function lexShell(raw: string, shell: ShellKind): Lexed {
       i += 1;
     } else if (c === ">" || c === "<") {
       // Angka tepat sebelum > atau < adalah nomor deskriptor (2>), bukan argumen.
-      if (word !== undefined && /^\d+$/.test(word)) word = undefined;
+      if (word !== undefined && /^\d+$/.test(word)) {
+        word = undefined;
+        rawWord = "";
+      }
       endWord();
       if (c === "<" && next === "<" && input[i + 2] === "<") {
         pendingRedirect = { op: "<<<" };
@@ -343,11 +398,13 @@ export function lexShell(raw: string, shell: ShellKind): Lexed {
         if (strip) j += 1;
         while (input[j] === " " || input[j] === "\t") j += 1;
         let delimiter = "";
+        let quoted = false;
         while (j < input.length && !/[\s;&|()<>]/.test(input[j]!)) {
           if (input[j] !== "'" && input[j] !== '"' && input[j] !== "\\") delimiter += input[j];
+          else quoted = true;
           j += 1;
         }
-        pendingHeredoc = { delimiter, stage, strip };
+        pendingHeredoc = { delimiter, stage, strip, quoted };
         i = j;
       } else {
         let op = c;
@@ -364,6 +421,11 @@ export function lexShell(raw: string, shell: ShellKind): Lexed {
           j += 2;
           i = j;
           continue;
+        }
+        if (input[j] === "&" && c === ">") {
+          // >&berkas: sama dengan > berkas (menulis stdout dan stderr ke berkas).
+          op = ">&";
+          j += 1;
         }
         pendingRedirect = { op };
         i = j;
