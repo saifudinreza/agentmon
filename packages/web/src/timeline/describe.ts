@@ -12,6 +12,7 @@
 import { EventSchema, type Envelope } from "@agentmon/shared";
 import type { MessageKey } from "../i18n/id";
 import type { Params } from "../i18n/i18n";
+import { markdownToPlain } from "./plain";
 
 export type Tone = "neutral" | "ok" | "warn" | "bad" | "info";
 
@@ -95,9 +96,10 @@ export function describeEvent(envelope: Envelope): EventView {
         tone: event.payload.status === "auto_approved" ? "ok" : "bad",
       };
     case "agent.notification":
-      return { titleKey: "event.agent.notification", detail: cleanLine(event.payload.title ? `${event.payload.title}: ${event.payload.message}` : event.payload.message), tone: "info" };
+      return { titleKey: "event.agent.notification", detail: cleanLine(markdownToPlain(event.payload.title ? `${event.payload.title}: ${event.payload.message}` : event.payload.message)), tone: "info" };
     case "agent.stopped": {
-      const last = cleanLine(event.payload.lastMessage, 200);
+      // Pesan akhir agent ditulis dalam markdown: tanda-tandanya dibuang supaya terbaca di layar HP.
+      const last = cleanLine(markdownToPlain(event.payload.lastMessage), 200);
       return { titleKey: "event.agent.stopped", ...(last ? { detail: last } : {}), tone: "info" };
     }
     case "turn.review_requested":
