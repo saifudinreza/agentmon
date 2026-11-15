@@ -25,7 +25,7 @@ Legenda: **Lulus** (dicoba di perangkat nyata), **Belum diuji** (tidak ada bukti
 | 13 | Jaringan seluler (bukan Wi-Fi) | iPhone | **Belum diuji** | Tidak tercatat apakah uji sebelumnya lewat Wi-Fi atau seluler. |
 | 14 | Pasang PWA, pairing, notifikasi | Android (Chrome) | **Belum diuji** | Tidak ada perangkat Android. |
 | 15 | Notifikasi saat layar terkunci dan Doze/penghemat baterai | Android | **Belum diuji** | |
-| 16 | Aplikasi dibuka tanpa Layar Utama (Safari biasa) | iPhone | Lulus (sesuai desain) | Notifikasi tidak ditawarkan; aplikasi menjelaskan perlu dipasang dulu. |
+| 16 | Aplikasi dibuka tanpa Layar Utama (Safari biasa) | iPhone | **Belum diuji** | Perilaku (penjelasan perlu dipasang dulu) hanya terbukti di tes otomatis, bukan di perangkat. |
 
 ## Temuan dari pemakaian nyata (belum jadi issue)
 
