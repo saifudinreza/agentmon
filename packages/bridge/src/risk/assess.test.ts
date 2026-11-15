@@ -258,6 +258,12 @@ describe("jalur yang disamarkan", () => {
     expect(at("C:\\Proj\\.env:Zone.Identifier")).toBe("high");
     expect(at("\\\\?\\C:\\Proj\\a.ts")).toBe("high");
     expect(at("C:\\PROGRA~1\\x")).not.toBe("low");
+    // Folder proyek yang sendiri bernama pendek (C:\Users\RUNNER~1\...) tidak boleh membuat semua jalur di dalamnya mencurigakan.
+    const inShortRoot = (file_path: string) => assessRisk({ toolName: "Edit", toolInput: { file_path }, cwd: "C:\\Users\\RUNNER~1\\proj" }).level;
+    expect(inShortRoot("C:\\Users\\RUNNER~1\\proj\\src\\a.ts")).toBe("low");
+    expect(inShortRoot("src\\a.ts")).toBe("low");
+    expect(inShortRoot("C:\\Users\\RUNNER~1\\proj\\GIT~1\\x")).not.toBe("low"); // nama pendek DI DALAM proyek tetap tidak bisa dipastikan
+    expect(inShortRoot("C:\\Users\\RUNNER~1\\lain\\a.ts")).toBe("high");
   });
 
   test("nama yang mirip .env dianggap rahasia, nama biasa tidak", () => {

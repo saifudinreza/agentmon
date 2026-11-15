@@ -256,7 +256,14 @@ function judgePath(raw: string, ctx: Ctx, rev = false): Verdict {
   if (text.includes("$")) verdict.unresolved = true;
 
   const cleaned = cleanName(text);
-  const segments = cleaned.split("/");
+  // Bagian jalur yang sama dengan folder proyek tidak diperiksa: folder sementara dan folder rumah di Windows sering
+  // bernama pendek (C:\Users\RUNNER~1\...) padahal itu justru lokasi proyek yang sah.
+  let checkable = cleaned;
+  if (ctx.cwd) {
+    const root = cleanName(ctx.cwd).replace(/\/+$/, "").toLowerCase();
+    if (root !== "" && cleaned.toLowerCase().startsWith(`${root}/`)) checkable = cleaned.slice(root.length + 1);
+  }
+  const segments = checkable.split("/");
   // Revisi git (HEAD~1, main~3) tanpa pemisah bukan nama pendek Windows.
   if (!(rev && segments.length === 1) && segments.some((seg, index) => !(index === 0 && /^[A-Za-z]:$/.test(seg)) && SHORT_NAME.test(seg))) verdict.unresolved = true;
   const unc = /^[/]{2}/.test(cleaned);
