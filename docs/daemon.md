@@ -216,7 +216,7 @@ Saat sebuah aksi ditahan, daemon menghitung **perubahan yang diusulkan agent** d
 | `Edit` yang tidak cocok | `mismatch`, bukan error |
 | Target bukan berkas biasa (folder, perangkat) | `mismatch` dengan alasan `unreadable` |
 
-**Path sensitif** ditandai beserta alasannya, hanya dari path (isi tidak diperiksa): `env_file`, `private_key`, `credentials`, `git_internals`, `ci_workflow`, `agent_config` (`.claude`, `.agentmon`, `.codex`), `shell_profile`, `script_config` (`package.json`, `Makefile`, dan sejenisnya, yang membuka "celah skrip" di PRD §9), serta `outside_project`. Ini hanya penanda; keputusan seberapa berisiko ada di penilai risiko dan policy engine.
+**Path sensitif** ditandai beserta alasannya, hanya dari path (isi tidak diperiksa): `env_file`, `private_key`, `credentials`, `git_internals`, `ci_workflow`, `agent_config` (`.claude`, `.agentmon`, `.codex`), `shell_profile`, `script_config` (`package.json`, `Makefile`, dan sejenisnya, yang membuka "celah skrip" di PRD §9), serta `outside_project`. Ini hanya penanda; level risikonya diberikan penilai risiko (lihat [risk-levels.md](risk-levels.md)), dan keputusan otomatis ada di policy engine. Setiap izin yang ditahan kini membawa `risk` (level dan alasan) di kartu dan di event `approval.requested`; penilainya hanya membaca nama alat, input alat, dan folder kerja.
 
 **Tidak pernah menghalangi aksi.** Diff hanya bahan tampilan. Menghitungnya dibatasi 2 detik; bila gagal, error, atau melewati batas, aksi tetap ditahan tanpa diff. Kalkulator tidak pernah mengubah apa pun di disk.
 

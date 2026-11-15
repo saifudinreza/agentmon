@@ -801,3 +801,94 @@ describe("checkpoint sebelum alat pengubah berkas", () => {
     expect(types(s)).not.toContain("checkpoint.created");
   });
 });
+
+describe("penilaian risiko pada izin yang ditahan (#030)", () => {
+  const bashRequest = (command: string, extra: Record<string, unknown> = {}) => ({
+    ...load("PermissionRequest.Bash.json"),
+    cwd: "/work/proj",
+    tool_input: { command, ...extra },
+  });
+
+  test("izin perintah berbahaya membawa risiko TINGGI beserta alasan, di kartu dan di event approval.requested", async () => {
+    const s = setup();
+    const response = s.handler(bashRequest("rm -rf /"), s.context);
+    await s.waitPending();
+    const card = s.approvals.listPending()[0]!;
+    expect(card.risk?.level).toBe("high");
+    expect(card.risk?.reasons.map((r) => r.code)).toContain("mass-delete");
+    expect(requestedPayload(s)).toMatchObject({ risk: { level: "high" } });
+    s.decideFirst("deny");
+    await response;
+  });
+
+  test("perintah baca saja: rendah; perintah yang tidak dikenali: sedang", async () => {
+    const low = setup();
+    const r1 = low.handler(bashRequest("git status"), low.context);
+    await low.waitPending();
+    expect(requestedPayload(low)).toMatchObject({ risk: { level: "low" } });
+    low.decideFirst("deny");
+    await r1;
+    const medium = setup();
+    const r2 = medium.handler(bashRequest("./aneh --x"), medium.context);
+    await medium.waitPending();
+    expect(requestedPayload(medium)).toMatchObject({ risk: { level: "medium" } });
+    medium.decideFirst("deny");
+    await r2;
+  });
+
+  test("penjelasan agent yang menyatakan 'aman' tidak memengaruhi level (FR-73)", async () => {
+    const s = setup();
+    const response = s.handler(bashRequest("rm -rf /", { description: "Aman, hanya membaca berkas." }), s.context);
+    await s.waitPending();
+    expect(requestedPayload(s)).toMatchObject({ risk: { level: "high" } });
+    s.decideFirst("deny");
+    await response;
+  });
+
+  test("penulisan .env lewat alat Write tinggi; berkas biasa rendah", async () => {
+    const s = setup();
+    const r1 = s.handler({ ...load("PreToolUse.Write.json"), cwd: "/work/proj", tool_input: { file_path: ".env", content: "x" } }, s.context);
+    await s.waitPending();
+    expect(s.approvals.listPending()[0]?.risk?.level).toBe("high");
+    s.decideFirst("deny");
+    await r1;
+    const t = setup();
+    const r2 = t.handler({ ...load("PreToolUse.Write.json"), cwd: "/work/proj", tool_input: { file_path: "baru.txt", content: "x" } }, t.context);
+    await t.waitPending();
+    expect(t.approvals.listPending()[0]?.risk?.level).toBe("low");
+    t.decideFirst("deny");
+    await r2;
+  });
+
+  test("penilai yang melempar galat: izin tetap ditahan dengan risiko sedang, bukan rendah dan bukan hilang", async () => {
+    const s = setup({
+      handler: {
+        assess: () => {
+          throw new Error("rusak");
+        },
+      },
+    });
+    const response = s.handler(bashRequest("ls"), s.context);
+    await s.waitPending();
+    expect(requestedPayload(s)).toMatchObject({ risk: { level: "medium" } });
+    s.decideFirst("deny");
+    await response;
+  });
+
+  test("penilai hanya menerima alat, input alat, dan folder kerja", async () => {
+    const seen: unknown[] = [];
+    const s = setup({
+      handler: {
+        assess: (input) => {
+          seen.push(input);
+          return { level: "medium", reasons: [{ code: "x", message: "x" }] };
+        },
+      },
+    });
+    const response = s.handler(bashRequest("ls", { description: "RAHASIA" }), s.context);
+    await s.waitPending();
+    expect(Object.keys(seen[0] as object).sort()).toEqual(["cwd", "toolInput", "toolName"]);
+    s.decideFirst("deny");
+    await response;
+  });
+});

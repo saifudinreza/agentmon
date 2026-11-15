@@ -36,11 +36,14 @@
 // randomUUID: pembuat nomor unik acak (UUID) bawaan Node.js, untuk `id` tiap event.
 // "node:crypto" = modul bawaan Node, tidak perlu dipasang dari internet.
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
 // Tipe event baku dari paket shared (hanya tipe, tidak ikut jalan di program akhir).
-import type { AgentMonEvent, EventType, FileDiff } from "@agentmon/shared";
+import type { AgentMonEvent, EventType, FileDiff, Risk } from "@agentmon/shared";
 // Dari server.ts: HookContext = bekal dari daemon (pencatat log, identitas laptop, buku antrean
 // izin, panel kontrol), HookHandler = bentuk fungsi penangan yang diminta server.
 import { computeToolDiff, type ToolDiffInput } from "../diff";
+import { assessRisk, type AssessInput } from "../risk";
 import { summarizeDiff } from "../control";
 import { buildDiffSummary } from "../diff-summary";
 import type { HookContext, HookHandler } from "../server";
@@ -114,6 +117,8 @@ export type ClaudeCodeHandlerOptions = {
   // Penghitung diff dan batas waktunya. Bawaan: computeToolDiff dan DIFF_TIMEOUT_MS. Bisa diganti di test.
   computeDiff?: (input: ToolDiffInput) => Promise<FileDiff | undefined>;
   diffTimeoutMs?: number;
+  // Penilai risiko. Bawaan: assessRisk (berbasis aturan, murni) dengan realpath dan folder rumah sungguhan. Bisa diganti di test.
+  assess?: (input: AssessInput) => Risk;
   // Pembuat checkpoint (foto keadaan proyek) yang diambil sebelum alat pengubah berkas dijalankan. Tanpa ini,
   // tidak ada checkpoint. Tidak boleh melempar, dan kegagalannya tidak pernah menghalangi agent.
   checkpoint?: (cwd: string, sessionId: string) => Promise<CheckpointResult>;
@@ -143,6 +148,15 @@ const MAX_RELEASED = 200;
 // CLOSURE: fungsi yang dikembalikan tetap "mengingat" variabel di sekitarnya (nextSeq, now,
 // newId, options) walau pembuatnya sudah selesai. Analogi: petugas baru yang diberi buku
 // catatan pribadi; buku itu ikut dibawa ke mana pun ia bertugas.
+/** Menyelesaikan tautan simbolik; undefined bila jalurnya tidak ada atau tidak bisa dibaca. */
+function safeRealpath(path: string): string | undefined {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+}
+
 export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): HookHandler {
   // "??" = kalau yang kiri tidak diisi, pakai yang kanan.
   const now = options.now ?? (() => new Date());
@@ -150,6 +164,7 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
   const maxTracked = options.maxTrackedSessions ?? MAX_TRACKED_SESSIONS;
   const computeDiff = options.computeDiff ?? computeToolDiff;
   const diffTimeoutMs = options.diffTimeoutMs ?? DIFF_TIMEOUT_MS;
+  const assess = options.assess ?? ((input: AssessInput) => assessRisk(input, { realpath: safeRealpath, home: homedir() }));
 
   // BUKU NOMOR ANTREAN per sesi. Map = kamus: nama sesi -> nomor urut berikutnya.
   // Dimulai dari 0 dan dihapus saat sesi berakhir.
@@ -240,6 +255,15 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
     return until > now().getTime();
   };
 
+  // Penilai tidak melempar galat, tetapi penggantinya (test) bisa. Gagal menilai berarti "sedang", tidak pernah "rendah".
+  const assessSafely = (hold: HoldCandidate): Risk => {
+    try {
+      return assess({ toolName: hold.toolName, toolInput: hold.toolInput, ...(hold.cwd !== undefined ? { cwd: hold.cwd } : {}) });
+    } catch {
+      return { level: "medium", reasons: [{ code: "assessment-error", message: "Penilaian gagal; dianggap perlu ditinjau." }] };
+    }
+  };
+
   // Menghitung perubahan berkas yang diusulkan, sebagai bahan tampilan review. TIDAK PERNAH
   // menghalangi aksi: gagal, error, atau melewati batas waktu berarti aksi ditahan tanpa diff.
   const diffFor = async (hold: HoldCandidate, logger: HookContext["logger"]): Promise<FileDiff | undefined> => {
@@ -295,12 +319,15 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
     const { logger, approvals } = context;
 
     const diff = await diffFor(hold, logger);
+    // Level risiko dihitung HANYA dari alat, input alat, dan folder kerja; penjelasan agent tidak dibaca (FR-73).
+    const risk = assessSafely(hold);
     const bounded = boundToolInput(hold.toolInput);
     const diffOmitted = diff !== undefined && !fitsInEvent(diff);
     const ticket = approvals.request({
       sessionId: hold.sessionId,
       toolName: hold.toolName,
       toolInput: hold.toolInput,
+      risk,
       ...(diff !== undefined ? { diff } : {}),
     });
     logger.info(`menahan ${hold.point} alat=${hold.toolName}, menunggu keputusan`);
@@ -311,6 +338,7 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
         approvalId: ticket.approvalId,
         toolName: hold.toolName,
         toolInput: bounded.input,
+        risk,
         ...(bounded.truncated || diffOmitted ? { truncated: true } : {}),
         // Ringkasan satu baris dan perubahan berkas untuk ditampilkan di HP sebelum memutuskan.
         ...(diff !== undefined ? { summary: summarizeDiff(diff), diffSummary: buildDiffSummary([diff]), ...(diffOmitted ? {} : { diff }) } : {}),
