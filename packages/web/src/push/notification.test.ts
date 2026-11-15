@@ -2,17 +2,17 @@ import type { PushPayload } from "@agentmon/shared";
 import { describe, expect, test } from "vitest";
 import { en } from "../i18n/en";
 import { id } from "../i18n/id";
-import { describePush, isSafePath, localeFor, MAX_PATH_LENGTH, NAVIGATE_MESSAGE, parseNavigateMessage, parsePush, pathFor } from "./notification";
+import { approvalTag, describePush, isSafePath, localeFor, MAX_PATH_LENGTH, NAVIGATE_MESSAGE, parseNavigateMessage, parsePush, pathFor } from "./notification";
 
 const raw = (payload: Partial<PushPayload> & { kind: PushPayload["kind"] }) => JSON.stringify({ v: 1, machineId: "m1", ...payload });
 
 describe("describePush: setiap push menghasilkan notifikasi yang terlihat", () => {
-  test("izin: judul dan isi dalam bahasa perangkat, tujuan ke layar keputusan, satu tag per permintaan", () => {
+  test("izin: judul dan isi dalam bahasa perangkat, tujuan ke layar keputusan, satu tag per sesi", () => {
     const content = describePush(raw({ kind: "approval", approvalId: "a1", sessionId: "s1" }), "id");
     expect(content.title).toBe("Izin dibutuhkan");
     expect(content.options.body).toBe("Agent menunggu keputusan Anda. Ketuk untuk melihat.");
     expect(content.options.data).toEqual({ path: "/a/m1/a1" });
-    expect(content.options.tag).toBe("approval:m1:a1");
+    expect(content.options.tag).toBe("approval:m1:s1"); // satu tag per SESI, bukan per izin
     expect(content.options.icon).toBe("/icons/icon-192.png");
     expect(describePush(raw({ kind: "approval", approvalId: "a1" }), "en").title).toBe("Approval needed");
   });
@@ -187,5 +187,55 @@ describe("pathFor: nomor terpanjang yang sah tetap lolos (hasil review PR #58)",
     expect(path.length).toBeLessThanOrEqual(MAX_PATH_LENGTH);
     expect(isSafePath(path)).toBe(true);
     expect(path.startsWith("/a/")).toBe(true); // tidak jatuh ke beranda
+  });
+});
+
+describe("beberapa izin menunggu: satu notifikasi per sesi yang diganti (FR-30)", () => {
+  const many = (count: number, extra: Partial<PushPayload> = {}) => raw({ kind: "approval", sessionId: "s1", count, ...extra });
+
+  test("lebih dari satu: isinya jumlahnya, tujuannya beranda (memuat semua antrean), tanpa nomor izin tertentu", () => {
+    const content = describePush(many(10), "id");
+    expect(content.title).toBe("Izin dibutuhkan");
+    expect(content.options.body).toBe("10 permintaan menunggu keputusan Anda. Ketuk untuk melihat.");
+    expect(content.options.data).toEqual({ path: "/" });
+    expect(describePush(many(3), "en").options.body).toBe("3 requests are waiting for your decision. Tap to see them.");
+  });
+
+  test("tepat satu (jumlah 1 atau tanpa jumlah) dengan nomor izin: isi tunggal dan langsung ke layar keputusannya", () => {
+    for (const payload of [many(1, { approvalId: "a9" }), raw({ kind: "approval", sessionId: "s1", approvalId: "a9" })]) {
+      const content = describePush(payload, "id");
+      expect(content.options.body).toBe("Agent menunggu keputusan Anda. Ketuk untuk melihat.");
+      expect(content.options.data).toEqual({ path: "/a/m1/a9" });
+    }
+  });
+
+  test("jumlah lebih dari satu walau ada nomor izin (tidak seharusnya): tetap ke beranda, bukan ke satu izin yang salah", () => {
+    expect(describePush(many(4, { approvalId: "a1" }), "id").options.data.path).toBe("/");
+  });
+
+  test("tag sama untuk semua izin di sesi yang sama (menggantikan), berbeda antar sesi dan antar laptop", () => {
+    const tags = [1, 2, 3, 10].map((count) => describePush(many(count), "id").options.tag);
+    expect(new Set(tags).size).toBe(1);
+    expect(tags[0]).toBe(approvalTag("m1", "s1"));
+    expect(describePush(raw({ kind: "approval", sessionId: "s2", count: 2 }), "id").options.tag).not.toBe(tags[0]);
+    expect(approvalTag("m1", "s1")).not.toBe(approvalTag("m2", "s1"));
+  });
+
+  test("tag izin selalu diawali approval: (dipakai pembersih notifikasi usang), dan 'selesai' berbeda", () => {
+    expect(approvalTag("m1", "s1").startsWith("approval:")).toBe(true);
+    expect(describePush(raw({ kind: "done", sessionId: "s1" }), "id").options.tag.startsWith("approval:")).toBe(false);
+  });
+
+  test("jumlah yang tidak sah (nol, pecahan, negatif, terlalu besar, teks): seluruh isi dianggap rusak dan tampil umum", () => {
+    for (const count of [0, 1.5, -2, 100000, "10"]) {
+      const content = describePush(JSON.stringify({ v: 1, kind: "approval", machineId: "m1", sessionId: "s1", count }), "id");
+      expect(content.title).toBe("AgentMon");
+    }
+  });
+
+  test("isi pemberitahuan banyak izin tidak memuat nomor sesi atau izin", () => {
+    const content = describePush(many(5, { sessionId: "SESI-RAHASIA" }), "id");
+    expect(content.options.body).not.toContain("SESI-RAHASIA");
+    expect(content.title).not.toContain("SESI-RAHASIA");
   });
 });

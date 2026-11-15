@@ -53,6 +53,22 @@ export const PushPayloadSchema = z.strictObject({
   kind: z.enum(["approval", "done", "test"]),
   machineId: z.string().min(1).max(200),
   sessionId: z.string().min(1).max(200).optional(),
+  // Nomor izin: hanya bila tepat satu permintaan menunggu, supaya ketukan membuka permintaan itu. Lebih dari satu: tidak ada.
   approvalId: z.string().min(1).max(200).optional(),
+  // Berapa permintaan yang menunggu di sesi itu. Satu notifikasi per sesi yang diganti, bukan satu per permintaan.
+  count: z.int().min(1).max(9999).optional(),
 });
 export type PushPayload = z.infer<typeof PushPayloadSchema>;
+
+// ---- Pengaturan jenis notifikasi per HP (FR-33) -------------------------------------------
+// Dua jenis yang bisa dimatikan sendiri-sendiri. Uji kirim dari operator relay (kind "test") tidak ikut diatur.
+export const PushPreferencesSchema = z.object({
+  approvals: z.boolean(), // ada izin yang menunggu keputusan
+  done: z.boolean(), // agent selesai
+});
+export type PushPreferences = z.infer<typeof PushPreferencesSchema>;
+
+export const PushPreferencesUpdateSchema = z
+  .object({ approvals: z.boolean().optional(), done: z.boolean().optional() })
+  .refine((update) => update.approvals !== undefined || update.done !== undefined, "Sebutkan setidaknya satu pengaturan");
+export type PushPreferencesUpdate = z.infer<typeof PushPreferencesUpdateSchema>;

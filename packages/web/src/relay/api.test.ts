@@ -227,3 +227,35 @@ describe("push", () => {
     expect(await kindOf(api.removePushSubscription())).toBe("unreachable");
   });
 });
+
+describe("pengaturan jenis notifikasi", () => {
+  test("pushPreferences: GET dengan token, jawabannya divalidasi", async () => {
+    const { api, calls } = setup(json(200, { approvals: true, done: false }));
+    expect(await api.pushPreferences()).toEqual({ approvals: true, done: false });
+    expect(calls[0]?.url).toBe(`${RELAY}/api/push/preferences`);
+    expect(calls[0]?.init.method).toBe("GET");
+    expect((calls[0]?.init.headers as Record<string, string>).authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  test("pushPreferences: belum berlangganan (404) -> not-found; bentuk salah -> bad-response", async () => {
+    expect(await kindOf(setup(json(404, { error: "no-subscription" })).api.pushPreferences())).toBe("not-found");
+    expect(await kindOf(setup(json(200, { approvals: "ya" })).api.pushPreferences())).toBe("bad-response");
+  });
+
+  test("savePushPreferences: PUT dengan isi JSON yang hanya memuat yang diubah, dan hasil terbaru dikembalikan", async () => {
+    const { api, calls } = setup(json(200, { approvals: false, done: true }));
+    expect(await api.savePushPreferences({ approvals: false })).toEqual({ approvals: false, done: true });
+    expect(calls[0]?.init.method).toBe("PUT");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({ approvals: false });
+    expect((calls[0]?.init.headers as Record<string, string>)["content-type"]).toBe("application/json");
+  });
+
+  test.each([
+    [400, "server"],
+    [401, "unauthorized"],
+    [404, "not-found"],
+    [429, "rate-limited"],
+  ] as const)("savePushPreferences: status %i -> %s", async (status, kind) => {
+    expect(await kindOf(setup(json(status, { error: "x" })).api.savePushPreferences({ done: false }))).toBe(kind);
+  });
+});

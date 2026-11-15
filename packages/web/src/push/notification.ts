@@ -58,14 +58,23 @@ const enc = (part: string) => encodeURIComponent(part).replace(/[!'()*]/g, (c) =
 
 /** Layar yang dibuka saat notifikasi diketuk. Tanpa nomor yang cukup, beranda. */
 export function pathFor(payload: PushPayload): string {
-  if (payload.kind === "approval" && payload.approvalId) return `/a/${enc(payload.machineId)}/${enc(payload.approvalId)}`;
+  // Lebih dari satu izin menunggu: tidak ada satu layar yang tepat, jadi beranda (yang memuat semua antrean izin).
+  if (payload.kind === "approval" && payload.approvalId && (payload.count ?? 1) === 1) return `/a/${enc(payload.machineId)}/${enc(payload.approvalId)}`;
   if (payload.kind === "done" && payload.sessionId) return `/s/${enc(payload.machineId)}/${enc(payload.sessionId)}`;
   return "/";
 }
 
+/**
+ * Tag notifikasi izin: SATU per sesi. Tag yang sama menggantikan notifikasi sebelumnya, jadi sepuluh permintaan di sesi yang
+ * sama menjadi satu notifikasi yang diperbarui, bukan sepuluh yang menumpuk. Dipakai juga untuk membersihkan yang usang.
+ */
+export function approvalTag(machineId: string, sessionId: string | undefined): string {
+  return `approval:${machineId}:${sessionId ?? ""}`;
+}
+
 function tagFor(payload: PushPayload): string {
   // Tag yang sama menggantikan notifikasi sebelumnya, jadi push berulang untuk hal yang sama tidak menumpuk.
-  if (payload.kind === "approval") return `approval:${payload.machineId}:${payload.approvalId ?? ""}`;
+  if (payload.kind === "approval") return approvalTag(payload.machineId, payload.sessionId ?? payload.approvalId);
   if (payload.kind === "done") return `done:${payload.machineId}:${payload.sessionId ?? ""}`;
   return "test";
 }
@@ -74,10 +83,12 @@ function tagFor(payload: PushPayload): string {
 export function describePush(raw: string | undefined, locale: Locale): NotificationContent {
   const payload = parsePush(raw);
   const kind = payload?.kind ?? "generic";
+  // Beberapa izin menunggu di sesi itu: isinya jumlahnya (angka dari relay, divalidasi skema), bukan isi permintaannya.
+  const many = payload?.kind === "approval" && (payload.count ?? 1) > 1;
   return {
     title: translate(locale, `push.notif.${kind}.title` as MessageKey),
     options: {
-      body: translate(locale, `push.notif.${kind}.body` as MessageKey),
+      body: many ? translate(locale, "push.notif.approval.many", { count: payload?.count ?? 0 }) : translate(locale, `push.notif.${kind}.body` as MessageKey),
       tag: payload ? tagFor(payload) : "agentmon",
       icon: NOTIFICATION_ICON,
       data: { path: payload ? pathFor(payload) : "/" },

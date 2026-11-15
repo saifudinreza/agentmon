@@ -227,9 +227,14 @@ export function createPushService(options: PushServiceOptions): PushService {
 
     // Baris lama yang alamatnya tidak lolos aturan sekarang tidak pernah dihubungi; dihapus saja.
     const sendable = subscriptions.filter((s) => {
-      if (options.isAllowedEndpoint(s.endpoint)) return true;
-      dead.push(s.id);
-      return false;
+      if (!options.isAllowedEndpoint(s.endpoint)) {
+        dead.push(s.id);
+        return false;
+      }
+      // Pengaturan jenis notifikasi per HP (FR-33). Uji kirim dari operator tidak ikut diatur.
+      if (checked.kind === "approval") return s.notifyApprovals;
+      if (checked.kind === "done") return s.notifyDone;
+      return true;
     });
 
     const queue = [...sendable];

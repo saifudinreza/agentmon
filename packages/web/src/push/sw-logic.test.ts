@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { NAVIGATE_MESSAGE } from "./notification";
-import { handlePush, openNotificationTarget, type ClientsLike, type WindowClientLike } from "./sw-logic";
+import { handlePush, openNotificationTarget, STALE_APPROVAL_MS, type ClientsLike, type WindowClientLike } from "./sw-logic";
 
 const ORIGIN = "https://agentmon.contoh.com";
 
@@ -27,6 +27,37 @@ describe("handlePush", () => {
 
   test("galat saat menampilkan dilempar ke pemanggil (browser perlu tahu tugasnya gagal)", async () => {
     await expect(handlePush("{}", "id", async () => Promise.reject(new Error("izin dicabut")))).rejects.toThrow("izin dicabut");
+  });
+});
+
+describe("handlePush: menutup notifikasi izin usang", () => {
+  const NOW = 1_000_000_000_000;
+  const mk = (tag: string, ageMs: number) => ({ tag, timestamp: NOW - ageMs, close: vi.fn() });
+  const raw = JSON.stringify({ v: 1, kind: "done", machineId: "m1", sessionId: "s1" });
+
+  test("menutup izin yang lebih tua dari batas, membiarkan yang baru, yang bukan izin, dan yang tidak tampil", async () => {
+    const old = mk("approval:m1:s0", STALE_APPROVAL_MS + 1);
+    const fresh = mk("approval:m1:s2", STALE_APPROVAL_MS - 1000);
+    const done = mk("done:m1:s9", STALE_APPROVAL_MS * 5);
+    const show = vi.fn(async () => undefined);
+    await handlePush(raw, "id", show, async () => [old, fresh, done], NOW);
+    expect(old.close).toHaveBeenCalledTimes(1);
+    expect(fresh.close).not.toHaveBeenCalled();
+    expect(done.close).not.toHaveBeenCalled();
+    expect(show).toHaveBeenCalledTimes(1);
+  });
+
+  test("daftar yang gagal dibaca tidak menghalangi notifikasi baru", async () => {
+    const show = vi.fn(async () => undefined);
+    await handlePush(raw, "id", show, async () => Promise.reject(new Error("tidak bisa")), NOW);
+    expect(show).toHaveBeenCalledTimes(1);
+  });
+
+  test("tag yang sama dengan yang akan tampil tidak ditutup (akan diganti sendiri)", async () => {
+    const same = mk("approval:m1:s1", STALE_APPROVAL_MS * 2);
+    const show = vi.fn(async () => undefined);
+    await handlePush(JSON.stringify({ v: 1, kind: "approval", machineId: "m1", sessionId: "s1", count: 1 }), "id", show, async () => [same], NOW);
+    expect(same.close).not.toHaveBeenCalled();
   });
 });
 

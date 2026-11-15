@@ -72,6 +72,8 @@ export function setupPush(options: PushSetupOptions = {}) {
       log.push("relay:save");
       return relay.api.savePushSubscription(s);
     }),
+    pushPreferences: vi.fn(async () => relay.api.pushPreferences()),
+    savePushPreferences: vi.fn(async (update: Parameters<typeof relay.api.savePushPreferences>[0]) => relay.api.savePushPreferences(update)),
     removePushSubscription: vi.fn(async () => {
       log.push("relay:remove");
       return relay.api.removePushSubscription();

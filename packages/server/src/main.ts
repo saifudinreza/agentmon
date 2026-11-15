@@ -23,7 +23,8 @@ import { createMemoryDirectory, type RelayDirectory } from "./directory";
 import { createConsoleLogger } from "./logger";
 import { startRelayServer, type RelayServerOptions } from "./node";
 import { parseAdminSecret } from "./admin-http";
-import { createEndpointPolicy, parseVapidConfig, withPushPresence } from "./push";
+import { createNotifier, notifyAfterSave, pendingLookup, type Notifier } from "./notifier";
+import { createEndpointPolicy, createPushService, parseVapidConfig, withPushPresence } from "./push";
 
 const logger = createConsoleLogger();
 
@@ -39,6 +40,7 @@ let pairing: RelayServerOptions["pairing"];
 let persist: RelayServerOptions["persist"];
 let deviceApi: RelayServerOptions["deviceApi"];
 let admin: RelayServerOptions["admin"];
+let notifier: Notifier | undefined;
 let retention: ReturnType<typeof startRetention> | undefined;
 
 if (process.env.DATABASE_URL) {
@@ -60,8 +62,6 @@ if (process.env.DATABASE_URL) {
     allowedOrigins,
     trustProxy: process.env.TRUST_PROXY === "1",
   };
-  // Event dari laptop disimpan sebelum diteruskan dan di-ack, dan HP membaca riwayatnya lewat /api/*.
-  persist = (event) => eventStore.saveEvent(event);
   // Web Push: menyala hanya bila ketiga VAPID_* diisi dan benar. Selain itu relay tetap jalan tanpa push.
   const vapid = parseVapidConfig(process.env);
   if (vapid.problem) logger.error(`Web Push mati: ${vapid.problem}`);
@@ -71,6 +71,15 @@ if (process.env.DATABASE_URL) {
     isAllowedEndpoint: createEndpointPolicy((process.env.PUSH_ALLOWED_HOSTS ?? "").split(",")),
     ...(vapid.config ? { vapidPublicKey: vapid.config.publicKey } : {}),
   };
+  // Event dari laptop disimpan sebelum diteruskan dan di-ack, dan HP membaca riwayatnya lewat /api/*. Bila push menyala,
+  // event baru (izin yang menunggu, agent selesai) juga memicu notifikasi lewat satu pemicu terpusat (notifier.ts).
+  if (vapid.config) {
+    const pushService = createPushService({ store: push.store, vapid: vapid.config, isAllowedEndpoint: push.isAllowedEndpoint, logger });
+    notifier = createNotifier({ push: pushService, pending: pendingLookup(eventStore), logger });
+    persist = notifyAfterSave((event) => eventStore.saveEvent(event), notifier);
+  } else {
+    persist = (event) => eventStore.saveEvent(event);
+  }
   deviceApi = { directory: dbDirectory, store: eventStore, devices: pairing.pairing, allowedOrigins, trustProxy: process.env.TRUST_PROXY === "1", push };
   // Pendaftaran laptop (POST /admin/machines): terbuka hanya bila ADMIN_SECRET diisi dan cukup panjang.
   const adminSecret = parseAdminSecret(process.env);
@@ -122,6 +131,7 @@ console.log(
 
 const shutdown = () => {
   retention?.stop();
+  notifier?.stop();
   void relay
     .stop()
     .then(() => database?.close())

@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { I18nProvider } from "../i18n/react";
 import type { RelayEntry } from "../relay/RelayProvider";
 import { NotificationsSection } from "./NotificationsSection";
@@ -211,5 +211,113 @@ describe("NotificationsSection", () => {
     } finally {
       window.localStorage.removeItem("agentmon.locale");
     }
+  });
+});
+
+describe("jenis notifikasi (FR-33)", () => {
+  const active = (extra: PushSetupOptions = {}) => ({ permission: "granted" as const, existing: true, intent: true, ...extra });
+  const checkbox = (name: RegExp) => screen.findByRole("checkbox", { name });
+
+  test("hanya tampil bila notifikasi aktif: tidak ada pilihan jenis saat belum aktif", async () => {
+    renderSection({ permission: "default" });
+    await enableButton();
+    expect(screen.queryByText("Jenis notifikasi")).toBeNull();
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+
+  test("aktif: dua pilihan dimuat dari relay dan mencerminkan pengaturan tersimpan", async () => {
+    const setup = setupPush(active());
+    setup.relay.data.push.prefs = { approvals: true, done: false };
+    render(
+      <I18nProvider>
+        <NotificationsSection entry={entry} env={setup.env} />
+      </I18nProvider>,
+    );
+    expect(((await checkbox(/Permintaan izin/)) as HTMLInputElement).checked).toBe(true);
+    expect(((await checkbox(/Agent selesai/)) as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByText("Jenis notifikasi")).toBeTruthy();
+  });
+
+  test("mengetuk pilihan menyimpannya ke relay (hanya yang diubah) dan tampilan mengikuti", async () => {
+    const s = renderSection(active());
+    const approvals = (await checkbox(/Permintaan izin/)) as HTMLInputElement;
+    fireEvent.click(approvals);
+    await waitFor(() => expect(s.relay.data.push.prefs).toEqual({ approvals: false, done: true }));
+    expect(s.api.savePushPreferences).toHaveBeenCalledWith({ approvals: false });
+    await waitFor(() => expect(approvals.checked).toBe(false));
+    expect(((await checkbox(/Agent selesai/)) as HTMLInputElement).checked).toBe(true);
+  });
+
+  test("gagal menyimpan: pilihan dikembalikan dan pesan galat tampil", async () => {
+    const setup = setupPush(active());
+    render(
+      <I18nProvider>
+        <NotificationsSection entry={entry} env={setup.env} />
+      </I18nProvider>,
+    );
+    const done = (await checkbox(/Agent selesai/)) as HTMLInputElement;
+    setup.relay.fail.pushPrefsSave = new Error("503");
+    fireEvent.click(done);
+    expect(await screen.findByText("Pengaturan tidak bisa disimpan. Coba lagi.")).toBeTruthy();
+    expect(done.checked).toBe(true); // dikembalikan
+    expect(setup.relay.data.push.prefs.done).toBe(true);
+  });
+
+  test("gagal memuat pengaturan: pesan galat, tanpa pilihan yang menyesatkan", async () => {
+    const setup = setupPush(active());
+    setup.relay.fail.pushPrefsLoad = new Error("jaringan");
+    render(
+      <I18nProvider>
+        <NotificationsSection entry={entry} env={setup.env} />
+      </I18nProvider>,
+    );
+    expect(await screen.findByText(/Pengaturan notifikasi tidak bisa dimuat/)).toBeTruthy();
+    expect(screen.queryByText("Pengaturan tidak bisa disimpan. Coba lagi.")).toBeNull(); // bukan pesan "gagal menyimpan"
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    // Coba lagi setelah relay pulih: pilihan muncul.
+    setup.relay.fail.pushPrefsLoad = undefined;
+    fireEvent.click(screen.getByRole("button", { name: "Coba lagi" }));
+    expect(await checkbox(/Permintaan izin/)).toBeTruthy();
+    expect(screen.queryByText(/tidak bisa dimuat/)).toBeNull();
+  });
+
+  test("dua ketukan cepat dengan jawaban terbalik urutan: tampilan mengikuti ketukan TERAKHIR, bukan jawaban terakhir yang tiba", async () => {
+    const setup = setupPush(active());
+    render(
+      <I18nProvider>
+        <NotificationsSection entry={entry} env={setup.env} />
+      </I18nProvider>,
+    );
+    const approvals = (await checkbox(/Permintaan izin/)) as HTMLInputElement;
+    const resolvers: Array<() => void> = [];
+    vi.mocked(setup.api.savePushPreferences).mockImplementation(
+      (update: Partial<{ approvals: boolean; done: boolean }>) =>
+        new Promise((resolve) => {
+          resolvers.push(() => resolve({ approvals: update.approvals ?? true, done: true }));
+        }),
+    );
+    fireEvent.click(approvals); // mati
+    fireEvent.click(approvals); // hidup lagi
+    expect(resolvers).toHaveLength(2);
+    resolvers[1]!(); // jawaban ketukan kedua (hidup) tiba lebih dulu
+    resolvers[0]!(); // jawaban ketukan pertama (mati) tiba terlambat
+    await waitFor(() => expect(approvals.checked).toBe(true));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(approvals.checked).toBe(true);
+  });
+
+  test("dimatikan: pilihan jenis hilang", async () => {
+    renderSection(active());
+    await checkbox(/Permintaan izin/);
+    fireEvent.click(screen.getByRole("button", { name: "Matikan notifikasi" }));
+    await screen.findByText("Belum aktif di perangkat ini.");
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+
+  test("tiap pilihan punya label dan petunjuk yang terbaca", async () => {
+    renderSection(active());
+    await checkbox(/Permintaan izin/);
+    expect(screen.getByText("Saat agent menunggu keputusan Anda.")).toBeTruthy();
+    expect(screen.getByText("Saat agent selesai bekerja.")).toBeTruthy();
   });
 });

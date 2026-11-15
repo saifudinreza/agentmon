@@ -11,6 +11,7 @@
 // pengguna pembaca layar dan keyboard jatuh ke awal halaman. Teks status ada di satu wilayah aria-live yang selalu ada,
 // supaya perubahannya diumumkan.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PushPreferences } from "@agentmon/shared";
 import { useI18n } from "../i18n/react";
 import type { RelayEntry } from "../relay/RelayProvider";
 import { checkPush, currentPushEnv, disablePush, enablePush, type PushEnv, type PushStatus } from "./subscribe";
@@ -53,6 +54,46 @@ export function NotificationsSection({ entry, env: injected }: { entry: RelayEnt
   const busy = view.phase === "busy";
   const status = view.phase === "ready" ? view.status : undefined;
 
+  // Jenis notifikasi (FR-33): hanya bila sudah aktif. Disimpan di relay per HP; tampilannya langsung berubah dan dikembalikan bila gagal.
+  const [prefs, setPrefs] = useState<PushPreferences | undefined>();
+  const [prefError, setPrefError] = useState<"load" | "save" | undefined>();
+  const [prefReload, setPrefReload] = useState(0);
+  // Nomor urut permintaan simpan: hanya jawaban untuk permintaan TERAKHIR yang boleh menimpa tampilan, supaya dua ketukan
+  // cepat dengan jawaban yang terbalik urutannya tidak membuat kotak tampil berbeda dari yang tersimpan di relay.
+  const saveSeq = useRef(0);
+  const active = status?.kind === "on";
+  useEffect(() => {
+    if (!active) {
+      setPrefs(undefined);
+      setPrefError(undefined);
+      return;
+    }
+    let cancelled = false;
+    setPrefError(undefined);
+    env.api
+      .pushPreferences()
+      .then((loaded) => !cancelled && setPrefs(loaded))
+      .catch(() => !cancelled && setPrefError("load"));
+    return () => {
+      cancelled = true;
+    };
+  }, [active, env, prefReload]);
+  async function toggle(key: keyof PushPreferences) {
+    if (!prefs) return;
+    const next = !prefs[key];
+    const seq = ++saveSeq.current;
+    setPrefs({ ...prefs, [key]: next });
+    setPrefError(undefined);
+    try {
+      const saved = await env.api.savePushPreferences({ [key]: next });
+      if (alive.current && seq === saveSeq.current) setPrefs(saved);
+    } catch {
+      if (!alive.current || seq !== saveSeq.current) return;
+      setPrefs((current) => (current ? { ...current, [key]: !next } : current));
+      setPrefError("save");
+    }
+  }
+
   // Pesan status (satu wilayah aria-live yang selalu ada).
   let message: { text: string; tone: "muted" | "ok" | "danger" } | undefined;
   if (view.phase === "checking") message = { text: t("push.checking"), tone: "muted" };
@@ -88,7 +129,33 @@ export function NotificationsSection({ entry, env: injected }: { entry: RelayEnt
           </div>
         )}
         {status?.kind === "off" && status.relayPending && <p className="text-warn-fg">{t("push.error.disable")}</p>}
+        {prefError === "save" && <p className="text-danger">{t("push.pref.error")}</p>}
+        {prefError === "load" && (
+          <p className="text-danger">
+            {t("push.pref.loadError")}{" "}
+            <button type="button" className="underline" onClick={() => setPrefReload((n) => n + 1)}>
+              {t("push.retry")}
+            </button>
+          </p>
+        )}
       </div>
+
+      {active && (
+        <fieldset className="mt-3 flex flex-col gap-1 border-t border-line pt-3" aria-busy={prefs === undefined && prefError === undefined}>
+          <legend className="text-sm font-semibold">{t("push.pref.title")}</legend>
+          {prefs === undefined && prefError === undefined && <p className="text-sm text-muted">{t("push.pref.loading")}</p>}
+          {prefs !== undefined &&
+            (["approvals", "done"] as const).map((key) => (
+              <label key={key} className="flex min-h-11 items-start gap-3 py-1">
+                <input type="checkbox" checked={prefs[key]} onChange={() => void toggle(key)} className="mt-1 size-5 shrink-0" />
+                <span className="flex flex-col">
+                  <span>{t(`push.pref.${key}`)}</span>
+                  <span className="text-xs text-muted">{t(`push.pref.${key}.hint`)}</span>
+                </span>
+              </label>
+            ))}
+        </fieldset>
+      )}
 
       {action && (
         <button

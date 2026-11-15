@@ -11,9 +11,10 @@
 // supaya tetap rapi di layar besar.
 import { Routes } from "./Home";
 import { ConnectionChip } from "./relay/ConnectionChip";
-import { RelayProvider, type RelayStoreFactory } from "./relay/RelayProvider";
+import { RelayProvider, useRelayEntries, type RelayStoreFactory } from "./relay/RelayProvider";
 import { useI18n } from "./i18n/react";
 import { useOnline } from "./hooks/useOnline";
+import { StaleNotificationCleaner } from "./push/stale";
 import { useNotificationNavigation } from "./push/useNotificationNavigation";
 import { useTheme } from "./theme/useTheme";
 
@@ -23,6 +24,8 @@ function Shell() {
   const { mode, cycle } = useTheme();
   // Notifikasi yang diketuk saat aplikasi sudah terbuka memindahkan layar lewat pesan dari service worker.
   useNotificationNavigation();
+  // Notifikasi hanya terhubung ke relay pertama (lihat Home.tsx); yang usang dibersihkan saat antrean izinnya dimuat.
+  const firstEntry = useRelayEntries()[0];
   // Teks yang terlihat di tombol, misalnya "Tema: Otomatis".
   const themeLabel = t("theme.label", { mode: t(`theme.${mode}`) });
 
@@ -53,6 +56,8 @@ function Shell() {
           {t("offline.banner")}
         </div>
       )}
+
+      {firstEntry && <StaleNotificationCleaner entry={firstEntry} />}
 
       <main className="mx-auto flex w-full max-w-xl flex-1 flex-col px-4 py-6 pb-[calc(2rem+env(safe-area-inset-bottom))]">
         <Routes />

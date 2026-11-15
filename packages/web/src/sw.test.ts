@@ -33,7 +33,7 @@ beforeAll(async () => {
       matchAll: async () => clientsState.windows,
       openWindow: async (url: string) => void opened.push(url),
     },
-    registration: { showNotification: async (title: string, options: Record<string, unknown>) => void shown.push({ title, options }) },
+    registration: { showNotification: async (title: string, options: Record<string, unknown>) => void shown.push({ title, options }), getNotifications: async () => [] },
     skipWaiting: async () => void (clientsState.skipped += 1),
     addEventListener: (type: string, listener: Listener) => void listeners.set(type, listener),
   });

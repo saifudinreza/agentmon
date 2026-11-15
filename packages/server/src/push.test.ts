@@ -167,7 +167,15 @@ describe("validateSubscription", () => {
 
 // ---- Layanan pengiriman dengan pengirim palsu --------------------------------------------------
 const payload: PushPayload = { v: 1, kind: "approval", machineId: "m1", sessionId: "s1", approvalId: "a1" };
-const sub = (id: string, endpoint = `https://fcm.googleapis.com/fcm/send/${id}`): StoredSubscription => ({ id, deviceId: `d-${id}`, endpoint, p256dh: "x", auth: "y" });
+const sub = (id: string, endpoint = `https://fcm.googleapis.com/fcm/send/${id}`, prefs: { approvals?: boolean; done?: boolean } = {}): StoredSubscription => ({
+  id,
+  deviceId: `d-${id}`,
+  endpoint,
+  p256dh: "x",
+  auth: "y",
+  notifyApprovals: prefs.approvals ?? true,
+  notifyDone: prefs.done ?? true,
+});
 
 function setup(subs: StoredSubscription[], transport: PushTransport, extra: { concurrency?: number } = {}) {
   const removed: string[][] = [];
@@ -400,5 +408,36 @@ describe("format Web Push sungguhan (enkripsi RFC 8291 dan VAPID RFC 8292)", () 
     const point = Buffer.from(vapid.publicKey, "base64url");
     const publicKey = createPublicKey({ key: { kty: "EC", crv: "P-256", x: point.subarray(1, 33).toString("base64url"), y: point.subarray(33).toString("base64url") }, format: "jwk" });
     expect(verify("sha256", Buffer.from(`${h}.${p}`), { key: publicKey, dsaEncoding: "ieee-p1363" }, Buffer.from(signature!, "base64url"))).toBe(true);
+  });
+});
+
+describe("pengaturan jenis notifikasi per HP (FR-33)", () => {
+  test("izin hanya dikirim ke HP yang menyalakannya; selesai hanya ke yang menyalakannya", async () => {
+    const sent: string[] = [];
+    const subs = [sub("semua"), sub("tanpa-izin", undefined, { approvals: false }), sub("tanpa-selesai", undefined, { done: false }), sub("diam", undefined, { approvals: false, done: false })];
+    const { service } = setup(subs, async (s) => void sent.push(s.endpoint.split("/").pop()!));
+    expect(await service.notifyMachine("m1", { v: 1, kind: "approval", machineId: "m1", count: 2 })).toMatchObject({ attempted: 2, delivered: 2 });
+    expect(sent.sort()).toEqual(["semua", "tanpa-selesai"]);
+    sent.length = 0;
+    expect(await service.notifyMachine("m1", { v: 1, kind: "done", machineId: "m1" })).toMatchObject({ attempted: 2 });
+    expect(sent.sort()).toEqual(["semua", "tanpa-izin"]);
+  });
+
+  test("uji kirim dari operator tidak ikut diatur: sampai ke semua HP walau semuanya dimatikan", async () => {
+    const sent: string[] = [];
+    const { service } = setup([sub("a", undefined, { approvals: false, done: false }), sub("b", undefined, { approvals: false, done: false })], async (s) => void sent.push(s.endpoint));
+    expect((await service.notifyMachine("m1", { v: 1, kind: "test", machineId: "m1" })).delivered).toBe(2);
+  });
+
+  test("HP yang mematikan jenisnya tidak dihubungi dan langganannya tidak dihapus", async () => {
+    const { service, removed } = setup([sub("a", undefined, { approvals: false })], async () => Promise.reject(new PushSendError("mati", 410)));
+    expect(await service.notifyMachine("m1", { v: 1, kind: "approval", machineId: "m1" })).toEqual({ attempted: 0, delivered: 0, removed: 0, failed: 0 });
+    expect(removed).toEqual([]);
+  });
+
+  test("alamat yang tidak lolos aturan tetap dihapus walau jenisnya dimatikan", async () => {
+    const { service, removed } = setup([sub("internal", "https://169.254.169.254/x", { approvals: false })], async () => undefined);
+    await service.notifyMachine("m1", { v: 1, kind: "approval", machineId: "m1" });
+    expect(removed).toEqual([["internal"]]);
   });
 });

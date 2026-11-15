@@ -286,12 +286,21 @@ export const id = {
   "push.error.disable": "Notifikasi sudah dimatikan di perangkat ini, tetapi relay belum menerima pembatalannya. Relay akan membersihkannya sendiri.",
   "push.notif.approval.title": "Izin dibutuhkan",
   "push.notif.approval.body": "Agent menunggu keputusan Anda. Ketuk untuk melihat.",
+  "push.notif.approval.many": "{count} permintaan menunggu keputusan Anda. Ketuk untuk melihat.",
   "push.notif.done.title": "Agent selesai",
   "push.notif.done.body": "Ketuk untuk melihat hasilnya.",
   "push.notif.test.title": "Notifikasi uji",
   "push.notif.test.body": "Notifikasi AgentMon berfungsi.",
   "push.notif.generic.title": "AgentMon",
   "push.notif.generic.body": "Ada pembaruan. Ketuk untuk membuka.",
+  "push.pref.title": "Jenis notifikasi",
+  "push.pref.approvals": "Permintaan izin",
+  "push.pref.approvals.hint": "Saat agent menunggu keputusan Anda.",
+  "push.pref.done": "Agent selesai",
+  "push.pref.done.hint": "Saat agent selesai bekerja.",
+  "push.pref.loading": "Memuat pengaturan…",
+  "push.pref.error": "Pengaturan tidak bisa disimpan. Coba lagi.",
+  "push.pref.loadError": "Pengaturan notifikasi tidak bisa dimuat.",
 } as const;
 
 export type MessageKey = keyof typeof id;
