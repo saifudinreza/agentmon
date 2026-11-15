@@ -12,10 +12,33 @@ export type ShowNotification = (title: string, options: NotificationContent["opt
  * Menampilkan notifikasi untuk sebuah push. SELALU menampilkan sesuatu, walau isinya rusak (lihat notification.ts).
  * Galat saat menampilkan dilempar ke pemanggil, supaya browser tahu tugasnya gagal.
  */
-export async function handlePush(raw: string | undefined, language: string | undefined, show: ShowNotification): Promise<void> {
+export async function handlePush(
+  raw: string | undefined,
+  language: string | undefined,
+  show: ShowNotification,
+  existing?: () => Promise<readonly ShownNotification[]>,
+  now: number = Date.now(),
+): Promise<void> {
   const content = describePush(raw, localeFor(language));
+  // Notifikasi izin yang sudah lewat batas waktu izin tidak berguna lagi dan tidak hilang sendiri (TTL push tidak
+  // menghapus yang sudah tampil), jadi ditutup setiap kali push berikutnya tiba. Kegagalan di sini tidak boleh
+  // menghalangi notifikasi yang baru.
+  if (existing) {
+    try {
+      for (const shown of await existing()) {
+        if (shown.tag.startsWith("approval:") && shown.tag !== content.options.tag && now - shown.timestamp > STALE_APPROVAL_MS) shown.close();
+      }
+    } catch {
+      // diabaikan
+    }
+  }
   await show(content.title, content.options);
 }
+
+/** Notifikasi yang sedang tampil (bentuk minimal dari Notification milik browser). */
+export type ShownNotification = { tag: string; timestamp: number; close(): void };
+/** Sama dengan batas waktu izin di relay (10 menit); setelah itu izin pasti sudah kedaluwarsa. */
+export const STALE_APPROVAL_MS = 10 * 60 * 1000;
 
 export type WindowClientLike = {
   url: string;

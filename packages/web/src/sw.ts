@@ -12,7 +12,7 @@
 // Logika yang bisa diuji ada di push/. File ini hanya merangkai, jadi sengaja tipis.
 import { cleanupOutdatedCaches, createHandlerBoundToURL, precacheAndRoute } from "workbox-precaching";
 import { NavigationRoute, registerRoute } from "workbox-routing";
-import { handlePush, openNotificationTarget, type ClientsLike } from "./push/sw-logic";
+import { handlePush, openNotificationTarget, type ClientsLike, type ShownNotification } from "./push/sw-logic";
 
 // Tipe seperlunya, ditulis sendiri: tipe lengkap service worker memakai pustaka "webworker" yang bentrok dengan "DOM"
 // yang dipakai seluruh aplikasi.
@@ -22,7 +22,7 @@ type SwScope = {
   location: { origin: string };
   navigator: { language: string };
   clients: ClientsLike & { claim(): Promise<void> };
-  registration: { showNotification(title: string, options: object): Promise<void> };
+  registration: { showNotification(title: string, options: object): Promise<void>; getNotifications(): Promise<ShownNotification[]> };
   skipWaiting(): Promise<void>;
   addEventListener(type: "install", listener: () => void): void;
   addEventListener(type: "activate", listener: (event: Waitable) => void): void;
@@ -46,7 +46,7 @@ self.addEventListener("push", (event) => {
   } catch {
     raw = undefined; // isi tidak bisa dibaca: tetap tampilkan notifikasi umum
   }
-  event.waitUntil(handlePush(raw, self.navigator.language, (title, options) => self.registration.showNotification(title, options)));
+  event.waitUntil(handlePush(raw, self.navigator.language, (title, options) => self.registration.showNotification(title, options), () => self.registration.getNotifications()));
 });
 
 self.addEventListener("notificationclick", (event) => {

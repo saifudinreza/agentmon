@@ -15,6 +15,12 @@
 //   3. Saat jendela berakhir dan ada yang baru, SATU pesan ringkasan dikirim (jumlah terkini), lalu jendela baru dimulai.
 //   Notifikasinya memakai tag per sesi, jadi pesan ringkasan MENGGANTIKAN yang sebelumnya, bukan menumpuk. Hasilnya
 //   sepuluh permintaan dalam sekejap menjadi paling banyak dua notifikasi, dan satu pesan per sesi per jendela.
+//   Jendela hanya dibuka bila sesuatu benar-benar dikirim: kiriman yang tidak menghasilkan apa-apa (semua izin sudah
+//   selesai, ditolak penyaring, tidak ada HP yang mau) membuat kejadian berikutnya kembali menjadi kiriman langsung,
+//   bukan menunggu sepuluh detik tanpa notifikasi apa pun. Kiriman satu sesi dirantai (tidak saling menyalip), supaya
+//   ringkasan yang lebih baru tidak tertimpa kiriman lama yang tiba belakangan.
+//   Himpunan izin dianggap "sudah diberitahukan" HANYA setelah penyaring mengizinkan dan pengiriman tidak gagal: yang
+//   ditolak atau gagal tetap boleh dicoba lagi.
 //
 // ISI PUSH SELALU HANYA NOMOR DAN JUMLAH (FR-34). Modul ini sengaja TIDAK membaca isi event (payload): ia hanya melihat
 // jenis, nomor laptop, dan nomor sesi. Perintah, kode, atau nama berkas tidak mungkin ikut terkirim karena tidak pernah
@@ -25,8 +31,10 @@
 //
 // YANG TIDAK DILAKUKAN: menghapus notifikasi dari jauh ketika izin sudah diputuskan di perangkat lain. iOS mewajibkan
 // SETIAP push menampilkan notifikasi; push "senyap" untuk menghapus justru membuat notifikasi baru di tiap keputusan,
-// dan bisa membuat Apple mencabut langganan. Sebagai gantinya notifikasi diganti per sesi, kedaluwarsa sendiri (TTL), dan
-// dibersihkan oleh aplikasi saat dibuka (lihat web/src/push/stale.ts).
+// dan bisa membuat Apple mencabut langganan. Sebagai gantinya: (1) notifikasi diganti per sesi; (2) service worker menutup
+// notifikasi izin yang sudah melewati batas waktu izin setiap kali push berikutnya tiba; dan (3) aplikasi membersihkannya
+// saat dibuka (web/src/push/stale.tsx). TTL Web Push BUKAN pembersih: ia hanya mengatur berapa lama layanan push menyimpan
+// pesan yang belum terkirim, dan notifikasi yang sudah tampil tidak hilang karenanya.
 import type { Envelope, PendingApproval, PushPayload } from "@agentmon/shared";
 import { APPROVAL_EVENT_TYPES, APPROVAL_LOOKBACK_MS, computePendingApprovals } from "./approvals";
 import type { Store } from "./db/store";
@@ -36,7 +44,14 @@ import type { PushService } from "./push";
 export type NotifyKind = "approval" | "done";
 
 /** Satu keputusan "bangunkan HP" yang akan dikirim. Dilihat `filter` sebelum benar-benar dikirim. */
-export type NotifyDecision = { kind: NotifyKind; machineId: string; sessionId: string; count?: number };
+export type NotifyDecision = {
+  kind: NotifyKind;
+  machineId: string;
+  sessionId: string;
+  count?: number;
+  /** Risiko TERTINGGI di antara izin yang menunggu (hanya untuk jenis izin dan bila ada izin yang berisiko dinilai). Bukan isi permintaan. */
+  risk?: "low" | "medium" | "high";
+};
 export type NotifyFilter = (decision: NotifyDecision) => boolean | Promise<boolean>;
 
 type Cancelable = { cancel(): void };
@@ -68,7 +83,12 @@ export type Notifier = {
 export const DEFAULT_APPROVAL_WINDOW_MS = 10_000;
 export const DEFAULT_DONE_WINDOW_MS = 60_000;
 
-type Slot = { timer?: Cancelable; dirty: boolean; lastSignature?: string };
+type Slot = { timer?: Cancelable; dirty: boolean; lastSignature?: string; tail: Promise<unknown> };
+
+// Batas panjang nomor di isi push (sama dengan skema push). Nomor yang lebih panjang tidak boleh membuang seluruh notifikasi.
+const MAX_PUSH_ID_LENGTH = 200;
+const fits = (id: string) => id.length > 0 && id.length <= MAX_PUSH_ID_LENGTH;
+const RISK_RANK = { high: 0, medium: 1, low: 2 } as const;
 
 const defaultSchedule: NonNullable<NotifierOptions["schedule"]> = (callback, ms) => {
   const timer = setTimeout(callback, ms);
@@ -84,36 +104,58 @@ export function createNotifier(options: NotifierOptions): Notifier {
     done: options.doneWindowMs ?? DEFAULT_DONE_WINDOW_MS,
   };
   const slots = new Map<string, Slot>();
+  let stopped = false;
+
+  type Built = { payload: PushPayload; signature?: string; risk?: NotifyDecision["risk"] };
 
   // Membangun isi push. HANYA dari nomor dan jumlah: tidak ada tempat untuk isi event masuk ke sini.
-  async function build(kind: NotifyKind, machineId: string, sessionId: string, slot: Slot): Promise<PushPayload | undefined> {
-    if (kind === "done") return { v: 1, kind: "done", machineId, sessionId };
+  async function build(kind: NotifyKind, machineId: string, sessionId: string, slot: Slot): Promise<Built | undefined> {
+    const session = fits(sessionId) ? { sessionId } : {};
+    if (kind === "done") return { payload: { v: 1, kind: "done", machineId, ...session } };
     const waiting = await options.pending(machineId, sessionId);
-    // Semuanya sudah diputuskan sebelum jendela berakhir: tidak ada yang perlu dibangunkan lagi.
-    if (waiting.length === 0) return undefined;
-    // Tanda tangan himpunan permintaan: bila sama dengan yang terakhir dikirim, pesan ringkasan tidak ada gunanya.
+    if (waiting.length === 0) {
+      // Semuanya sudah diputuskan sebelum jendela berakhir. Dicatat satu baris, karena jam laptop yang tertinggal lebih dari
+      // batas waktu izin membuat SEMUA izin tampak kedaluwarsa dan notifikasi diam-diam tidak pernah keluar.
+      logger.info("notifikasi izin dilewati: tidak ada izin yang menunggu (sudah diputuskan, kedaluwarsa, atau jam laptop tidak sinkron)");
+      return undefined;
+    }
+    // Tanda tangan himpunan permintaan: bila sama dengan yang terakhir DIBERITAHUKAN, pesan ringkasan tidak ada gunanya.
     const signature = waiting.map((p) => p.approvalId).sort().join("\u0000");
     if (signature === slot.lastSignature) return undefined;
-    slot.lastSignature = signature;
     const only = waiting.length === 1 ? waiting[0] : undefined;
-    return { v: 1, kind: "approval", machineId, sessionId, count: waiting.length, ...(only ? { approvalId: only.approvalId } : {}) };
+    const ranks = waiting.flatMap((p) => (p.risk ? [RISK_RANK[p.risk.level]] : []));
+    const risk = ranks.length > 0 ? (["high", "medium", "low"] as const)[Math.min(...ranks)] : undefined;
+    return {
+      payload: { v: 1, kind: "approval", machineId, ...session, count: Math.min(waiting.length, 9999), ...(only && fits(only.approvalId) ? { approvalId: only.approvalId } : {}) },
+      signature,
+      ...(risk ? { risk } : {}),
+    };
   }
 
-  async function send(kind: NotifyKind, machineId: string, sessionId: string, slot: Slot): Promise<void> {
+  /**
+   * Satu kiriman. Mengembalikan true bila HP benar-benar dicoba dihubungi (atau gagal di tengah jalan: jendela tetap
+   * dibuka supaya layanan yang sedang bermasalah tidak dihujani), false bila tidak ada yang dikirim sama sekali.
+   */
+  async function send(kind: NotifyKind, machineId: string, sessionId: string, slot: Slot): Promise<boolean> {
     try {
-      const payload = await build(kind, machineId, sessionId, slot);
-      if (!payload) return;
+      const built = await build(kind, machineId, sessionId, slot);
+      if (!built) return false;
       let allowed: boolean;
       try {
-        allowed = (await options.filter?.({ kind, machineId, sessionId, ...(payload.count !== undefined ? { count: payload.count } : {}) })) ?? true;
+        const decision: NotifyDecision = { kind, machineId, sessionId, ...(built.payload.count !== undefined ? { count: built.payload.count } : {}), ...(built.risk ? { risk: built.risk } : {}) };
+        allowed = (await options.filter?.(decision)) ?? true;
       } catch {
         allowed = false; // penyaring yang rusak berarti diam, bukan membanjiri
       }
-      if (!allowed) return;
-      await options.push.notifyMachine(machineId, payload);
+      if (!allowed) return false;
+      const result = await options.push.notifyMachine(machineId, built.payload);
+      // Dianggap sudah diberitahukan hanya bila tidak ada yang gagal: yang gagal boleh dicoba lagi pada ringkasan berikutnya.
+      if (built.signature !== undefined && result.failed === 0) slot.lastSignature = built.signature;
+      return result.attempted > 0;
     } catch (error) {
       // Notifikasi bukan alasan agent atau relay berhenti. Hanya jenis galatnya yang dicatat, tanpa isi.
       logger.error(`notifikasi ${kind} gagal dikirim: ${error instanceof Error ? error.name : "galat"}`);
+      return true;
     }
   }
 
@@ -121,16 +163,39 @@ export function createNotifier(options: NotifierOptions): Notifier {
     slot.timer = schedule(() => {
       slot.timer = undefined;
       if (!slot.dirty) {
-        slots.delete(key); // sepi satu jendela penuh: lupakan sesi ini
+        if (slots.get(key) === slot) slots.delete(key); // sepi satu jendela penuh: lupakan sesi ini
         return;
       }
       slot.dirty = false;
-      startWindow(key, kind, machineId, sessionId, slot); // jendela berikutnya, supaya tetap satu pesan per jendela
-      void send(kind, machineId, sessionId, slot);
+      run(key, kind, machineId, sessionId, slot); // jendela berikutnya, supaya tetap satu pesan per jendela
     }, windows[kind]);
   }
 
+  // Tidak ada yang dikirim: tutup jendela. Kejadian yang datang sambil menunggu dievaluasi langsung, sisanya dilupakan.
+  function closeWindow(key: string, kind: NotifyKind, machineId: string, sessionId: string, slot: Slot): void {
+    slot.timer?.cancel();
+    slot.timer = undefined;
+    if (slot.dirty && !stopped) {
+      slot.dirty = false;
+      run(key, kind, machineId, sessionId, slot);
+      return;
+    }
+    if (slots.get(key) === slot) slots.delete(key);
+  }
+
+  function run(key: string, kind: NotifyKind, machineId: string, sessionId: string, slot: Slot): void {
+    if (stopped) return;
+    startWindow(key, kind, machineId, sessionId, slot);
+    // Dirantai: kiriman satu sesi tidak saling menyalip, jadi ringkasan terbaru tidak tertimpa kiriman lama yang tiba belakangan.
+    slot.tail = slot.tail
+      .then(() => send(kind, machineId, sessionId, slot))
+      .then((sent) => {
+        if (!sent) closeWindow(key, kind, machineId, sessionId, slot);
+      });
+  }
+
   function trigger(kind: NotifyKind, machineId: string, sessionId: string): void {
+    if (stopped) return;
     const key = `${kind}\u0000${machineId}\u0000${sessionId}`;
     let slot = slots.get(key);
     if (slot?.timer) {
@@ -138,11 +203,10 @@ export function createNotifier(options: NotifierOptions): Notifier {
       return;
     }
     if (!slot) {
-      slot = { dirty: false };
+      slot = { dirty: false, tail: Promise.resolve() };
       slots.set(key, slot);
     }
-    startWindow(key, kind, machineId, sessionId, slot);
-    void send(kind, machineId, sessionId, slot); // kejadian pertama: langsung
+    run(key, kind, machineId, sessionId, slot); // kejadian pertama: langsung
   }
 
   return {
@@ -151,6 +215,7 @@ export function createNotifier(options: NotifierOptions): Notifier {
       else if (event.type === "agent.stopped") trigger("done", event.machineId, event.sessionId);
     },
     stop() {
+      stopped = true;
       for (const slot of slots.values()) slot.timer?.cancel();
       slots.clear();
     },

@@ -6,7 +6,7 @@
 // "senyap" untuk menghapus justru membuat notifikasi baru di tiap keputusan (dan bisa membuat Apple mencabut langganan).
 // Jadi notifikasi izin dibersihkan di sini, saat aplikasi dibuka dan antrean izin dari relay sudah dimuat: yang sesinya
 // tidak lagi punya izin menunggu (diputuskan di perangkat lain, atau kedaluwarsa) ditutup. Yang tidak sempat dibersihkan
-// kedaluwarsa sendiri (TTL push), dan bila diketuk, layar keputusan menyebut bahwa izinnya sudah diputuskan.
+// ditutup service worker saat push berikutnya tiba (sw-logic.ts), dan bila diketuk, layar keputusan menyebut bahwa izinnya sudah diputuskan.
 import { useEffect } from "react";
 import type { RelayEntry } from "../relay/RelayProvider";
 import { useRelayState } from "../relay/RelayProvider";

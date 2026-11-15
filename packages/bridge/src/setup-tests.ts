@@ -8,6 +8,7 @@
 // SOLUSINYA: setiap proses test mendapat folder data sementara yang KOSONG, lewat AGENTMON_HOME. Test yang butuh folder
 // tertentu tetap menyebutnya sendiri (itu yang menang). Variabel relay dari lingkungan pengembang juga dibuang.
 import { mkdtempSync, rmSync } from "node:fs";
+import { afterAll } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,4 +17,5 @@ process.env.AGENTMON_HOME = home;
 for (const name of ["AGENTMON_RELAY_URL", "AGENTMON_RELAY_TOKEN", "AGENTMON_ADMIN_SECRET", "AGENTMON_RELAY_INSECURE", "AGENTMON_APP_URL"]) {
   delete process.env[name];
 }
-process.on("exit", () => rmSync(home, { recursive: true, force: true }));
+// afterAll (bukan process.on("exit")): di worker vitest, "exit" tidak jalan dan folder sementara menumpuk di %TEMP%.
+afterAll(() => rmSync(home, { recursive: true, force: true }));

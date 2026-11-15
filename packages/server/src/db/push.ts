@@ -63,12 +63,13 @@ export function createPushStore(db: Database): PushStore {
           .select({ notifyApprovals: pushSubscriptions.notifyApprovals, notifyDone: pushSubscriptions.notifyDone })
           .from(pushSubscriptions)
           .where(eq(pushSubscriptions.deviceId, deviceId))
-          .limit(1);
+          .limit(1)
+          .for("update"); // dikunci: PUT /preferences yang bersamaan menunggu, jadi pengaturan barunya tidak hilang
         await tx.delete(pushSubscriptions).where(and(eq(pushSubscriptions.deviceId, deviceId), ne(pushSubscriptions.endpoint, input.endpoint)));
         await tx
           .insert(pushSubscriptions)
           .values({ deviceId, endpoint: input.endpoint, p256dh: input.p256dh, auth: input.auth, ...(previous ?? {}) })
-          .onConflictDoUpdate({ target: pushSubscriptions.endpoint, set: { deviceId, p256dh: input.p256dh, auth: input.auth } });
+          .onConflictDoUpdate({ target: pushSubscriptions.endpoint, set: { deviceId, p256dh: input.p256dh, auth: input.auth, ...(previous ?? {}) } });
       });
     },
 

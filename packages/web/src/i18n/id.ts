@@ -300,6 +300,7 @@ export const id = {
   "push.pref.done.hint": "Saat agent selesai bekerja.",
   "push.pref.loading": "Memuat pengaturan…",
   "push.pref.error": "Pengaturan tidak bisa disimpan. Coba lagi.",
+  "push.pref.loadError": "Pengaturan notifikasi tidak bisa dimuat.",
 } as const;
 
 export type MessageKey = keyof typeof id;

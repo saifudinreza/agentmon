@@ -78,15 +78,30 @@ describe("izin yang menunggu", () => {
     expect(t.pushes).toEqual([{ machineId: "m1", payload: { v: 1, kind: "approval", machineId: "m1", sessionId: "s1", count: 1, approvalId: "a1" } }]);
   });
 
-  test("SEPULUH permintaan beruntun tidak menjadi sepuluh notifikasi: satu langsung, satu ringkasan sesudah jendela", async () => {
+  test("SEPULUH permintaan yang datang sekaligus menjadi SATU notifikasi dengan jumlah 10 (kiriman langsung menghitung semuanya)", async () => {
     const t = setup();
     for (let i = 1; i <= 10; i++) t.requested(`a${i}`);
     await settle();
-    expect(t.pushes).toHaveLength(1); // yang pertama langsung
+    expect(t.pushes).toHaveLength(1);
+    expect(t.pushes[0]!.payload).toMatchObject({ kind: "approval", count: 10 });
+    expect("approvalId" in t.pushes[0]!.payload).toBe(false); // lebih dari satu: tidak menunjuk satu izin
+    await t.clock.advance(DEFAULT_APPROVAL_WINDOW_MS * 5);
+    expect(t.pushes).toHaveLength(1);
+  });
+
+  test("SEPULUH permintaan beruntun yang datang bertahap tidak menjadi sepuluh notifikasi: satu langsung, satu ringkasan sesudah jendela", async () => {
+    const t = setup();
+    t.requested("a1");
+    await settle();
+    expect(t.pushes).toHaveLength(1); // yang pertama langsung (jumlah 1)
+    expect(t.pushes[0]!.payload).toMatchObject({ count: 1, approvalId: "a1" });
+    for (let i = 2; i <= 10; i++) t.requested(`a${i}`);
+    await settle();
+    expect(t.pushes).toHaveLength(1); // sisanya hanya menandai
     await t.clock.advance(DEFAULT_APPROVAL_WINDOW_MS);
     expect(t.pushes).toHaveLength(2); // satu ringkasan, bukan sembilan
     expect(t.pushes[1]!.payload).toMatchObject({ kind: "approval", count: 10 });
-    expect("approvalId" in t.pushes[1]!.payload).toBe(false); // lebih dari satu: tidak menunjuk satu izin
+    expect("approvalId" in t.pushes[1]!.payload).toBe(false);
     await t.clock.advance(DEFAULT_APPROVAL_WINDOW_MS * 5);
     expect(t.pushes).toHaveLength(2); // tidak ada kiriman lagi
   });
@@ -207,6 +222,186 @@ describe("agent selesai", () => {
   });
 });
 
+describe("hasil review PR #61", () => {
+  test("S2: izin yang ditolak penyaring TIDAK dianggap sudah diberitahukan; ringkasan berikutnya dengan himpunan sama tetap dikirim", async () => {
+    let allow = false;
+    const t = setup({ filter: () => allow });
+    t.requested("a1");
+    await settle();
+    expect(t.pushes).toEqual([]);
+    allow = true;
+    // Permintaan baru yang langsung selesai: A tetap satu-satunya yang menunggu.
+    t.requested("a2");
+    t.resolved("a2");
+    await t.clock.advance(DEFAULT_APPROVAL_WINDOW_MS);
+    expect(t.pushes).toHaveLength(1);
+    expect(t.pushes[0]!.payload).toMatchObject({ count: 1, approvalId: "a1" });
+  });
+
+  test("pengiriman yang GAGAL (melempar) tidak mencatat izin sebagai sudah diberitahukan: dicoba lagi", async () => {
+    const notifyMachine = vi.fn().mockRejectedValueOnce(new Error("layanan push mati")).mockResolvedValue({ attempted: 1, delivered: 1, removed: 0, failed: 0 });
+    const t = setup({ push: { notifyMachine } });
+    t.requested("a1");
+    await settle();
+    t.requested("a2");
+    t.resolved("a2");
+    await t.clock.advance(DEFAULT_APPROVAL_WINDOW_MS);
+    expect(notifyMachine).toHaveBeenCalledTimes(2);
+    expect(notifyMachine.mock.calls[1]![1]).toMatchObject({ approvalId: "a1" });
+  });
+
+  test("pengiriman yang sebagian GAGAL (failed > 0) juga tidak dicatat sebagai sudah diberitahukan", async () => {
+    const notifyMachine = vi.fn().mockResolvedValueOnce({ attempted: 2, delivered: 1, removed: 0, failed: 1 }).mockResolvedValue({ attempted: 2, delivered: 2, removed: 0, failed: 0 });
+    const t = setup({ push: { notifyMachine } });
+    t.requested("a1");
+    await settle();
+    t.requested("a2");
+    t.resolved("a2");
+    await t.clock.advance(DEFAULT_APPROVAL_WINDOW_MS);
+    expect(notifyMachine).toHaveBeenCalledTimes(2);
+  });
+
+  test("S1: kiriman pertama yang tidak menghasilkan apa-apa tidak membuka jendela: izin berikutnya langsung dikirim, bukan menunggu 10 detik", async () => {
+    const t = setup();
+    // Permintaan pertama sudah selesai saat dihitung: tidak ada yang dikirim.
+    t.requested("a1");
+    t.resolved("a1");
+    await settle();
+    expect(t.pushes).toEqual([]);
+    expect(t.clock.pendingTimers()).toBe(0); // jendela tidak tersisa
+    t.requested("b1"); // 1 detik kemudian: harus langsung
+    await settle();
+    expect(t.pushes).toHaveLength(1);
+    expect(t.pushes[0]!.payload).toMatchObject({ approvalId: "b1" });
+  });
+
+  test("tidak ada HP yang mau (attempted 0, mis. semua mematikan jenis ini): jendela ditutup supaya kejadian berikutnya dievaluasi lagi", async () => {
+    const notifyMachine = vi.fn().mockResolvedValueOnce({ attempted: 0, delivered: 0, removed: 0, failed: 0 }).mockResolvedValue({ attempted: 1, delivered: 1, removed: 0, failed: 0 });
+    const t = setup({ push: { notifyMachine } });
+    t.requested("a1");
+    await settle();
+    expect(t.clock.pendingTimers()).toBe(0);
+    t.requested("a2");
+    await settle();
+    expect(notifyMachine).toHaveBeenCalledTimes(2);
+  });
+
+  test("kejadian yang datang selagi kiriman pertama berjalan tetap dievaluasi walau kiriman pertama tidak mengirim apa-apa", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const waiting: PendingApproval[] = [];
+    const pushes: PushPayload[] = [];
+    const clock = virtualClock();
+    let first = true;
+    const notifier = createNotifier({
+      push: { notifyMachine: async (_m, payload) => (pushes.push(payload), { attempted: 1, delivered: 1, removed: 0, failed: 0 }) },
+      pending: async () => {
+        if (first) {
+          first = false;
+          await gate; // kiriman pertama menunggu di sini, lalu mendapati tidak ada izin
+          return [];
+        }
+        return [...waiting];
+      },
+      schedule: clock.schedule,
+    });
+    notifier.onEvent({ type: "approval.requested", machineId: "m1", sessionId: "s1" });
+    await settle();
+    waiting.push(approval("b1"));
+    notifier.onEvent({ type: "approval.requested", machineId: "m1", sessionId: "s1" }); // datang selagi yang pertama menunggu
+    release();
+    await settle();
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toMatchObject({ approvalId: "b1" });
+  });
+
+  test("S3: kiriman satu sesi tidak saling menyalip; yang terbaru tiba terakhir", async () => {
+    const order: Array<number | undefined> = [];
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => (releaseFirst = resolve));
+    let calls = 0;
+    const clock = virtualClock();
+    const waiting: PendingApproval[] = [];
+    const notifier = createNotifier({
+      push: {
+        notifyMachine: async (_m, payload) => {
+          calls += 1;
+          if (calls === 1) await firstGate; // kiriman pertama lambat di layanan push
+          order.push(payload.count);
+          return { attempted: 1, delivered: 1, removed: 0, failed: 0 };
+        },
+      },
+      pending: async () => [...waiting],
+      schedule: clock.schedule,
+    });
+    waiting.push(approval("a1"));
+    notifier.onEvent({ type: "approval.requested", machineId: "m1", sessionId: "s1" });
+    await settle();
+    waiting.push(approval("a2"));
+    notifier.onEvent({ type: "approval.requested", machineId: "m1", sessionId: "s1" });
+    await clock.advance(DEFAULT_APPROVAL_WINDOW_MS); // jendela habis saat kiriman pertama masih tertahan
+    releaseFirst();
+    await clock.advance(1);
+    await settle();
+    expect(order).toEqual([1, 2]); // bukan [2, 1]: layar HP berakhir dengan jumlah terbaru
+  });
+
+  test("risiko tertinggi yang menunggu ikut dalam keputusan untuk penyaring (#037), tanpa isi permintaan", async () => {
+    const seen: NotifyDecision[] = [];
+    const t = setup({ filter: (d) => (seen.push(d), true) });
+    t.waiting.push({ ...approval("a1"), risk: { level: "low", reasons: [{ code: "r", message: "r" }] } } as PendingApproval, { ...approval("a2"), risk: { level: "high", reasons: [{ code: "r", message: "r" }] } } as PendingApproval, { ...approval("a3"), risk: { level: "medium", reasons: [{ code: "r", message: "r" }] } } as PendingApproval);
+    t.notifier.onEvent({ type: "approval.requested", machineId: "m1", sessionId: "s1" });
+    await settle();
+    expect(seen[0]).toEqual({ kind: "approval", machineId: "m1", sessionId: "s1", count: 3, risk: "high" });
+    expect(JSON.stringify(seen)).not.toContain("SANGAT-RAHASIA");
+  });
+
+  test("tanpa penilaian risiko: tidak ada kolom risk di keputusan", async () => {
+    const seen: NotifyDecision[] = [];
+    const t = setup({ filter: (d) => (seen.push(d), true) });
+    t.requested("a1");
+    await settle();
+    expect("risk" in seen[0]!).toBe(false);
+  });
+
+  test("nomor sesi atau izin yang terlalu panjang tidak membuang seluruh notifikasi: dikirim tanpa nomor itu", async () => {
+    const t = setup();
+    const long = "x".repeat(300);
+    t.requested(long, "s-panjang");
+    t.requested("b1", long);
+    t.notifier.onEvent({ type: "agent.stopped", machineId: "m1", sessionId: long });
+    await settle();
+    const approvals = t.pushes.filter((p) => p.payload.kind === "approval");
+    const first = approvals.find((p) => p.payload.sessionId === "s-panjang")!;
+    expect("approvalId" in first.payload).toBe(false); // nomor izin panjang dibuang, jumlah tetap ada
+    expect(first.payload.count).toBe(1);
+    const second = approvals.find((p) => p.payload.sessionId === undefined)!;
+    expect(second.payload).toMatchObject({ approvalId: "b1", count: 1 });
+    const done = t.pushes.find((p) => p.payload.kind === "done")!;
+    expect(done.payload.sessionId).toBeUndefined();
+    for (const { payload } of t.pushes) expect(PushPayloadSchema.safeParse(payload).success).toBe(true);
+  });
+
+  test("tidak ada izin yang menunggu saat dihitung (mis. jam laptop tidak sinkron): satu baris log menjelaskannya", async () => {
+    const t = setup();
+    t.notifier.onEvent({ type: "approval.requested", machineId: "m1", sessionId: "s1" });
+    await settle();
+    expect(t.logs.join("\n")).toContain("jam laptop tidak sinkron");
+    expect(t.pushes).toEqual([]);
+  });
+
+  test("setelah stop(), kejadian baru tidak memicu apa pun dan tidak membuka jendela", async () => {
+    const t = setup();
+    t.notifier.stop();
+    t.requested("a1");
+    t.notifier.onEvent({ type: "agent.stopped", machineId: "m1", sessionId: "s1" });
+    await settle();
+    expect(t.pushes).toEqual([]);
+    expect(t.clock.pendingTimers()).toBe(0);
+    expect(t.notifier.activeSessions()).toBe(0);
+  });
+});
+
 describe("memori terbatas", () => {
   test("sesi yang sudah sepi satu jendela penuh dilupakan: relay yang berjalan lama tidak menimbun catatan", async () => {
     const t = setup();
@@ -230,7 +425,7 @@ describe("titik penyaring kebijakan (#037)", () => {
     t.requested("a2");
     t.notifier.onEvent({ type: "agent.stopped", machineId: "m1", sessionId: "s1" });
     await t.clock.advance(DEFAULT_APPROVAL_WINDOW_MS);
-    expect(seen).toContainEqual({ kind: "approval", machineId: "m1", sessionId: "s1", count: 1 });
+    expect(seen).toContainEqual({ kind: "approval", machineId: "m1", sessionId: "s1", count: 2 });
     expect(seen).toContainEqual({ kind: "done", machineId: "m1", sessionId: "s1" });
     expect(t.pushes.every((p) => p.payload.kind === "approval")).toBe(true);
   });

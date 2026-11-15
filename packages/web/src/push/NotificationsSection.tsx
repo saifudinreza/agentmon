@@ -56,35 +56,41 @@ export function NotificationsSection({ entry, env: injected }: { entry: RelayEnt
 
   // Jenis notifikasi (FR-33): hanya bila sudah aktif. Disimpan di relay per HP; tampilannya langsung berubah dan dikembalikan bila gagal.
   const [prefs, setPrefs] = useState<PushPreferences | undefined>();
-  const [prefError, setPrefError] = useState(false);
+  const [prefError, setPrefError] = useState<"load" | "save" | undefined>();
+  const [prefReload, setPrefReload] = useState(0);
+  // Nomor urut permintaan simpan: hanya jawaban untuk permintaan TERAKHIR yang boleh menimpa tampilan, supaya dua ketukan
+  // cepat dengan jawaban yang terbalik urutannya tidak membuat kotak tampil berbeda dari yang tersimpan di relay.
+  const saveSeq = useRef(0);
   const active = status?.kind === "on";
   useEffect(() => {
     if (!active) {
       setPrefs(undefined);
-      setPrefError(false);
+      setPrefError(undefined);
       return;
     }
     let cancelled = false;
+    setPrefError(undefined);
     env.api
       .pushPreferences()
       .then((loaded) => !cancelled && setPrefs(loaded))
-      .catch(() => !cancelled && setPrefError(true));
+      .catch(() => !cancelled && setPrefError("load"));
     return () => {
       cancelled = true;
     };
-  }, [active, env]);
+  }, [active, env, prefReload]);
   async function toggle(key: keyof PushPreferences) {
     if (!prefs) return;
     const next = !prefs[key];
+    const seq = ++saveSeq.current;
     setPrefs({ ...prefs, [key]: next });
-    setPrefError(false);
+    setPrefError(undefined);
     try {
       const saved = await env.api.savePushPreferences({ [key]: next });
-      if (alive.current) setPrefs(saved);
+      if (alive.current && seq === saveSeq.current) setPrefs(saved);
     } catch {
-      if (!alive.current) return;
+      if (!alive.current || seq !== saveSeq.current) return;
       setPrefs((current) => (current ? { ...current, [key]: !next } : current));
-      setPrefError(true);
+      setPrefError("save");
     }
   }
 
@@ -123,13 +129,21 @@ export function NotificationsSection({ entry, env: injected }: { entry: RelayEnt
           </div>
         )}
         {status?.kind === "off" && status.relayPending && <p className="text-warn-fg">{t("push.error.disable")}</p>}
-        {prefError && <p className="text-danger">{t("push.pref.error")}</p>}
+        {prefError === "save" && <p className="text-danger">{t("push.pref.error")}</p>}
+        {prefError === "load" && (
+          <p className="text-danger">
+            {t("push.pref.loadError")}{" "}
+            <button type="button" className="underline" onClick={() => setPrefReload((n) => n + 1)}>
+              {t("push.retry")}
+            </button>
+          </p>
+        )}
       </div>
 
       {active && (
-        <fieldset className="mt-3 flex flex-col gap-1 border-t border-line pt-3" aria-busy={prefs === undefined && !prefError}>
+        <fieldset className="mt-3 flex flex-col gap-1 border-t border-line pt-3" aria-busy={prefs === undefined && prefError === undefined}>
           <legend className="text-sm font-semibold">{t("push.pref.title")}</legend>
-          {prefs === undefined && !prefError && <p className="text-sm text-muted">{t("push.pref.loading")}</p>}
+          {prefs === undefined && prefError === undefined && <p className="text-sm text-muted">{t("push.pref.loading")}</p>}
           {prefs !== undefined &&
             (["approvals", "done"] as const).map((key) => (
               <label key={key} className="flex min-h-11 items-start gap-3 py-1">

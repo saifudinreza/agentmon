@@ -321,6 +321,17 @@ describe("pengaturan jenis notifikasi (FR-33)", () => {
     expect((await pushStore.forDevice("d1"))[0]).toMatchObject({ notifyApprovals: false, notifyDone: true });
   });
 
+  test("alamat yang sama berpindah ke HP lain (konflik alamat): baris memakai pengaturan HP yang baru, bukan sisa pemilik lama", async () => {
+    const base = await start();
+    await subscribe(base, T.d1);
+    await subscribe(base, T.d2);
+    await request(base, "PUT", "/api/push/preferences", T.d1, { approvals: false, done: false });
+    const taken = (await pushStore.forDevice("d2"))[0]!;
+    // d1 mendaftarkan alamat milik d2 (alamat berpindah): d1 sebelumnya mematikan semuanya.
+    await pushStore.replace("d1", { endpoint: taken.endpoint, p256dh: taken.p256dh, auth: taken.auth });
+    expect(await pushStore.getPreferences("d1")).toEqual({ approvals: false, done: false });
+  });
+
   test("mencabut langganan menghapus pengaturannya (404 lagi)", async () => {
     const base = await start();
     await subscribe(base, T.d1);

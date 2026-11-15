@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { I18nProvider } from "../i18n/react";
 import type { RelayEntry } from "../relay/RelayProvider";
 import { NotificationsSection } from "./NotificationsSection";
@@ -271,8 +271,39 @@ describe("jenis notifikasi (FR-33)", () => {
         <NotificationsSection entry={entry} env={setup.env} />
       </I18nProvider>,
     );
-    expect(await screen.findByText("Pengaturan tidak bisa disimpan. Coba lagi.")).toBeTruthy();
+    expect(await screen.findByText(/Pengaturan notifikasi tidak bisa dimuat/)).toBeTruthy();
+    expect(screen.queryByText("Pengaturan tidak bisa disimpan. Coba lagi.")).toBeNull(); // bukan pesan "gagal menyimpan"
     expect(screen.queryByRole("checkbox")).toBeNull();
+    // Coba lagi setelah relay pulih: pilihan muncul.
+    setup.relay.fail.pushPrefsLoad = undefined;
+    fireEvent.click(screen.getByRole("button", { name: "Coba lagi" }));
+    expect(await checkbox(/Permintaan izin/)).toBeTruthy();
+    expect(screen.queryByText(/tidak bisa dimuat/)).toBeNull();
+  });
+
+  test("dua ketukan cepat dengan jawaban terbalik urutan: tampilan mengikuti ketukan TERAKHIR, bukan jawaban terakhir yang tiba", async () => {
+    const setup = setupPush(active());
+    render(
+      <I18nProvider>
+        <NotificationsSection entry={entry} env={setup.env} />
+      </I18nProvider>,
+    );
+    const approvals = (await checkbox(/Permintaan izin/)) as HTMLInputElement;
+    const resolvers: Array<() => void> = [];
+    vi.mocked(setup.api.savePushPreferences).mockImplementation(
+      (update: Partial<{ approvals: boolean; done: boolean }>) =>
+        new Promise((resolve) => {
+          resolvers.push(() => resolve({ approvals: update.approvals ?? true, done: true }));
+        }),
+    );
+    fireEvent.click(approvals); // mati
+    fireEvent.click(approvals); // hidup lagi
+    expect(resolvers).toHaveLength(2);
+    resolvers[1]!(); // jawaban ketukan kedua (hidup) tiba lebih dulu
+    resolvers[0]!(); // jawaban ketukan pertama (mati) tiba terlambat
+    await waitFor(() => expect(approvals.checked).toBe(true));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(approvals.checked).toBe(true);
   });
 
   test("dimatikan: pilihan jenis hilang", async () => {

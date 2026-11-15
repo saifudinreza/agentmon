@@ -294,4 +294,5 @@ export const en: Record<MessageKey, string> = {
   "push.pref.done.hint": "When an agent finishes working.",
   "push.pref.loading": "Loading settings…",
   "push.pref.error": "Could not save the setting. Try again.",
+  "push.pref.loadError": "Could not load the notification settings.",
 };
