@@ -96,6 +96,20 @@ describe("antrean izin di beranda", () => {
     expect(region.textContent).toContain("rm -rf build");
   });
 
+  test("jalur berkas yang panjang diringkas di daftar, tetapi layar keputusan menampilkan jalur UTUH (#68)", async () => {
+    const full = "/home/pengguna/proyek-besar/packages/web/src/timeline/EventRow.tsx";
+    relay.data.approvals = [pending("a1", { toolName: "Write", toolInput: { file_path: full, content: "x" } })];
+    renderApp();
+    await sync();
+    const region = screen.getByRole("region", { name: "Menunggu keputusan" });
+    expect(region.textContent).toContain("…/timeline/EventRow.tsx");
+    expect(region.textContent).not.toContain("proyek-besar");
+    cleanup();
+    renderApp("/a/m1/a1");
+    await sync();
+    expect(document.body.textContent).toContain(full);
+  });
+
   test("tanpa izin yang menunggu: bagian antrean tidak ada", async () => {
     renderApp();
     await sync();

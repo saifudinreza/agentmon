@@ -12,6 +12,7 @@
 import { EventSchema, type Envelope } from "@agentmon/shared";
 import type { MessageKey } from "../i18n/id";
 import type { Params } from "../i18n/i18n";
+import { PATH_KEYS, shortenPath } from "./path";
 
 export type Tone = "neutral" | "ok" | "warn" | "bad" | "info";
 
@@ -21,6 +22,8 @@ export type EventView = {
   titleParams?: Params;
   /** Keterangan satu baris (sudah dibersihkan dan dipotong). */
   detail?: string;
+  /** Jalur berkas LENGKAP bila `detail` memuat versi ringkasnya; ditampilkan saat baris diketuk. */
+  fullDetail?: string;
   tone: Tone;
 };
 
@@ -35,10 +38,15 @@ export function cleanLine(value: unknown, max = 140): string {
 }
 
 // Sasaran alat yang paling berarti: berkas, perintah, pola, atau alamat.
-function toolTarget(toolInput: Record<string, unknown>): string | undefined {
+// Jalur berkas diringkas untuk layar HP; `full` memuat jalur lengkap (sudah dibersihkan) supaya bisa ditampilkan saat baris diketuk.
+function toolTarget(toolInput: Record<string, unknown>): { text: string; full?: string } | undefined {
   for (const key of ["file_path", "path", "notebook_path", "command", "pattern", "url", "query"]) {
     const value = toolInput[key];
-    if (typeof value === "string" && value.trim() !== "") return cleanLine(value, 120);
+    if (typeof value !== "string" || value.trim() === "") continue;
+    if (!PATH_KEYS.has(key)) return { text: cleanLine(value, 120) };
+    const full = cleanLine(value, 500);
+    const short = shortenPath(full);
+    return short === full ? { text: full } : { text: short, full };
   }
   return undefined;
 }
@@ -64,7 +72,7 @@ export function describeEvent(envelope: Envelope): EventView {
       return { titleKey: "event.session.started", detail: cleanLine(event.payload.cwd), tone: "info" };
     case "tool.requested": {
       const target = toolTarget(event.payload.toolInput);
-      return { titleKey: "event.tool.requested", titleParams: { tool: cleanLine(event.payload.toolName, 60) }, ...(target ? { detail: target } : {}), tone: "neutral" };
+      return { titleKey: "event.tool.requested", titleParams: { tool: cleanLine(event.payload.toolName, 60) }, ...(target ? { detail: target.text, ...(target.full ? { fullDetail: target.full } : {}) } : {}), tone: "neutral" };
     }
     case "tool.completed":
       return {
@@ -79,7 +87,8 @@ export function describeEvent(envelope: Envelope): EventView {
       return {
         titleKey: "event.approval.requested",
         titleParams: { tool: cleanLine(event.payload.toolName, 60) },
-        detail: summary || target || "",
+        detail: summary || target?.text || "",
+        ...(!summary && target?.full ? { fullDetail: target.full } : {}),
         tone: level === "high" ? "bad" : "warn",
       };
     }

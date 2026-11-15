@@ -94,6 +94,8 @@ export const id = {
   "timeline.earlier": "Muat {count} event sebelumnya",
   "timeline.new": "{count} event baru",
   "timeline.count": "{count} event",
+  "timeline.path.expand": "Ketuk untuk melihat jalur lengkap.",
+  "timeline.path.collapse": "Ketuk untuk meringkas jalur.",
   "timeline.error": "Riwayat tidak bisa dimuat. Periksa jaringan Anda, lalu coba lagi.",
   "timeline.retry": "Coba lagi",
   "timeline.notFound": "Sesi atau laptop ini tidak ditemukan.",
