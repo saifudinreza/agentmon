@@ -31,7 +31,7 @@ Legenda: **Lulus** (dicoba di perangkat nyata), **Belum diuji** (tidak ada bukti
 
 Ditemukan saat uji hook asli. Belum dibuat menjadi issue GitHub; menunggu persetujuan.
 
-1. Sesi tetap berstatus "Aktif" setelah agent selesai, karena `session.recap` belum dibuat (issue 041).
+1. Sesi tetap berstatus "Aktif" setelah agent selesai (GitHub #66, diperbaiki: daemon mengirim `session.recap` saat `SessionEnd`, dan sesi tanpa kabar 30 menit tampil "Tidak ada kabar"). Belum dicoba ulang di perangkat nyata.
 2. Teks "Agent berhenti" menampilkan markdown mentah.
 3. Jalur berkas ditampilkan penuh (panjang di layar HP).
 4. Banner "Claude Code login successful" muncul di keluaran hook.

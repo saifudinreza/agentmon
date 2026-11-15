@@ -75,6 +75,15 @@ describe("aggregateStatus", () => {
 });
 
 describe("beranda: laptop dan sesi", () => {
+  test("sesi yang sudah lama tanpa kabar dan tidak pernah mengirim rekap tampil 'Tidak ada kabar', bukan 'Aktif' (#66)", async () => {
+    relay.data.sessions.m1 = [summary("sesi-mati", "2026-11-11T10:30:00.000Z")]; // status relay masih "active", tetapi kabar terakhir sudah lama
+    renderApp();
+    await sync();
+    const card = screen.getByRole("region", { name: "Laptop Kantor" });
+    expect(within(card).getByText("Tidak ada kabar")).toBeTruthy();
+    expect(within(card).queryByText("Aktif")).toBeNull();
+  });
+
   test("sebelum sinkronisasi pertama: laptop dari penyimpanan perangkat tampil dengan 'Memuat sesi…'", () => {
     renderApp();
     expect(screen.getByRole("heading", { level: 2, name: "Laptop Kantor" })).toBeTruthy();
@@ -83,7 +92,7 @@ describe("beranda: laptop dan sesi", () => {
   });
 
   test("setelah sinkronisasi: status online/offline dan daftar sesi dengan tautan ke timeline", async () => {
-    relay.data.sessions.m1 = [summary("sesi-a", "2026-11-11T10:30:00.000Z"), summary("sesi/b?x", "2026-11-11T09:30:00.000Z", { status: "ended", endedAt: "2026-11-11T09:45:00.000Z" })];
+    relay.data.sessions.m1 = [summary("sesi-a", new Date().toISOString()), summary("sesi/b?x", "2026-11-11T09:30:00.000Z", { status: "ended", endedAt: "2026-11-11T09:45:00.000Z" })];
     renderApp();
     await sync();
 

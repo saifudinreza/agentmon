@@ -190,6 +190,26 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
     }
   };
 
+  // CATATAN SESI untuk rekap saat sesi berakhir: kapan mulai, berkas apa yang diubah (disetujui), dan berapa yang
+  // ditolak. Dibatasi seperti nomor antrean: sesi yang mati mendadak tidak boleh membuat ingatan membengkak.
+  type SessionStats = { startedMs: number; files: Set<string>; rejected: number };
+  const stats = new Map<string, SessionStats>();
+  const MAX_RECAP_FILES = 200;
+  const statsOf = (sessionId: string, startedMs: number): SessionStats => {
+    let entry = stats.get(sessionId);
+    if (!entry) {
+      entry = { startedMs: Number.isFinite(startedMs) ? startedMs : now().getTime(), files: new Set(), rejected: 0 };
+      stats.set(sessionId, entry);
+      if (stats.size > maxTracked) {
+        const oldest = stats.keys().next().value;
+        if (oldest !== undefined) stats.delete(oldest);
+      }
+    }
+    return entry;
+  };
+  // Sesi yang baru saja berakhir: SessionEnd yang terkirim dua kali tidak menghasilkan dua rekap.
+  const recentlyEnded = new Set<string>();
+
   // Pemberi stempel untuk sebuah sesi. Membaca nomor urut TANPA menaikkannya: nomor baru
   // dinaikkan (remember) hanya setelah event benar-benar jadi, supaya data yang ditolak tidak
   // meninggalkan celah.
@@ -215,6 +235,8 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
   //   void               = pernyataan sengaja: "janji ini tidak ditunggu".
   const deliver = (event: AgentMonEvent, context: HookContext) => {
     remember(event.sessionId, event.seq + 1);
+    statsOf(event.sessionId, Date.parse(event.ts)); // sesi mulai dihitung dari event pertama yang terlihat
+    recentlyEnded.delete(event.sessionId);
     void Promise.resolve()
       .then(() => options.emit(event, context))
       .catch((error: unknown) => {
@@ -365,6 +387,16 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
     );
     logger.info(`keputusan ${hold.point} alat=${hold.toolName}: ${outcome.status}`);
 
+    // Bahan rekap sesi: yang ditolak dihitung, yang disetujui dicatat berkasnya.
+    const recap = statsOf(hold.sessionId, now().getTime());
+    if (outcome.status === "denied") recap.rejected += 1;
+    if (outcome.status === "approved" || outcome.status === "partially_approved") {
+      for (const key of ["file_path", "notebook_path"]) {
+        const value = hold.toolInput[key];
+        if (typeof value === "string" && value.trim() !== "" && value.length <= 1000 && recap.files.size < MAX_RECAP_FILES) recap.files.add(value);
+      }
+    }
+
     // Bukan keputusan yang bisa diterapkan -> Claude Code akan lanjut ke prompt terminal.
     // Di PreToolUse itu berarti PermissionRequest menyusul; catat supaya tidak ditahan lagi.
     const response = toClaudeDecision(hold.point, outcome);
@@ -405,6 +437,28 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
         // (2) batalkan izin yang masih menunggu dari sesi itu, karena agent-nya sudah tidak
         // ada untuk menerima jawaban. Hook yang menunggu izin itu langsung dijawab.
         case "session_ended": {
+          // Rekap sesi: tanpa ini relay tidak pernah tahu sesinya selesai dan HP menampilkannya "Aktif" selamanya.
+          // Dikirim SEBELUM nomor antrean dilupakan supaya nomor urutnya tetap berlanjut.
+          if (!recentlyEnded.has(result.sessionId)) {
+            const recap = stats.get(result.sessionId);
+            emitOwn(
+              "session.recap",
+              {
+                durationMs: recap ? Math.max(0, now().getTime() - recap.startedMs) : 0,
+                filesChanged: recap ? [...recap.files] : [],
+                rejected: recap?.rejected ?? 0,
+                autoApproved: 0, // belum ada policy engine
+              },
+              result.sessionId,
+              context,
+            );
+            recentlyEnded.add(result.sessionId);
+            if (recentlyEnded.size > 500) {
+              const oldest = recentlyEnded.values().next().value;
+              if (oldest !== undefined) recentlyEnded.delete(oldest);
+            }
+          }
+          stats.delete(result.sessionId);
           nextSeq.delete(result.sessionId);
           const cancelled = context.approvals.cancelSession(result.sessionId);
           if (cancelled > 0) logger.info(`sesi berakhir: ${cancelled} permintaan izin dibatalkan`);

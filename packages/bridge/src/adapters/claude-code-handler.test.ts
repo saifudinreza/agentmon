@@ -118,7 +118,59 @@ describe("penangan hook Claude Code", () => {
     await handler(load("PreToolUse.Read.json"), context);
     await settle();
 
-    expect(seen.map((e) => e.seq)).toEqual([0, 0]);
+    // Sesi berakhir mengirim rekap (nomor urut berlanjut), lalu sesi dengan nama sama dimulai lagi dari 0.
+    expect(seen.map((e) => [e.type, e.seq])).toEqual([
+      ["tool.requested", 0],
+      ["session.recap", 1],
+      ["tool.requested", 0],
+    ]);
+  });
+
+  test("SessionEnd mengirim rekap sesi (supaya relay dan HP tahu sesinya selesai); durasi dihitung dari event pertama", async () => {
+    const { context } = fakeContext();
+    const seen: AgentMonEvent[] = [];
+    let clock = Date.parse("2026-11-15T10:00:00Z");
+    const handler = createClaudeCodeHandler({ emit: (event) => void seen.push(event), now: () => new Date(clock) });
+    await handler(load("PreToolUse.Read.json"), context);
+    clock += 90_000;
+    await handler(load("SessionEnd.json"), context);
+    await settle();
+    const recap = seen.find((e) => e.type === "session.recap");
+    expect(recap?.payload).toEqual({ durationMs: 90_000, filesChanged: [], rejected: 0, autoApproved: 0 });
+    expect(recap?.sessionId).toBe(seen[0]?.sessionId);
+  });
+
+  test("SessionEnd yang terkirim dua kali menghasilkan satu rekap saja", async () => {
+    const { context } = fakeContext();
+    const seen: AgentMonEvent[] = [];
+    const handler = createClaudeCodeHandler({ emit: (event) => void seen.push(event) });
+    await handler(load("PreToolUse.Read.json"), context);
+    await handler(load("SessionEnd.json"), context);
+    await handler(load("SessionEnd.json"), context);
+    await settle();
+    expect(seen.filter((e) => e.type === "session.recap")).toHaveLength(1);
+  });
+
+  test("SessionEnd untuk sesi yang tidak dikenal daemon (daemon dimulai ulang di tengah sesi) tetap mengirim rekap kosong", async () => {
+    const { context } = fakeContext();
+    const seen: AgentMonEvent[] = [];
+    const handler = createClaudeCodeHandler({ emit: (event) => void seen.push(event) });
+    await handler(inSession(load("SessionEnd.json"), "baru-saja-dilihat"), context);
+    await settle();
+    expect(seen.map((e) => e.type)).toEqual(["session.recap"]);
+    expect(seen[0]?.payload).toMatchObject({ durationMs: 0, filesChanged: [], rejected: 0 });
+  });
+
+  test("sesi yang dipakai ulang setelah berakhir bisa berakhir lagi dengan rekap baru", async () => {
+    const { context } = fakeContext();
+    const seen: AgentMonEvent[] = [];
+    const handler = createClaudeCodeHandler({ emit: (event) => void seen.push(event) });
+    for (let round = 0; round < 2; round++) {
+      await handler(load("PreToolUse.Read.json"), context);
+      await handler(load("SessionEnd.json"), context);
+    }
+    await settle();
+    expect(seen.filter((e) => e.type === "session.recap")).toHaveLength(2);
   });
 
   test("identitas yang ditolak kontrak tidak memakai nomor urut (tanpa celah)", async () => {
