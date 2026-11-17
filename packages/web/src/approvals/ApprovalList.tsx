@@ -5,6 +5,7 @@ import { useI18n } from "../i18n/react";
 import type { MessageKey } from "../i18n/id";
 import { useRelayState, type RelayEntry } from "../relay/RelayProvider";
 import { cleanLine } from "../timeline/describe";
+import { PATH_KEYS, shortenPath } from "../timeline/path";
 import { Link } from "../ui/Link";
 import { describeInput } from "./format";
 import { formatRemaining, isExpired, remainingMs } from "./model";
@@ -19,7 +20,9 @@ export const RISK_LABEL: Record<"high" | "medium" | "low", MessageKey> = {
 /** Satu baris yang menggambarkan apa yang diminta: perintah, berkas, atau ringkasan. */
 export function targetOf(approval: PendingApproval): string {
   const field = describeInput(approval.toolName, approval.toolInput)[0];
-  return cleanLine(approval.summary ?? field?.value ?? "", 100);
+  if (approval.summary !== undefined || !field) return cleanLine(approval.summary ?? "", 100);
+  // Jalur berkas diringkas untuk daftar; layar keputusan (yang dibuka dengan mengetuk baris) menampilkan jalur UTUH.
+  return PATH_KEYS.has(field.label) ? shortenPath(cleanLine(field.value, 500)) : cleanLine(field.value, 100);
 }
 
 export const approvalPath = (machineId: string, approvalId: string) => `/a/${encodeURIComponent(machineId)}/${encodeURIComponent(approvalId)}`;

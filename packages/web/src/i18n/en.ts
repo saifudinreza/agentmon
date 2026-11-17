@@ -89,6 +89,8 @@ export const en: Record<MessageKey, string> = {
   "timeline.earlier": "Load {count} earlier events",
   "timeline.new": "{count} new events",
   "timeline.count": "{count} events",
+  "timeline.path.expand": "Tap to see the full path.",
+  "timeline.path.collapse": "Tap to shorten the path.",
   "timeline.error": "The history could not be loaded. Check your network, then try again.",
   "timeline.retry": "Try again",
   "timeline.notFound": "This session or laptop was not found.",

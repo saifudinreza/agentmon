@@ -1,5 +1,5 @@
 import type { Envelope } from "@agentmon/shared";
-import { memo, useMemo } from "react";
+import { memo, useMemo, useState } from "react";
 import { useI18n } from "../i18n/react";
 import { describeEvent, type Tone } from "./describe";
 import { rollbackPath } from "../rollback/RollbackScreen";
@@ -23,6 +23,8 @@ const TONE_BORDER: Record<Tone, string> = {
 export const EventRow = memo(function EventRow({ event }: { event: Envelope }) {
   const { t, locale } = useI18n();
   const view = useMemo(() => describeEvent(event), [event]);
+  // Jalur berkas diringkas di daftar; mengetuk barisnya menampilkan jalur lengkap.
+  const [expanded, setExpanded] = useState(false);
   // Titik simpan: tawarkan "Kembalikan ke sini".
   const rawId = event.type === "checkpoint.created" ? (event.payload as { checkpointId?: unknown }).checkpointId : undefined;
   const checkpointId = typeof rawId === "string" && rawId !== "" ? rawId : undefined;
@@ -37,7 +39,14 @@ export const EventRow = memo(function EventRow({ event }: { event: Envelope }) {
           {formatClock(event.ts, locale)}
         </time>
       </div>
-      {view.detail ? <p className="mt-0.5 break-words text-sm text-muted">{view.detail}</p> : null}
+      {view.detail && view.fullDetail ? (
+        <button type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)} className="mt-0.5 block min-h-11 w-full break-all text-left text-sm text-muted">
+          {expanded ? view.fullDetail : view.detail}
+          <span className="sr-only"> {t(expanded ? "timeline.path.collapse" : "timeline.path.expand")}</span>
+        </button>
+      ) : view.detail ? (
+        <p className="mt-0.5 break-words text-sm text-muted">{view.detail}</p>
+      ) : null}
       {undoId ? (
         <Link to={rollbackPath(event.machineId, undoId)} className="mt-1 inline-flex min-h-11 items-center text-sm underline">
           {t("rollback.undo")}
