@@ -83,6 +83,7 @@ export const id = {
   "session.agent.codex": "Codex",
   "session.status.active": "Aktif",
   "session.status.ended": "Selesai",
+  "session.status.idle": "Tidak ada kabar",
   "session.started": "Mulai {time}",
   "session.last": "terakhir {time}",
 

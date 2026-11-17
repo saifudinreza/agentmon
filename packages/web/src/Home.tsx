@@ -14,6 +14,7 @@ import { NotificationsSection } from "./push/NotificationsSection";
 import { useRelayEntries, useRelayState, type RelayEntry } from "./relay/RelayProvider";
 import { navigate, usePath } from "./router";
 import { formatWhen } from "./timeline/format";
+import { sessionState } from "./timeline/status";
 import { TimelineScreen } from "./timeline/TimelineScreen";
 import { Heading } from "./ui/Heading";
 import { Link } from "./ui/Link";
@@ -83,7 +84,7 @@ function RelaySection({ entry }: { entry: RelayEntry }) {
                     >
                       <span className="flex items-baseline justify-between gap-3">
                         <span className="font-medium">{t(`session.agent.${session.agent}`)}</span>
-                        <span className={`text-xs ${session.status === "active" ? "text-ok" : "text-muted"}`}>{t(`session.status.${session.status}`)}</span>
+                        <span className={`text-xs ${sessionState(session) === "active" ? "text-ok" : "text-muted"}`}>{t(`session.status.${sessionState(session)}`)}</span>
                       </span>
                       <span className="text-sm text-muted">
                         {t("session.started", { time: formatWhen(session.startedAt, locale) })} · {t("session.last", { time: formatWhen(session.lastEventAt, locale) })}
