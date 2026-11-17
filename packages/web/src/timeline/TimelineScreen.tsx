@@ -2,6 +2,7 @@
 import type { Envelope } from "@agentmon/shared";
 import { useEffect } from "react";
 import { useI18n } from "../i18n/react";
+import { sessionState } from "./status";
 import { findEntryForMachine, useRelayEntries, useRelayState, type RelayEntry } from "../relay/RelayProvider";
 import { sessionKey } from "../relay/relay-store";
 import { Heading } from "../ui/Heading";
@@ -68,7 +69,7 @@ function TimelineBody({ entry, machineId, sessionId, focusHeading }: { entry: Re
           {agentLabel ? t("timeline.title", { agent: agentLabel }) : t("timeline.titleUnknown")}
         </Heading>
         <p className="mt-1 text-sm text-muted">
-          {summary ? `${t(`session.status.${summary.status}`)} · ${t("session.started", { time: formatWhen(summary.startedAt, locale) })} · ` : ""}
+          {summary ? `${t(`session.status.${sessionState(summary)}`)} · ${t("session.started", { time: formatWhen(summary.startedAt, locale) })} · ` : ""}
           {t("timeline.count", { count: events.length })}
         </p>
       </header>

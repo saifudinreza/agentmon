@@ -73,7 +73,7 @@ Input hook mentah dari Claude Code diubah menjadi event baku (paket `shared`) ol
 | `Notification` | event `agent.notification` (belum pernah teramati, bentuknya dari dokumentasi) |
 | `SessionStart` | event `session.started` (dipetakan, tetapi tidak datang lewat hook `http`, lihat di bawah) |
 | `PermissionRequest` | permintaan izin netral untuk approval engine. Bukan event, karena `approval.requested` butuh nomor persetujuan dan batas waktu |
-| `SessionEnd` | penanda sesi berakhir. Kontrak tidak punya event ini, dan `session.recap` dihitung dari catatan sesi |
+| `SessionEnd` | sesi berakhir: daemon mengirim event `session.recap` (lama sesi dihitung dari event pertama yang terlihat, berkas yang disetujui, jumlah yang ditolak; `autoApproved` 0 sampai ada policy engine). Relay menandai sesinya `ended`. `SessionEnd` ganda menghasilkan satu rekap; sesi yang tidak dikenal (daemon dimulai ulang di tengah sesi) menghasilkan rekap dengan durasi 0 |
 | `UserPromptSubmit` | diabaikan (isinya teks perintahmu) |
 | nama lain | dicatat sebagai tidak dikenal, lalu diabaikan |
 | kolom wajib hilang | dicatat sebagai tidak sah, lalu diabaikan |

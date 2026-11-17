@@ -77,6 +77,7 @@ export const en: Record<MessageKey, string> = {
   "session.agent.codex": "Codex",
   "session.status.active": "Active",
   "session.status.ended": "Finished",
+  "session.status.idle": "No recent activity",
   "session.started": "Started {time}",
   "session.last": "last {time}",
 

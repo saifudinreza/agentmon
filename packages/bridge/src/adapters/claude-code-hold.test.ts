@@ -892,3 +892,36 @@ describe("penilaian risiko pada izin yang ditahan (#030)", () => {
     await response;
   });
 });
+
+describe("rekap sesi dari izin yang diputuskan (#66)", () => {
+  const write = (file_path: string) => ({ ...load("PreToolUse.Write.json"), cwd: "/work/proj", tool_input: { file_path, content: "x" } });
+
+  test("berkas yang disetujui masuk filesChanged, yang ditolak dihitung rejected, lalu SessionEnd mengirim rekapnya", async () => {
+    const s = setup();
+    const first = s.handler(write("src/a.ts"), s.context);
+    await s.waitPending();
+    s.decideFirst("approve");
+    await first;
+    const second = s.handler(write("src/b.ts"), s.context);
+    await s.waitPending();
+    s.decideFirst("deny");
+    await second;
+    await s.handler(load("SessionEnd.json"), s.context);
+    await vi.waitFor(() => expect(s.events.some((e) => e.type === "session.recap")).toBe(true));
+    const recap = s.events.find((e) => e.type === "session.recap");
+    expect(recap?.payload).toMatchObject({ filesChanged: ["src/a.ts"], rejected: 1, autoApproved: 0 });
+  });
+
+  test("berkas yang sama disetujui dua kali dicatat sekali", async () => {
+    const s = setup();
+    for (let i = 0; i < 2; i++) {
+      const response = s.handler(write("src/a.ts"), s.context);
+      await s.waitPending();
+      s.decideFirst("approve");
+      await response;
+    }
+    await s.handler(load("SessionEnd.json"), s.context);
+    await vi.waitFor(() => expect(s.events.some((e) => e.type === "session.recap")).toBe(true));
+    expect((s.events.find((e) => e.type === "session.recap")?.payload as { filesChanged: string[] }).filesChanged).toEqual(["src/a.ts"]);
+  });
+});
