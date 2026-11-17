@@ -17,6 +17,7 @@ const CommandPattern = z
   .string()
   .min(1)
   .max(200)
+  .refine((p) => /^[\x20-\x7e]+$/.test(p), "pola perintah hanya boleh huruf, angka, dan tanda baca ASCII biasa")
   .refine((p) => !SHELL_META.test(p), "pola perintah tidak boleh memuat karakter shell (; & | < > $ ` ( ) \\)")
   .refine((p) => !p.slice(0, -1).includes("*") && !/\S\*$/.test(p), "tanda * hanya boleh berdiri sendiri sebagai kata terakhir");
 
@@ -29,7 +30,7 @@ export const RuleSchema = z
     id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "id: huruf, angka, titik, garis, maksimal 64 karakter"),
     action: z.enum(["allow", "ask", "deny"]),
     /** Nama alat persis (tanpa membedakan huruf besar kecil), atau `*` untuk semua alat. */
-    tool: z.string().min(1).max(64),
+    tool: z.string().min(1).max(64).refine((t) => t === t.trim(), "nama alat tidak boleh diawali atau diakhiri spasi"),
     /** Hanya untuk Bash/PowerShell: tiap pola dicocokkan dengan SATU perintah (bukan rangkaian). */
     commands: z.array(CommandPattern).min(1).max(100).optional(),
     /** Hanya untuk alat berkas: pola jalur relatif terhadap proyek (`*`, `**`, `?`). */

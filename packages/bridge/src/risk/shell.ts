@@ -39,6 +39,7 @@ const MAX_LENGTH = 400_000;
 // ${IFS} dan $IFS dipakai untuk menyelipkan spasi tanpa mengetik spasi: rm${IFS}-rf${IFS}/
 const IFS = /\$\{IFS\}|\$IFS(?![A-Za-z0-9_])/g;
 
+const ODD_SPACE = new RegExp(`[${[0x0b, 0x0c, 0x85, 0xa0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff].map((c) => String.fromCharCode(c)).join("")}]`);
 const BRACE_EXPANSION = /^\{[^\s{}]*(?:,|\.\.)[^\s{}]*\}/;
 const SMART_SINGLE = new RegExp(`[${[0x2018, 0x2019, 0x201a, 0x201b].map((c) => String.fromCharCode(c)).join("")}]`, "g");
 const SMART_DOUBLE = new RegExp(`[${[0x201c, 0x201d, 0x201e].map((c) => String.fromCharCode(c)).join("")}]`, "g");
@@ -125,13 +126,16 @@ function findClosingParen(input: string, from: number): number {
 
 export function lexShell(raw: string, shell: ShellKind): Lexed {
   const text = raw.length > MAX_LENGTH ? raw.slice(0, MAX_LENGTH) : raw;
+  let unbalanced = false;
   let input = text.replace(IFS, " ");
+  // Spasi non-ASCII (NBSP, U+0085, U+2028, U+3000, ...), tab vertikal, dan form feed dianggap spasi oleh sebagian shell
+  // (PowerShell) dan bukan oleh yang lain, jadi lexer tidak bisa memastikan batas kata. Ditandai tidak pasti.
+  if (ODD_SPACE.test(input)) unbalanced = true;
   // PowerShell memperlakukan kutip "pintar" (‘ ’ ‚ ‛ dan “ ” „) sama dengan kutip biasa. Tanpa ini, kutip tak dikenal
   // menyembunyikan pemisah perintah di dalam apa yang tampak seperti string.
   if (shell === "powershell") input = input.replace(SMART_SINGLE, "'").replace(SMART_DOUBLE, '"');
   const pipelines: Pipeline[] = [];
   const substitutions: string[] = [];
-  let unbalanced = false;
 
   let stages: Stage[] = [];
   let stage: Stage = { words: [], redirects: [] };

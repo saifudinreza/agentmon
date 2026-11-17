@@ -8,10 +8,10 @@ export type Preset = { description: string; file: PolicyFile };
 
 export const PRESETS: Record<string, Preset> = {
   "baca-saja": {
-    description: "Perintah git dan folder yang hanya membaca.",
+    description: "Perintah git dan folder yang hanya membaca. Pola dengan * hanya menerima kata biasa (tanpa flag): untuk flag, tulis pola persis.",
     file: {
       version: 1,
-      rules: [{ id: "baca-saja", action: "allow", tool: "Bash", commands: ["git status", "git diff *", "git log *", "ls *", "pwd"] }],
+      rules: [{ id: "baca-saja", action: "allow", tool: "Bash", commands: ["git status", "git status -s", "git diff", "git diff --stat", "git diff *", "git log --oneline", "git log *", "ls", "ls -la", "ls *", "pwd"] }],
     },
   },
   "tes-dan-lint": {

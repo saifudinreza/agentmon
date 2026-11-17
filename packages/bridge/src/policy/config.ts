@@ -14,7 +14,7 @@
 //   - Berkas tidak ada: tidak ada aturan, dan itu wajar (bukan masalah).
 //   - Aturan di dalam repo (`<proyek>/.agentmon/policy.json`) hanya boleh MEMPERKETAT: aturan `allow` darinya diabaikan.
 //     Repo tidak dipercaya; repo jahat tidak boleh mengizinkan aksinya sendiri.
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_POLICY_BYTES, PolicyFileSchema, type PolicyFile, type Rule } from "@agentmon/shared";
 
@@ -34,16 +34,26 @@ export type PolicyLoad = {
   problems: string[];
 };
 
-export type ReadText = (path: string) => string | undefined;
+/** `untrusted` = berkas dari dalam proyek (dikendalikan penyerang): symlink dan berkas bukan-biasa ditolak tanpa dibuka. */
+export type ReadText = (path: string, untrusted?: boolean) => string | undefined;
+
+/** Teks yang berasal dari berkas (nama kunci, pesan galat) tidak boleh membawa karakter kontrol ke terminal atau layar HP. */
+const unsafeChars = new RegExp("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]", "gu");
+export const plainText = (text: string, max = 200): string => text.replace(unsafeChars, "?").slice(0, max);
 
 /**
  * Membaca teks berkas; undefined bila tidak ada. Berkas yang ada tetapi tidak terbaca, bukan berkas biasa (folder, FIFO,
  * perangkat), atau lebih besar dari batas dikembalikan sebagai teks yang pasti ditolak (rusak). Hanya MAX+1 byte yang dibaca,
  * karena berkas aturan di dalam repo dikendalikan penyerang.
  */
-export const readTextFile: ReadText = (path) => {
+export const readTextFile: ReadText = (path, untrusted = false) => {
   let fd: number | undefined;
   try {
+    if (untrusted) {
+      // Berkas di dalam proyek: jangan ikuti symlink (bisa menunjuk ke FIFO atau jalur jaringan) dan jangan buka yang bukan berkas biasa.
+      const info = lstatSync(path);
+      if (!info.isFile()) return "";
+    }
     fd = openSync(path, "r");
     if (!fstatSync(fd).isFile()) return "";
     const buffer = Buffer.alloc(MAX_POLICY_BYTES + 1);
@@ -73,8 +83,8 @@ function parseFile(text: string | undefined, label: string): { status: FileStatu
   const parsed = PolicyFileSchema.safeParse(json);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
-    const where = issue && issue.path.length > 0 ? ` (di ${issue.path.join(".")})` : "";
-    return { status: "invalid", problem: `${label}: isi tidak sah${where}, semua aturannya diabaikan. ${issue?.message ?? ""}`.trim() };
+    const where = issue && issue.path.length > 0 ? ` (di ${plainText(issue.path.join("."), 60)})` : "";
+    return { status: "invalid", problem: `${label}: isi tidak sah${where}, semua aturannya diabaikan. ${plainText(issue?.message ?? "")}`.trim() };
   }
   return { status: "ok", file: parsed.data };
 }
@@ -95,7 +105,7 @@ export function loadPolicy(options: { userPath: string; repoPath?: string; readT
   let repoStatus: FileStatus = "missing";
   let ignoredRepoAllow = 0;
   if (options.repoPath !== undefined) {
-    const repo = parseFile(read(options.repoPath), "Aturan di dalam proyek (.agentmon/policy.json)");
+    const repo = parseFile(read(options.repoPath, true), "Aturan di dalam proyek (.agentmon/policy.json)");
     repoStatus = repo.status;
     if (repo.problem) problems.push(repo.problem);
     for (const rule of repo.file?.rules ?? []) {

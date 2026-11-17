@@ -15,10 +15,17 @@
 //
 // Urutan keputusan: aturan deny > aturan ask > batas risiko > prasyarat izinkan > aturan allow > default ask.
 //
-// `allow` hanya diberikan bila risikonya RENDAH (atau SEDANG yang satu-satunya alasannya "menjalankan kode proyek", yang
-// memang inti aturan seperti "npm test boleh"). Risiko sedang karena alasan lain (perintah tidak dikenal, tidak bisa
-// diurai, mengubah berkas lewat shell, di luar proyek, menjalankan perintah di dalam perintah) tidak pernah di-allow:
-// penilai berkata "tidak yakin", dan ragu berarti tanya.
+// KESELAMATAN `allow` TIDAK BOLEH BERSANDAR PADA PENILAI RISIKO. Penilai berbasis daftar hitam dan sudah terbukti bocor (sed
+// `s|x|y|e`, awk -f, git grep --open, sort -o, spasi Unicode di PowerShell, ...). Maka mesin ini menambah lapisan sendiri
+// yang tidak bergantung padanya:
+//   - Aturan allow untuk SHELL wajib punya `commands`. Tidak ada "izinkan semua perintah".
+//   - Pola persis (tanpa `*`) mengizinkan tepat perintah itu. Pola dengan `*` hanya menerima argumen berupa KATA BIASA:
+//     tanpa flag (`-x`), tanpa kutip, koma, titik dua, `=`, `|`, `{}`, atau karakter non-ASCII. Semua serangan lewat opsi
+//     atau skrip inline (flag apa pun) otomatis jatuh ke `ask`. Perintah yang argumennya bisa berupa skrip atau tujuan tulis
+//     (sed, awk, find, sort, uniq, tee, cp, ...) tidak pernah dicocokkan lewat `*`.
+//   - Pipa, `cd`, `export`, `alias`, `source`, dan sejenisnya (perintah yang mengubah keadaan shell) tidak pernah di-allow.
+//   - Risiko SEDANG ("menjalankan kode proyek", misalnya `npm test`) hanya boleh lewat pola PERSIS.
+//   - Risiko selain itu (tidak dikenal, tidak bisa diurai, di luar proyek, dst.) tidak pernah di-allow: ragu berarti tanya.
 //
 // Fungsi ini murni (kecuali `assessRisk` dengan `realpath` opsional) dan TIDAK PERNAH menjalankan aksinya. Tidak melempar galat:
 // kegagalan apa pun berujung `ask`.
@@ -66,6 +73,17 @@ const WRITE_TOOLS = new Set(["write", "edit", "multiedit", "notebookedit"]);
 const READ_TOOLS = new Set(["read", "glob", "grep", "ls", "notebookread"]);
 /** Satu-satunya alasan risiko SEDANG yang masih boleh di-allow: perintah memang menjalankan kode proyek (npm test, dan sejenisnya). */
 const ALLOWABLE_MEDIUM = new Set(["runs-project-code"]);
+/** Perintah yang mengubah keadaan shell (folder kerja, variabel, alias): perintah sesudahnya berjalan di tempat yang tidak diketahui. */
+const STATEFUL = new Set(["cd", "chdir", "pushd", "popd", "set-location", "sl", "export", "unset", "set", "setx", "alias", "unalias", "source", ".", "eval", "exec", "function", "readonly", "declare", "local", "typeset", "shopt", "umask", "trap", "ulimit", "set-variable", "sv", "new-alias", "set-alias", "sal", "new-variable", "nv"]);
+/** Perintah yang TIDAK PERNAH dicocokkan lewat pola `*`: argumennya bisa berupa skrip, program, atau tujuan tulis. Tetap bisa lewat pola persis. */
+const WILDCARD_FORBIDDEN = new Set([
+  "sed", "awk", "gawk", "mawk", "nawk", "perl", "python", "python3", "ruby", "php", "lua", "node", "deno", "bun", "sh", "bash", "zsh", "dash", "ksh", "fish", "pwsh", "powershell", "cmd",
+  "find", "xargs", "env", "time", "nohup", "nice", "ionice", "timeout", "sudo", "doas", "su", "watch", "stdbuf", "setsid", "command", "builtin",
+  "sort", "uniq", "tee", "cp", "mv", "ln", "install", "dd", "touch", "mkdir", "rmdir", "rm", "split", "csplit", "truncate", "chmod", "chown", "shuf", "date", "history", "tree", "file",
+  "ssh", "scp", "rsync", "curl", "wget", "nc", "ncat", "socat", "less", "more", "man", "vi", "vim", "nano", "emacs", "code", "open", "start", "explorer", "xdg-open",
+]);
+/** Kata biasa: huruf, angka, titik, garis miring, garis penghubung di dalam kata. Tidak diawali `-` (flag), tidak ada kutip, koma, titik dua, `=`, `|`, `$`, `{}`, atau non-ASCII. */
+const PLAIN_WORD = /^[A-Za-z0-9_./\\~][A-Za-z0-9_./\\@+~^-]*$/;
 /** Pembungkus yang meneruskan perintah lain; dibuka untuk pencocokan aturan tolak/tanya. */
 const WRAPPERS = new Set(["command", "env", "builtin", "nohup", "time", "sudo", "doas", "exec", "nice", "stdbuf", "timeout", "xargs", "setsid", "pkexec"]);
 /** Nama pendek PowerShell untuk cmdlet yang sering ditolak. Hanya untuk aturan tolak/tanya. */
@@ -125,6 +143,8 @@ function shellParts(command: string, kind: ShellKind, depth: number, out: Part[]
   const lexed = lexShell(command, kind);
   let ok = !lexed.unbalanced;
   for (const pipeline of lexed.pipelines) {
+    // Pipa meneruskan keluaran satu perintah ke perintah lain (mis. daftar berkas ke Get-Content): hubungan itu tidak bisa dinilai per bagian.
+    if (pipeline.length > 1) ok = false;
     for (const stage of pipeline as Stage[]) {
       if (out.length >= MAX_PARTS) return false;
       if (stage.words.length === 0) {
@@ -135,7 +155,9 @@ function shellParts(command: string, kind: ShellKind, depth: number, out: Part[]
       if (stage.heredoc !== undefined) ok = false;
       if (stage.redirects.some((r) => !isHarmlessRedirect(r.target?.text, kind) || r.target?.dynamic === true)) ok = false;
       const words = stage.words.map((w) => w.text);
-      out.push({ kind: "shell", words, variants: variantsOf(words) });
+      const variants = variantsOf(words);
+      if (variants.some((v) => v[0] !== undefined && STATEFUL.has(v[0]))) ok = false;
+      out.push({ kind: "shell", words, variants });
     }
   }
   for (const inner of lexed.substitutions) {
@@ -214,6 +236,35 @@ function commandMatches(pattern: string, part: Extract<Part, { kind: "shell" }>,
   return candidates.some((words) => (wildcard ? words.length >= prefix.length : words.length === prefix.length) && prefix.every((w, i) => words[i] === w));
 }
 
+/** Pencocokan KETAT untuk aturan allow pada perintah shell. "exact" = tepat perintah yang disebut; "wild" = lewat `*` dengan kata biasa. */
+function shellAllowMatch(pattern: string, words: readonly string[]): "exact" | "wild" | undefined {
+  const want = pattern.trim().split(/\s+/);
+  const wildcard = want[want.length - 1] === "*";
+  const prefix = wildcard ? want.slice(0, -1) : want;
+  if (words.length < prefix.length || !prefix.every((w, i) => words[i] === w)) return undefined;
+  const extras = words.slice(prefix.length);
+  if (extras.length === 0) return "exact";
+  if (!wildcard) return undefined;
+  if (WILDCARD_FORBIDDEN.has(canonicalName(words[0]!))) return undefined;
+  return extras.every((w) => PLAIN_WORD.test(w)) ? "wild" : undefined;
+}
+
+function allowMatch(rule: Rule, tool: string, part: Part): "exact" | "wild" | undefined {
+  if (!toolMatches(rule, tool)) return undefined;
+  if (part.kind === "shell") {
+    // Perintah shell WAJIB disebut lewat `commands`: tidak ada aturan allow tanpa pola yang berlaku untuk semua perintah.
+    if (rule.paths !== undefined || rule.commands === undefined) return undefined;
+    let best: "wild" | undefined;
+    for (const pattern of rule.commands) {
+      const m = shellAllowMatch(pattern, part.words);
+      if (m === "exact") return "exact";
+      if (m === "wild") best = "wild";
+    }
+    return best;
+  }
+  return partMatches(rule, tool, part) ? "exact" : undefined;
+}
+
 function toolMatches(rule: Rule, tool: string): boolean {
   return rule.tool === "*" || rule.tool.toLowerCase() === tool;
 }
@@ -265,11 +316,23 @@ export function evaluatePolicy(input: PolicyInput, load: PolicyLoad, context: Po
 
     // Setiap bagian harus diizinkan oleh minimal satu aturan allow (aturan 3).
     const used: string[] = [];
+    let allExact = true;
     for (const part of target.parts) {
-      const rule = allows.find((r) => partMatches(r, tool, part));
-      if (!rule) return decision("ask", "unmatched-part", risk);
-      if (!used.includes(rule.id)) used.push(rule.id);
+      let found: { rule: Rule; exact: boolean } | undefined;
+      for (const r of allows) {
+        const m = allowMatch(r, tool, part);
+        if (m === "exact") {
+          found = { rule: r, exact: true };
+          break;
+        }
+        if (m === "wild" && !found) found = { rule: r, exact: false };
+      }
+      if (!found) return decision("ask", "unmatched-part", risk);
+      if (!found.exact) allExact = false;
+      if (!used.includes(found.rule.id)) used.push(found.rule.id);
     }
+    // Risiko sedang (menjalankan kode proyek) hanya lewat pola persis: argumen tambahan bisa memuat program atau konfigurasi.
+    if (risk.level !== "low" && !allExact) return decision("ask", "risk-uncertain", risk);
     return decision("allow", "allow-rule", risk, used);
   } catch {
     return decision("ask", "error", risk);

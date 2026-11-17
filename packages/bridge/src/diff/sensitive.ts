@@ -103,7 +103,10 @@ export function classifyPath(filePath: string, options: ClassifyOptions = {}): S
   // daripada menandai berlebihan, dan ini hanya penanda.
   if (
     CREDENTIAL_FILES.has(base) ||
-    /credential|secret/.test(base) ||
+    /credential|secret|service[-_]?account|adminsdk|api[-_]?key|tfstate|\.pgpass/.test(base) ||
+    base === ".yarnrc.yml" ||
+    /^tokens?(\.(txt|json|ya?ml|key|pem))?$/.test(base) ||
+    /^token[._-].*\.(txt|json|ya?ml|key|pem)$/.test(base) ||
     folders.some((f) => CREDENTIAL_FOLDERS.has(f))
   ) {
     reasons.push(reason("credentials", "Berkas ini kemungkinan berisi kredensial atau rahasia akses."));
@@ -138,7 +141,13 @@ export function classifyPath(filePath: string, options: ClassifyOptions = {}): S
     reasons.push(reason("container_config", "Berkas Docker menentukan perintah build, variabel lingkungan, dan akses ke laptop."));
   }
 
-  if (SCRIPT_CONFIG_FILES.has(base) || folders.includes(".husky")) {
+  // Konfigurasi alat uji, lint, dan build ikut DIJALANKAN oleh `npm test` dan sejenisnya (vitest.config.ts, conftest.py, ...).
+  const runnerConfig =
+    /^(vitest|vite|jest|eslint|babel|webpack|rollup|playwright|cypress|karma|metro|next|nuxt|svelte|astro|tailwind|postcss|prettier|commitlint|lint-staged|tsup|esbuild|turbo)(\.[a-z0-9-]+)?\.config\.[cm]?[jt]sx?$/.test(base) ||
+    /^\.(eslintrc|babelrc|prettierrc|mocharc|huskyrc|lintstagedrc)(\.[a-z]+)?$/.test(base) ||
+    ["conftest.py", "pytest.ini", "tox.ini", "noxfile.py", "setup.cfg", ".pnpmfile.cjs", "directory.build.props", "directory.build.targets", "gradle.properties", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"].includes(base) ||
+    (base === "config.toml" && folders.includes(".cargo"));
+  if (SCRIPT_CONFIG_FILES.has(base) || runnerConfig || folders.includes(".husky")) {
     reasons.push(reason("script_config", "Berkas ini menentukan perintah yang dijalankan proyek (skrip dan build)."));
   }
 

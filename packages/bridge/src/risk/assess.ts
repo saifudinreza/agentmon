@@ -874,6 +874,12 @@ function gitStage(args: readonly Word[], ctx: Ctx, acc: Acc, f: StageFlags): voi
   while (i < args.length && isFlag(args[i]!)) {
     const t = args[i]!.text;
     if (t === "-c" || t.startsWith("--config-env") || t.startsWith("--exec-path")) overridden = true;
+    // --git-dir / --work-tree memindahkan repositori yang dibaca (dan, untuk repo kosong buatan penyerang, bisa menjalankan
+    // core.fsmonitor): sama seperti -C, folder kerjanya tidak lagi pasti.
+    if (t.startsWith("--git-dir") || t.startsWith("--work-tree")) {
+      overridden = true;
+      ctx.cwdUnknown = true;
+    }
     if (t === "-c") {
       const key = (args[i + 1]?.text ?? "").split("=")[0] ?? "";
       if (GIT_RUNS_CONFIG.test(key)) acc.add("high", "runs-program-option");
@@ -1136,7 +1142,7 @@ const FILE_READ_TOOLS = set("read", "glob", "grep", "ls", "notebookread");
  */
 export function filePathOf(input: Record<string, unknown>): string | undefined | null {
   const found = new Set<string>();
-  for (const key of ["file_path", "notebook_path", "path"]) {
+  for (const key of ["file_path", "notebook_path", "path", "filePath", "absolute_path", "target_file"]) {
     const v = input[key];
     if (v === undefined) continue;
     if (typeof v !== "string" || v.trim() === "") return null;
