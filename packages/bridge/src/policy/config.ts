@@ -14,7 +14,7 @@
 //   - Berkas tidak ada: tidak ada aturan, dan itu wajar (bukan masalah).
 //   - Aturan di dalam repo (`<proyek>/.agentmon/policy.json`) hanya boleh MEMPERKETAT: aturan `allow` darinya diabaikan.
 //     Repo tidak dipercaya; repo jahat tidak boleh mengizinkan aksinya sendiri.
-import { closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_POLICY_BYTES, PolicyFileSchema, type PolicyFile, type Rule } from "@agentmon/shared";
 
@@ -54,7 +54,8 @@ export const readTextFile: ReadText = (path, untrusted = false) => {
       const info = lstatSync(path);
       if (!info.isFile()) return "";
     }
-    fd = openSync(path, "r");
+    // Berkas dari proyek: jangan ikuti symlink dan jangan memblokir pada FIFO bila berkas ditukar setelah lstat (O_NOFOLLOW, O_NONBLOCK; nol di Windows).
+    fd = openSync(path, constants.O_RDONLY | (untrusted ? (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0) : 0));
     if (!fstatSync(fd).isFile()) return "";
     const buffer = Buffer.alloc(MAX_POLICY_BYTES + 1);
     let total = 0;

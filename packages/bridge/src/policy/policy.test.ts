@@ -1,7 +1,7 @@
 // FILE INI: TEST policy engine (issue #036). Urutan mengikuti delapan aturan keselamatan di PRD §9; tiap aturan punya
 // test sendiri. Fokus: SATU PUN jalan yang membuat aksi berbahaya lolos otomatis adalah bug.
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PolicyResultSchema } from "@agentmon/shared";
@@ -54,7 +54,7 @@ describe("aturan 2: tanpa aturan izinkan, tidak ada aksi yang jalan otomatis", (
     expect(run(bash("git diff src/a.ts"), rules).action).toBe("allow"); // `*` menerima kata biasa
     expect(run(bash("git diff --stat"), rules).action).toBe("ask"); // flag tidak lewat `*`: tulis pola persis bila perlu
     expect(run(bash("git diff"), rules).action).toBe("allow"); // `*` boleh kosong
-    expect(run(bash("npm run build"), rules)).toMatchObject({ action: "ask", why: "unmatched-part" });
+    expect(run(bash("npm run build"), rules).action).toBe("ask");
     expect(run(bash("git status"), rules).action).toBe("ask");
     expect(run(bash("npm test --watch"), rules).action).toBe("ask"); // tanpa `*` harus persis
   });
@@ -134,8 +134,9 @@ describe("aturan 3: perintah aman yang dirantai tidak ikut lolos", () => {
   });
 
   test("pembuangan ke /dev/null dan salinan deskriptor tidak dianggap redirect berbahaya", () => {
-    expect(run(bash("npm test > /dev/null"), rules).action).toBe("allow");
-    expect(run(bash("npm test 2>&1"), rules).action).toBe("allow");
+    const exact = [allow("tes", "npm test")];
+    expect(run(bash("npm test > /dev/null"), exact).action).toBe("allow");
+    expect(run(bash("npm test 2>&1"), exact).action).toBe("allow");
   });
 
   test("PowerShell: rantai juga tidak lolos", () => {
@@ -561,7 +562,7 @@ describe("regresi review 2: pola * hanya menerima kata biasa", () => {
   test("kontrol: kata biasa tetap diizinkan", () => {
     expect(run(bash("ls src"), star("ls *")).action).toBe("allow");
     expect(run(bash("cat src/a.ts"), star("cat *")).action).toBe("allow");
-    expect(run(bash("git diff HEAD~1"), star("git diff *")).action).toBe("allow");
+    expect(run(bash("git diff src/a.ts"), star("git diff *")).action).toBe("allow");
     expect(run(ps("Get-Content src/a.ts"), psRules).action).toBe("allow");
     expect(run(ps("Get-ChildItem ."), psRules).action).toBe("allow");
   });
@@ -665,7 +666,7 @@ describe("regresi review 2: risiko sedang hanya lewat pola persis, dan tidak ada
 
   test("npm test: persis boleh, dengan argumen tambahan tidak (walau kata biasa, karena risikonya sedang)", () => {
     expect(run(bash("npm test"), star("npm test")).action).toBe("allow");
-    expect(run(bash("npm test"), star("npm test *")).action).toBe("allow"); // tanpa argumen = persis
+    expect(run(bash("npm test"), star("npm test *"))).toMatchObject({ action: "ask", why: "risk-uncertain" }); // `*` tidak pernah dihitung persis
     expect(run(bash("npm test src"), star("npm test *"))).toMatchObject({ action: "ask", why: "risk-uncertain" });
     expect(run(bash("npm test --watch"), star("npm test *")).action).toBe("ask");
   });
@@ -743,6 +744,111 @@ describe("regresi review 2: berkas aturan dari proyek adalah masukan penyerang",
     expect(PolicyFileSchema.safeParse(rule({})).success).toBe(true);
     expect(PolicyFileSchema.safeParse(rule({ commands: [`npm${String.fromCharCode(0xa0)}test`] })).success).toBe(false);
     expect(PolicyFileSchema.safeParse(rule({ tool: "Bash " })).success).toBe(false);
+  });
+});
+
+
+// ---- Regresi review putaran 3 -----------------------------------------------------------------------------------------------
+describe("regresi review 3: tautan simbolik dan junction di proyek", () => {
+  const proj = mkdtempSync(join(scratch, "proj-"));
+  const outside = mkdtempSync(join(scratch, "luar-"));
+  mkdirSync(join(proj, "src"), { recursive: true });
+  writeFileSync(join(outside, "notes.txt"), "rahasia");
+  let linked = true;
+  try {
+    symlinkSync(outside, join(proj, "src", "lnk"), "junction");
+  } catch {
+    linked = false; // tanpa izin membuat tautan di mesin ini
+  }
+  const rules: Rule[] = [{ id: "edit", action: "allow", tool: "*", paths: ["src/**", "docs/**"] }, allow("cat", "cat *")];
+
+  test.runIf(linked)("menulis dan membaca lewat tautan yang menunjuk ke luar proyek tidak pernah di-allow", () => {
+    for (const input of [
+      { toolName: "Write", toolInput: { file_path: "src/lnk/notes.txt", content: "x" } },
+      { toolName: "Edit", toolInput: { file_path: "src/lnk/notes.txt", old_string: "a", new_string: "b" } },
+      { toolName: "Read", toolInput: { file_path: "src/lnk/notes.txt" } },
+      { toolName: "Bash", toolInput: { command: "cat src/lnk/notes.txt" } },
+    ]) {
+      const result = evaluatePolicy({ ...input, cwd: proj }, ruleset(...rules));
+      expect(result.action, `${input.toolName}`).toBe("ask");
+    }
+    // kontrol: jalur biasa di proyek yang sama tetap diizinkan
+    writeFileSync(join(proj, "src", "a.ts"), "x");
+    expect(evaluatePolicy({ toolName: "Write", toolInput: { file_path: "src/a.ts", content: "x" }, cwd: proj }, ruleset(...rules)).action).toBe("allow");
+  });
+});
+
+describe("regresi review 3: jalur mutlak dan drive di Git Bash", () => {
+  test.each(["ls /c", "ls /c /d /e", "ls /", "ls ~", "ls ~/x", "ls //host/share", "ls \\\\host\\share", "ls ../x", "ls src/../../x", "grep password /c", "git diff /c", "ls /proc/self/environ"])("%s", (command) => {
+    expect(run(bash(command), [allow("ls", "ls *", "grep *", "git diff *")]).action).not.toBe("allow");
+  });
+  test("kontrol: jalur relatif biasa tetap diizinkan", () => {
+    expect(run(bash("ls src/x"), [allow("ls", "ls *")]).action).toBe("allow");
+  });
+});
+
+describe("regresi review 3: izinkan-semua lewat pola * tunggal, dan * tanpa argumen untuk risiko sedang", () => {
+  test("skema menolak pola yang diawali *", () => {
+    const rule = (commands: string[]) => ({ version: 1, rules: [{ id: "x", action: "allow", tool: "Bash", commands }] });
+    expect(PolicyFileSchema.safeParse(rule(["*"])).success).toBe(false);
+    expect(PolicyFileSchema.safeParse(rule(["* foo"])).success).toBe(false);
+    expect(PolicyFileSchema.safeParse(rule(["ls *"])).success).toBe(true);
+  });
+  test("walau lolos skema (aturan dibuat langsung), pola * tunggal tidak pernah cocok", () => {
+    for (const command of ["hostname evil", "ls src", "cat src/a.ts", "git status"]) expect(run(bash(command), [allow("semua", "*")]).action, command).not.toBe("allow");
+  });
+  test.each(["yarn", "bundle", "make", "gradle", "pytest", "jest", "vitest", "tsc", "eslint", "cargo", "go", "dotnet", "docker", "npx"])("%s tanpa argumen lewat 'X *' tidak di-allow (bisa berarti install atau build)", (command) => {
+    expect(run(bash(command), [allow("x", `${command} *`)]).action).not.toBe("allow");
+  });
+  test("hostname, sleep, du tidak pernah lewat *", () => {
+    for (const command of ["hostname evil", "sleep 99999", "du src"]) expect(run(bash(command), [allow("x", `${command.split(" ")[0]} *`)]).action, command).not.toBe("allow");
+  });
+});
+
+describe("regresi review 3: riwayat git dan nama berkas rahasia", () => {
+  const rules = [allow("git", "git show *", "git diff *", "git grep *", "git cat-file *", "git log *", "git blame *", "cat *")];
+  test.each(["git show HEAD~1", "git show abc1234", "git cat-file blob abc1234def", "git diff HEAD~1", "git diff HEAD", "git grep password HEAD", "git show HEAD^", "git diff main~2"])("revisi lewat * ditanyakan: %s", (command) => {
+    expect(run(bash(command), rules).action).not.toBe("allow");
+  });
+  test("tetapi pola persis tetap boleh, dan jalur biasa lewat *", () => {
+    expect(run(bash("git diff HEAD~1"), [allow("d", "git diff HEAD~1")]).action).toBe("allow");
+    expect(run(bash("git diff src/a.ts"), rules).action).toBe("allow");
+    expect(run(bash("git log src/a.ts"), rules).action).toBe("allow");
+  });
+  test.each([".dev.vars", "local.settings.json", "appsettings.Development.json", ".flaskenv", "wp-config.php", "database.yml", "kubeconfig", "auth.json", "id_ed25519_sk", "key.pem.bak", "cookies.sqlite", ".bash_history", "docs/.dev.vars", "src/config/local.settings.json"])("membaca %s ditanyakan", (file) => {
+    expect(run(bash(`cat ${file}`), rules).action).toBe("ask");
+    expect(run({ toolName: "Read", toolInput: { file_path: file }, cwd: CWD }, [{ id: "e", action: "allow", tool: "*", paths: ["**"] }]).action).toBe("ask");
+  });
+});
+
+describe("regresi review 3: berkas yang mengubah perilaku `npm test` dan build", () => {
+  test.each(["vitest.workspace.ts", "bunfig.toml", "build.mk", "CMakeLists.txt", "Taskfile.yaml", "lefthook.yml", "gradlew", "mvnw", ".yarnrc", "pnpm-workspace.yaml", "scripts/deploy.sh", "src/setup.ps1", "run.bat", ".vscode/tasks.json"])("menulis %s ditanyakan", (file) => {
+    expect(run(write(file), [{ id: "e", action: "allow", tool: "Write", paths: ["**"] }]).action).toBe("ask");
+  });
+});
+
+describe("regresi review 3: alat pencari", () => {
+  const rules: Rule[] = [ALLOW_ALL];
+  test("Grep.pattern adalah regex isi berkas, bukan jalur: tidak ikut dicocokkan sebagai jalur", () => {
+    const denyRule: Rule = { id: "rahasia", action: "deny", tool: "*", paths: ["secrets/**"] };
+    expect(run({ toolName: "Grep", toolInput: { pattern: "secrets/x", path: "src" }, cwd: CWD }, [ALLOW_ALL, denyRule]).action).not.toBe("deny");
+    expect(run({ toolName: "Glob", toolInput: { pattern: "secrets/**" }, cwd: CWD }, [ALLOW_ALL, denyRule]).action).toBe("deny"); // Glob.pattern memang jalur
+  });
+  test("pencarian folder (Grep, Glob, LS) hanya diizinkan aturan yang menyebut folder", () => {
+    for (const toolName of ["Grep", "Glob", "LS"]) {
+      expect(run({ toolName, toolInput: { pattern: "x", path: "src" }, cwd: CWD }, rules).action, toolName).not.toBe("allow");
+    }
+    const withPaths: Rule[] = [{ id: "src", action: "allow", tool: "Grep", paths: ["src/**"] }];
+    expect(run({ toolName: "Grep", toolInput: { pattern: "x", path: "src/a" }, cwd: CWD }, withPaths).action).toBe("allow");
+    expect(run({ toolName: "Grep", toolInput: { pattern: "x", path: "docs" }, cwd: CWD }, withPaths).action).toBe("ask");
+    expect(run({ toolName: "Read", toolInput: { file_path: "src/a.ts" }, cwd: CWD }, rules).action).toBe("allow"); // satu berkas tetap boleh
+  });
+});
+
+describe("regresi review 3: perintah pengubah keadaan tambahan", () => {
+  test.each(["Push-Location ..; Get-Content x", "read x && cat x", "hash -p /tmp/evil ls && ls", "enable -n cd && ls", "let x=1 && ls", "mapfile a < x && ls"])("%s", (command) => {
+    const ps: PolicyInput = { toolName: command.startsWith("Push") ? "PowerShell" : "Bash", toolInput: { command }, cwd: CWD };
+    expect(run(ps, [allow("a", "Push-Location *", "Get-Content *", "read *", "cat *", "hash *", "ls *", "enable *", "let *", "mapfile *"), { id: "p", action: "allow", tool: "PowerShell", commands: ["Push-Location *", "Get-Content *"] }]).action).not.toBe("allow");
   });
 });
 

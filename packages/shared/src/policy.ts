@@ -18,6 +18,7 @@ const CommandPattern = z
   .min(1)
   .max(200)
   .refine((p) => /^[\x20-\x7e]+$/.test(p), "pola perintah hanya boleh huruf, angka, dan tanda baca ASCII biasa")
+  .refine((p) => !p.trimStart().startsWith("*"), "pola harus diawali nama perintah: tidak ada \"izinkan semua perintah\"")
   .refine((p) => !SHELL_META.test(p), "pola perintah tidak boleh memuat karakter shell (; & | < > $ ` ( ) \\)")
   .refine((p) => !p.slice(0, -1).includes("*") && !/\S\*$/.test(p), "tanda * hanya boleh berdiri sendiri sebagai kata terakhir");
 

@@ -29,6 +29,7 @@
 //
 // Fungsi ini murni (kecuali `assessRisk` dengan `realpath` opsional) dan TIDAK PERNAH menjalankan aksinya. Tidak melempar galat:
 // kegagalan apa pun berujung `ask`.
+import { realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { PolicyResult, Risk } from "@agentmon/shared";
 import { assessRisk, lexShell, type AssessOptions, type ShellKind, type Stage } from "../risk";
@@ -74,16 +75,36 @@ const READ_TOOLS = new Set(["read", "glob", "grep", "ls", "notebookread"]);
 /** Satu-satunya alasan risiko SEDANG yang masih boleh di-allow: perintah memang menjalankan kode proyek (npm test, dan sejenisnya). */
 const ALLOWABLE_MEDIUM = new Set(["runs-project-code"]);
 /** Perintah yang mengubah keadaan shell (folder kerja, variabel, alias): perintah sesudahnya berjalan di tempat yang tidak diketahui. */
-const STATEFUL = new Set(["cd", "chdir", "pushd", "popd", "set-location", "sl", "export", "unset", "set", "setx", "alias", "unalias", "source", ".", "eval", "exec", "function", "readonly", "declare", "local", "typeset", "shopt", "umask", "trap", "ulimit", "set-variable", "sv", "new-alias", "set-alias", "sal", "new-variable", "nv"]);
+const STATEFUL = new Set(["cd", "chdir", "pushd", "popd", "set-location", "sl", "push-location", "pop-location", "export", "unset", "set", "setx", "alias", "unalias", "source", ".", "eval", "exec", "function", "readonly", "declare", "local", "typeset", "shopt", "umask", "trap", "ulimit", "set-variable", "sv", "new-alias", "set-alias", "sal", "new-variable", "nv", "read", "hash", "enable", "let", "mapfile", "readarray", "new-psdrive", "set-item", "si"]);
 /** Perintah yang TIDAK PERNAH dicocokkan lewat pola `*`: argumennya bisa berupa skrip, program, atau tujuan tulis. Tetap bisa lewat pola persis. */
 const WILDCARD_FORBIDDEN = new Set([
   "sed", "awk", "gawk", "mawk", "nawk", "perl", "python", "python3", "ruby", "php", "lua", "node", "deno", "bun", "sh", "bash", "zsh", "dash", "ksh", "fish", "pwsh", "powershell", "cmd",
   "find", "xargs", "env", "time", "nohup", "nice", "ionice", "timeout", "sudo", "doas", "su", "watch", "stdbuf", "setsid", "command", "builtin",
   "sort", "uniq", "tee", "cp", "mv", "ln", "install", "dd", "touch", "mkdir", "rmdir", "rm", "split", "csplit", "truncate", "chmod", "chown", "shuf", "date", "history", "tree", "file",
   "ssh", "scp", "rsync", "curl", "wget", "nc", "ncat", "socat", "less", "more", "man", "vi", "vim", "nano", "emacs", "code", "open", "start", "explorer", "xdg-open",
+  "hostname", "sleep", "kill", "pkill", "killall", "shutdown", "reboot", "du",
 ]);
-/** Kata biasa: huruf, angka, titik, garis miring, garis penghubung di dalam kata. Tidak diawali `-` (flag), tidak ada kutip, koma, titik dua, `=`, `|`, `$`, `{}`, atau non-ASCII. */
-const PLAIN_WORD = /^[A-Za-z0-9_./\\~][A-Za-z0-9_./\\@+~^-]*$/;
+/**
+ * Kata biasa: huruf, angka, titik, garis miring, garis penghubung di dalam kata. Tidak diawali `-` (flag), `/` `\` `~` (jalur
+ * mutlak atau rumah: di Git Bash `/c` adalah drive C:, dan UNC memicu SMB), tidak ada segmen `..`, kutip, koma, titik dua, `=`, `|`,
+ * `$`, `{}`, atau non-ASCII.
+ */
+const PLAIN_WORD = /^[A-Za-z0-9_.][A-Za-z0-9_./\\@+~^-]*$/;
+const PARENT_SEGMENT = /(^|[\\/])\.\.([\\/]|$)/;
+const isPlain = (word: string) => PLAIN_WORD.test(word) && !PARENT_SEGMENT.test(word);
+/** Subperintah git yang MENAMPILKAN isi berkas dari riwayat: argumen revisi lewat `*` bisa membuka rahasia yang pernah di-commit. */
+const GIT_CONTENT = new Set(["show", "cat-file", "grep", "blame", "annotate", "diff", "difftool", "format-patch", "archive", "bundle", "whatchanged"]);
+const isRevisionLike = (word: string) => /^(HEAD|FETCH_HEAD|ORIG_HEAD|MERGE_HEAD)/i.test(word) || /[~^]/.test(word) || /^[0-9a-f]{7,40}$/i.test(word);
+/** Alat pencari folder: hanya boleh di-allow oleh aturan yang menyebut `paths` (folder yang disebut pengguna), karena membaca isi folder secara rekursif. */
+const SEARCH_TOOLS = new Set(["grep", "glob", "ls"]);
+/** Realpath bawaan: tautan simbolik/junction di proyek tidak boleh menyamarkan jalur di luar proyek. */
+const defaultRealpath = (path: string): string | undefined => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+};
 /** Pembungkus yang meneruskan perintah lain; dibuka untuk pencocokan aturan tolak/tanya. */
 const WRAPPERS = new Set(["command", "env", "builtin", "nohup", "time", "sudo", "doas", "exec", "nice", "stdbuf", "timeout", "xargs", "setsid", "pkexec"]);
 /** Nama pendek PowerShell untuk cmdlet yang sering ditolak. Hanya untuk aturan tolak/tanya. */
@@ -189,8 +210,9 @@ function targetOf(input: PolicyInput): Target {
     const raw = toolInput ? filePathOf(toolInput) : null;
     const parts: Part[] = [{ kind: "file", path: relativeToProject(raw ?? undefined, input.cwd) }];
     // Alat pencari memuat pola jalur sendiri (Glob.pattern, Grep.glob): pola itu juga diperiksa terhadap aturan jalur.
+    // Grep.pattern adalah REGEX isi berkas, bukan jalur: tidak diperlakukan sebagai jalur.
     if (READ_TOOLS.has(tool) && toolInput) {
-      for (const key of ["pattern", "glob"]) {
+      for (const key of tool === "grep" ? ["glob"] : ["pattern", "glob"]) {
         const v = toolInput[key];
         if (typeof v === "string" && v !== "" && v.length <= MAX_PATH_LENGTH && !isAbsolute(v) && !v.startsWith("..")) parts.push({ kind: "file", path: v.replace(/\\/g, "/").replace(/^\.\//, "") });
       }
@@ -241,12 +263,15 @@ function shellAllowMatch(pattern: string, words: readonly string[]): "exact" | "
   const want = pattern.trim().split(/\s+/);
   const wildcard = want[want.length - 1] === "*";
   const prefix = wildcard ? want.slice(0, -1) : want;
+  if (prefix.length === 0) return undefined; // pola "*" saja = "izinkan semua perintah": tidak ada
   if (words.length < prefix.length || !prefix.every((w, i) => words[i] === w)) return undefined;
   const extras = words.slice(prefix.length);
-  if (extras.length === 0) return "exact";
-  if (!wildcard) return undefined;
+  if (!wildcard) return extras.length === 0 ? "exact" : undefined;
   if (WILDCARD_FORBIDDEN.has(canonicalName(words[0]!))) return undefined;
-  return extras.every((w) => PLAIN_WORD.test(w)) ? "wild" : undefined;
+  if (!extras.every(isPlain)) return undefined;
+  if (canonicalName(words[0]!) === "git" && GIT_CONTENT.has(words[1] ?? "") && extras.some(isRevisionLike)) return undefined;
+  // Pola dengan `*` TIDAK pernah dihitung persis, walau tanpa argumen: `yarn *` mengizinkan `yarn` (= yarn install). Risiko sedang butuh pola tanpa `*`.
+  return "wild";
 }
 
 function allowMatch(rule: Rule, tool: string, part: Part): "exact" | "wild" | undefined {
@@ -262,6 +287,8 @@ function allowMatch(rule: Rule, tool: string, part: Part): "exact" | "wild" | un
     }
     return best;
   }
+  // Pencarian folder membaca isinya secara rekursif: hanya aturan yang menyebut folder (`paths`) yang boleh mengizinkannya.
+  if (SEARCH_TOOLS.has(tool) && rule.paths === undefined) return undefined;
   return partMatches(rule, tool, part) ? "exact" : undefined;
 }
 
@@ -291,7 +318,8 @@ function riskAllowsAuto(risk: Risk): boolean {
 export function evaluatePolicy(input: PolicyInput, load: PolicyLoad, context: PolicyContext = {}, assessOptions: AssessOptions = {}): PolicyDecision {
   let risk: Risk = { level: "high", reasons: [] };
   try {
-    risk = assessRisk({ toolName: input.toolName, toolInput: input.toolInput, ...(input.cwd !== undefined ? { cwd: input.cwd } : {}) }, assessOptions);
+    // Tautan simbolik dan junction diselesaikan SECARA BAWAAN: `src/lnk/x` yang menunjuk ke luar proyek bukan lagi "di dalam proyek".
+    risk = assessRisk({ toolName: input.toolName, toolInput: input.toolInput, ...(input.cwd !== undefined ? { cwd: input.cwd } : {}) }, { realpath: defaultRealpath, ...assessOptions });
     const tool = toolOf(input);
     const target = targetOf(input);
 

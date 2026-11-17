@@ -103,7 +103,7 @@ export function classifyPath(filePath: string, options: ClassifyOptions = {}): S
   // daripada menandai berlebihan, dan ini hanya penanda.
   if (
     CREDENTIAL_FILES.has(base) ||
-    /credential|secret|service[-_]?account|adminsdk|api[-_]?key|tfstate|\.pgpass/.test(base) ||
+    /credential|secret|service[-_]?account|adminsdk|api[-_]?key|tfstate|\.pgpass|\.dev\.vars|local\.settings\.json|^appsettings\..+\.json|flaskenv|wp-config|database\.yml|kubeconfig|^auth\.json|id_(rsa|dsa|ecdsa|ed25519)|\.pem|cookies\.sqlite|_history$|^\.bash_history|^\.codex$/.test(base) ||
     base === ".yarnrc.yml" ||
     /^tokens?(\.(txt|json|ya?ml|key|pem))?$/.test(base) ||
     /^token[._-].*\.(txt|json|ya?ml|key|pem)$/.test(base) ||
@@ -146,7 +146,13 @@ export function classifyPath(filePath: string, options: ClassifyOptions = {}): S
     /^(vitest|vite|jest|eslint|babel|webpack|rollup|playwright|cypress|karma|metro|next|nuxt|svelte|astro|tailwind|postcss|prettier|commitlint|lint-staged|tsup|esbuild|turbo)(\.[a-z0-9-]+)?\.config\.[cm]?[jt]sx?$/.test(base) ||
     /^\.(eslintrc|babelrc|prettierrc|mocharc|huskyrc|lintstagedrc)(\.[a-z]+)?$/.test(base) ||
     ["conftest.py", "pytest.ini", "tox.ini", "noxfile.py", "setup.cfg", ".pnpmfile.cjs", "directory.build.props", "directory.build.targets", "gradle.properties", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"].includes(base) ||
-    (base === "config.toml" && folders.includes(".cargo"));
+    (base === "config.toml" && folders.includes(".cargo")) ||
+    /^vitest\.workspace\./.test(base) ||
+    ["bunfig.toml", "cmakelists.txt", "taskfile.yaml", ".justfile", "lefthook.yml", "gradlew", "mvnw", "gradle-wrapper.properties", "maven-wrapper.properties", ".yarnrc", "pnpm-workspace.yaml", ".swcrc", "mypy.ini", "karma.conf.js", "gulpfile.js", "gulpfile.ts"].includes(base) ||
+    base.endsWith(".mk") ||
+    /\.(sh|bash|zsh|ps1|bat|cmd)$/.test(base) ||
+    folders.includes("scripts") ||
+    (base === "tasks.json" && folders.includes(".vscode"));
   if (SCRIPT_CONFIG_FILES.has(base) || runnerConfig || folders.includes(".husky")) {
     reasons.push(reason("script_config", "Berkas ini menentukan perintah yang dijalankan proyek (skrip dan build)."));
   }
