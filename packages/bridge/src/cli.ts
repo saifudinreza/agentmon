@@ -29,6 +29,7 @@ import type { DaemonStatus } from "./control";
 import { runListDevices, runPair, runRevokeDevice, type PairOptions } from "./pairing";
 import { runPolicy } from "./policy/cli";
 import { runRegister } from "./register";
+import { runSetup } from "./setup";
 import { resolveRelayConfig } from "./relay-config";
 
 // Bekal yang bisa diganti di test: lingkungan, tempat menulis keluaran.
@@ -92,6 +93,8 @@ const USAGE = [
   "                            daftarkan laptop ini ke relay (butuh AGENTMON_RELAY_URL dan AGENTMON_ADMIN_SECRET)",
   "  devices                   daftar HP yang terpasang (butuh laptop yang sudah terdaftar di relay)",
   "  revoke <nomor>            cabut sebuah HP yang hilang (butuh laptop yang sudah terdaftar di relay)",
+  "  setup [--dry-run] [--no-pair] [--claude-dir <folder>]",
+  "                            pasang hook ke Claude Code (aman dijalankan berulang), lalu tampilkan QR pairing",
   "  policy test|preset        uji aturan otomatis tanpa menjalankan perintah (lihat docs/policy.md)",
   "  pair                      pasangkan HP lewat QR (butuh relay terdaftar dan AGENTMON_APP_URL)",
 ].join("\n");
@@ -99,7 +102,7 @@ const USAGE = [
 /** Menjalankan satu perintah. Mengembalikan kode keluar (0 = berhasil). */
 export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   const [command, ...rest] = argv;
-  if (!command || !["status", "pause", "resume", "approve", "deny", "ui", "pair", "devices", "revoke", "register", "policy"].includes(command)) {
+  if (!command || !["status", "pause", "resume", "approve", "deny", "ui", "pair", "devices", "revoke", "register", "policy", "setup"].includes(command)) {
     deps.err(USAGE);
     return command ? 2 : 0;
   }
@@ -107,6 +110,45 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
 
   // `policy` hanya menguji dan mencetak aturan; tidak menyentuh daemon.
   if (command === "policy") return runPolicy(rest, deps, home);
+
+  // `setup` memasang hook ke pengaturan Claude Code dan menawarkan pairing; tidak butuh daemon yang sedang berjalan.
+  if (command === "setup") {
+    let claudeDir: string | undefined;
+    let dryRun = false;
+    let noPair = false;
+    for (let i = 0; i < rest.length; i++) {
+      const arg = rest[i]!;
+      if (arg === "--dry-run") dryRun = true;
+      else if (arg === "--no-pair") noPair = true;
+      else if (arg === "--claude-dir") {
+        claudeDir = rest[++i];
+        if (!claudeDir) {
+          deps.err("--claude-dir butuh nama folder.");
+          return 2;
+        }
+      } else {
+        deps.err(`Argumen tidak dikenal untuk setup: ${arg}`);
+        return 2;
+      }
+    }
+    const portText = deps.env.AGENTMON_PORT;
+    const setupPort = portText === undefined ? DEFAULT_PORT : Number(portText);
+    if (!Number.isInteger(setupPort) || setupPort < 1 || setupPort > 65535) {
+      deps.err(`AGENTMON_PORT tidak valid: ${portText}`);
+      return 1;
+    }
+    return runSetup({
+      home,
+      env: deps.env,
+      out: deps.out,
+      err: deps.err,
+      port: setupPort,
+      dryRun,
+      noPair,
+      ...(claudeDir ? { claudeDir } : {}),
+      ...(deps.pair ? { pairOverrides: deps.pair } : {}),
+    });
+  }
 
   // `register` berbicara dengan relay memakai RAHASIA ADMIN (bukan token laptop, yang justru dibuat oleh perintah ini).
   if (command === "register") {
