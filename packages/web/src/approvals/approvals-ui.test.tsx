@@ -143,6 +143,30 @@ describe("layar keputusan", () => {
     expect(screen.getByRole("status").textContent).toContain("Terkirim");
   });
 
+  test("risiko tinggi: satu ketukan Setujui tidak mengirim apa pun, butuh konfirmasi kedua; Batal tidak mengirim", async () => {
+    relay.data.approvals = [pending("a1", { toolInput: { command: "sudo rm -rf build" }, risk: { level: "high", reasons: [{ code: "rm", message: "Menghapus berkas" }] } })];
+    renderApp("/a/m1/a1");
+    await sync();
+    expect(screen.getByText(/bantuan membaca, bukan jaminan/)).toBeTruthy();
+    expect(screen.getByLabelText("Perintah yang akan dijalankan").querySelectorAll("mark").length).toBe(2);
+    fireEvent.click(screen.getByRole("button", { name: "Setujui" }));
+    expect(sent).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Batal" }));
+    expect(sent).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Setujui" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ya, setujui" }));
+    expect(sent).toHaveLength(1);
+    expect((sent[0]?.body as Record<string, unknown>).decision).toBe("approve");
+  });
+
+  test("risiko rendah: satu ketukan cukup", async () => {
+    relay.data.approvals = [pending("a1", { risk: { level: "low", reasons: [] } })];
+    renderApp("/a/m1/a1");
+    await sync();
+    fireEvent.click(screen.getByRole("button", { name: "Setujui" }));
+    expect(sent).toHaveLength(1);
+  });
+
   test("Tolak membawa alasan; setelah dikirim kedua tombol mati (tidak bisa kirim dua kali)", async () => {
     relay.data.approvals = [pending("a1")];
     renderApp("/a/m1/a1");

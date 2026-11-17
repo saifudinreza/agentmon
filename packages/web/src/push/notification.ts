@@ -85,10 +85,13 @@ export function describePush(raw: string | undefined, locale: Locale): Notificat
   const kind = payload?.kind ?? "generic";
   // Beberapa izin menunggu di sesi itu: isinya jumlahnya (angka dari relay, divalidasi skema), bukan isi permintaannya.
   const many = payload?.kind === "approval" && (payload.count ?? 1) > 1;
+  const body = many ? translate(locale, "push.notif.approval.many", { count: payload?.count ?? 0 }) : translate(locale, `push.notif.${kind}.body` as MessageKey);
+  // Level risiko ditulis dengan kata di depan isi pesan (tidak mengandalkan warna). Hanya level, tidak pernah isi permintaan.
+  const risk = payload?.kind === "approval" && payload.risk ? `${translate(locale, `approval.risk.${payload.risk}` as MessageKey)}. ` : "";
   return {
     title: translate(locale, `push.notif.${kind}.title` as MessageKey),
     options: {
-      body: many ? translate(locale, "push.notif.approval.many", { count: payload?.count ?? 0 }) : translate(locale, `push.notif.${kind}.body` as MessageKey),
+      body: risk + body,
       tag: payload ? tagFor(payload) : "agentmon",
       icon: NOTIFICATION_ICON,
       data: { path: payload ? pathFor(payload) : "/" },
