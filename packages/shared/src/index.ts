@@ -16,6 +16,7 @@ export * from "./device-api"; // jawaban API baca riwayat untuk HP
 export * from "./diff"; // bentuk perubahan sebuah berkas (diff, hunk)
 export * from "./events"; // amplop dan jenis event
 export * from "./pairing"; // bentuk data dan alamat QR untuk pairing
+export * from "./policy"; // bentuk berkas aturan policy
 export * from "./parse"; // parseEvent() dan hasilnya
 export * from "./push"; // langganan dan isi notifikasi Web Push
 export * from "./registration"; // pendaftaran laptop ke relay (oleh pemilik relay)

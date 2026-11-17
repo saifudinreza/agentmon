@@ -27,6 +27,7 @@ import { DEFAULT_PORT } from "./daemon";
 import { agentmonHome, paths } from "./home";
 import type { DaemonStatus } from "./control";
 import { runListDevices, runPair, runRevokeDevice, type PairOptions } from "./pairing";
+import { runPolicy } from "./policy/cli";
 import { runRegister } from "./register";
 import { resolveRelayConfig } from "./relay-config";
 
@@ -91,17 +92,21 @@ const USAGE = [
   "                            daftarkan laptop ini ke relay (butuh AGENTMON_RELAY_URL dan AGENTMON_ADMIN_SECRET)",
   "  devices                   daftar HP yang terpasang (butuh laptop yang sudah terdaftar di relay)",
   "  revoke <nomor>            cabut sebuah HP yang hilang (butuh laptop yang sudah terdaftar di relay)",
+  "  policy test|preset        uji aturan otomatis tanpa menjalankan perintah (lihat docs/policy.md)",
   "  pair                      pasangkan HP lewat QR (butuh relay terdaftar dan AGENTMON_APP_URL)",
 ].join("\n");
 
 /** Menjalankan satu perintah. Mengembalikan kode keluar (0 = berhasil). */
 export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   const [command, ...rest] = argv;
-  if (!command || !["status", "pause", "resume", "approve", "deny", "ui", "pair", "devices", "revoke", "register"].includes(command)) {
+  if (!command || !["status", "pause", "resume", "approve", "deny", "ui", "pair", "devices", "revoke", "register", "policy"].includes(command)) {
     deps.err(USAGE);
     return command ? 2 : 0;
   }
   const home = deps.env.AGENTMON_HOME ?? agentmonHome();
+
+  // `policy` hanya menguji dan mencetak aturan; tidak menyentuh daemon.
+  if (command === "policy") return runPolicy(rest, deps, home);
 
   // `register` berbicara dengan relay memakai RAHASIA ADMIN (bukan token laptop, yang justru dibuat oleh perintah ini).
   if (command === "register") {

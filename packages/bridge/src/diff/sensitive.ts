@@ -45,7 +45,8 @@ const ENV_TEMPLATE = /^\.env\.(example|sample|template|dist|defaults?)$/;
 const PRIVATE_KEY_EXTENSIONS = [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".ppk"];
 const PRIVATE_KEY_NAMES = new Set(["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"]);
 const CREDENTIAL_FILES = new Set([".netrc", "_netrc", ".npmrc", ".pypirc", ".git-credentials", ".dockercfg"]);
-const CREDENTIAL_FOLDERS = new Set([".ssh", ".aws", ".azure", ".kube", ".gnupg", ".docker"]);
+// ".agentmon" = data daemon sendiri: token kendali lokal, kredensial relay, dan aturan policy. Agent tidak boleh menyentuhnya.
+const CREDENTIAL_FOLDERS = new Set([".ssh", ".aws", ".azure", ".kube", ".gnupg", ".docker", ".agentmon"]);
 const SHELL_PROFILES = new Set([".bashrc", ".bash_profile", ".bash_login", ".zshrc", ".zprofile", ".zshenv", ".profile"]);
 // Berkas yang menentukan perintah apa yang dijalankan proyek (skrip, build, hook). PRD §9
 // menyebutnya sebagai "celah skrip": agent bisa mengubahnya lebih dulu, lalu perintah "aman"

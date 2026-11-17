@@ -775,7 +775,7 @@ function sedStage(args: readonly Word[], ctx: Ctx, acc: Acc): void {
     mutatorStage("sed", args, ctx, acc);
     return;
   }
-  const scripty = args.some((w) => w.text === "-f" || w.text.startsWith("--file") || /(^|[;{}\n])\s*[wWe]\b/.test(w.text) || /\/[gpiImMx0-9]*[we][gpiImMx0-9]*$/.test(w.text));
+  const scripty = args.some((w) => w.text === "-f" || w.text.startsWith("--file") || /(^|[;{}\n0-9$/!,\s])[wWe](?![A-Za-z0-9_])/.test(w.text) || /\/[gpiImMx0-9]*[we][gpiImMx0-9]*$/.test(w.text));
   scanPaths(args, "read", ctx, acc);
   if (scripty) acc.add("medium", "unknown-command");
   else acc.add("low", "read-only");
@@ -783,7 +783,7 @@ function sedStage(args: readonly Word[], ctx: Ctx, acc: Acc): void {
 
 /** awk yang tidak memanggil system(), getline, atau menulis/menyalurkan keluaran hanya membaca. */
 function awkStage(args: readonly Word[], ctx: Ctx, acc: Acc): void {
-  const scripty = args.some((w) => w.text === "-f" || /system\s*\(|getline|\|\s*"|"\s*\||print\s*>|printf\s*>|>>/.test(w.text));
+  const scripty = args.some((w) => w.text === "-f" || /system\s*\(|getline|\|\s*"|"\s*\||\bprintf?\b[^;}]*[>|]|>>/.test(w.text));
   scanPaths(args.filter((w) => !/\s/.test(w.text)), "read", ctx, acc);
   if (scripty) acc.add("medium", "unknown-command");
   else acc.add("low", "read-only");
@@ -1129,14 +1129,23 @@ function interpreterStage(name: string, args: readonly Word[], stage: Stage, ctx
 const FILE_WRITE_TOOLS = set("write", "edit", "multiedit", "notebookedit");
 const FILE_READ_TOOLS = set("read", "glob", "grep", "ls", "notebookread");
 
-function pathOf(input: Record<string, unknown>): string | undefined | null {
+/**
+ * Jalur berkas dari input alat berkas. `undefined` = tidak ada; `null` = tidak sah. Alat berkas yang sah hanya memakai SATU
+ * kunci jalur (file_path, notebook_path, atau path). Dua kunci yang berbeda nilainya membuat penilai dan pembaca lain bisa
+ * memilih kunci yang berbeda, jadi dianggap tidak sah (tidak pernah dinilai rendah).
+ */
+export function filePathOf(input: Record<string, unknown>): string | undefined | null {
+  const found = new Set<string>();
   for (const key of ["file_path", "notebook_path", "path"]) {
     const v = input[key];
     if (v === undefined) continue;
-    return typeof v === "string" && v.trim() !== "" ? v : null;
+    if (typeof v !== "string" || v.trim() === "") return null;
+    found.add(v);
   }
-  return undefined;
+  if (found.size > 1) return null;
+  return found.values().next().value;
 }
+const pathOf = filePathOf;
 
 function assessFileTool(write: boolean, requiresPath: boolean, input: Record<string, unknown>, ctx: Ctx, acc: Acc): void {
   const path = pathOf(input);
