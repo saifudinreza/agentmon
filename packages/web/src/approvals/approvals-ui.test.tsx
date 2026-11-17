@@ -154,6 +154,16 @@ describe("layar keputusan", () => {
     fireEvent.click(screen.getByRole("button", { name: "Batal" }));
     expect(sent).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Setujui" }));
+    // Ketukan kedua yang terlalu cepat tidak boleh sampai menyetujui: "Ya" baru aktif sesaat kemudian.
+    const yes = screen.getByRole("button", { name: "Ya, setujui" }) as HTMLButtonElement;
+    expect(yes.disabled).toBe(true);
+    fireEvent.click(yes);
+    expect(sent).toHaveLength(0);
+    await waitFor(() => expect(yes.disabled).toBe(false), { timeout: 2000 });
+    fireEvent.keyDown(screen.getByRole("alertdialog"), { key: "Escape" });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Setujui" }));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Ya, setujui" }) as HTMLButtonElement).disabled).toBe(false), { timeout: 2000 });
     fireEvent.click(screen.getByRole("button", { name: "Ya, setujui" }));
     expect(sent).toHaveLength(1);
     expect((sent[0]?.body as Record<string, unknown>).decision).toBe("approve");

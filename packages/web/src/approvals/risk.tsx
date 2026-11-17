@@ -24,8 +24,8 @@ export function RiskBadge({ level }: { level: RiskLevel }) {
 const DANGER = [
   /\brm\s+-\w*[rf]\w*/g,
   /\bsudo\b/g,
-  /\b(?:curl|wget)\b[^|\n]*\|\s*(?:sudo\s+)?(?:ba|z)?sh\b/g,
-  /\bgit\s+push\b[^\n]*(?:--force\b|\s-f\b)/g,
+  /\b(?:curl|wget)\b[^|\n]{0,300}\|\s*(?:sudo\s+)?(?:ba|z)?sh\b/g,
+  /\bgit\s+push\b[^\n]{0,300}(?:--force\b|\s-f\b)/g,
   /\bgit\s+reset\s+--hard\b/g,
   /\bchmod\s+(?:-R\s+)?7[0-7]{2}\b/g,
   /\b(?:mkfs|dd\s+if=)\S*/g,
