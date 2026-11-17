@@ -17,6 +17,13 @@ describe("describePush: setiap push menghasilkan notifikasi yang terlihat", () =
     expect(describePush(raw({ kind: "approval", approvalId: "a1" }), "en").title).toBe("Approval needed");
   });
 
+  test("izin berisiko: level ditulis dengan kata di awal isi, tanpa isi permintaan", () => {
+    const content = describePush(raw({ kind: "approval", approvalId: "a1", risk: "high" }), "id");
+    expect(content.options.body).toBe("Risiko tinggi. Agent menunggu keputusan Anda. Ketuk untuk melihat.");
+    expect(describePush(raw({ kind: "approval", count: 3, risk: "medium" }), "en").options.body).toMatch(/^Medium risk\. 3 /);
+    expect(describePush(raw({ kind: "done", risk: "high" }), "id").options.body).toBe("Ketuk untuk melihat hasilnya.");
+  });
+
   test("agent selesai: tujuan ke timeline sesi", () => {
     const content = describePush(raw({ kind: "done", sessionId: "s9" }), "id");
     expect(content.title).toBe("Agent selesai");

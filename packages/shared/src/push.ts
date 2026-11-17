@@ -57,6 +57,8 @@ export const PushPayloadSchema = z.strictObject({
   approvalId: z.string().min(1).max(200).optional(),
   // Berapa permintaan yang menunggu di sesi itu. Satu notifikasi per sesi yang diganti, bukan satu per permintaan.
   count: z.int().min(1).max(9999).optional(),
+  // Level risiko TERTINGGI di antara izin yang menunggu (hanya levelnya, bukan isi permintaan). Bantuan membaca, bukan jaminan.
+  risk: z.enum(["low", "medium", "high"]).optional(),
 });
 export type PushPayload = z.infer<typeof PushPayloadSchema>;
 

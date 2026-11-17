@@ -10,7 +10,7 @@
 // kedaluwarsa ditolak). Layar ini hanya mencegah yang jelas sia-sia: tombol mati saat waktu habis, atau saat
 // keputusan sedang jalan atau sudah selesai.
 import type { FileDiff, PendingApproval } from "@agentmon/shared";
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n } from "../i18n/react";
 import type { MessageKey } from "../i18n/id";
 import { findEntryForMachine, useRelayEntries, useRelayState, type RelayEntry } from "../relay/RelayProvider";
@@ -19,7 +19,7 @@ import { Link } from "../ui/Link";
 import { cleanLine } from "../timeline/describe";
 import { LazyDiffViewer } from "../diff/LazyDiffViewer";
 import { DiffSummaryView } from "./DiffSummaryView";
-import { RISK_LABEL } from "./ApprovalList";
+import { RiskBadge, markDanger } from "./risk";
 import { describeInput, formatDiff } from "./format";
 import { approvalKey, formatRemaining, isExpired, remainingMs, type Resolution } from "./model";
 import { useNow } from "./useNow";
@@ -73,13 +73,36 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 // Teks yang harus terbaca UTUH: dibungkus (tidak melebar ke samping), bisa digulir bila sangat panjang, dan bisa dipilih.
-function Pre({ children, label }: { children: string; label: string }) {
+function Pre({ children, label }: { children: ReactNode; label: string }) {
   return (
     <pre tabIndex={0} aria-label={label} className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-bg p-3 font-mono text-sm">
       {children}
     </pre>
   );
 }
+
+// Perintah shell; bagian berbahaya disorot hanya bila risikonya sedang atau tinggi. Dihitung sekali per teks (layar dirender ulang tiap detik).
+function CommandText({ value, highlight }: { value: string; highlight: boolean }) {
+  const pieces = useMemo(() => (highlight ? markDanger(value) : undefined), [value, highlight]);
+  if (!pieces) return <>{value}</>;
+  return (
+    <>
+      {pieces.map((piece, i) =>
+        piece.danger ? (
+          <mark key={i} className="rounded bg-warn-bg px-0.5 font-semibold text-warn-fg underline decoration-2">
+            {piece.text}
+          </mark>
+        ) : (
+          piece.text
+        ),
+      )}
+    </>
+  );
+}
+
+// Tombol "Ya, setujui" baru aktif sesaat setelah kotak muncul: dua ketukan cepat di tempat yang sama tidak boleh sampai
+// menyetujui (layar bisa bergeser ketika kotak muncul).
+const CONFIRM_ARM_MS = 700;
 
 function DiffBlock({ diff }: { diff: FileDiff }) {
   const { t } = useI18n();
@@ -150,6 +173,7 @@ function ApprovalBody({ entry, machineId, approvalId, focusHeading }: { entry: R
   const state = useRelayState(entry.store);
   const now = useNow();
   const [comment, setComment] = useState("");
+  const [confirming, setConfirming] = useState(false);
 
   const key = approvalKey(machineId, approvalId);
   const pending = state.approvals.find((a) => approvalKey(a.machineId, a.approvalId) === key);
@@ -171,6 +195,21 @@ function ApprovalBody({ entry, machineId, approvalId, focusHeading }: { entry: R
 
   // Isi yang terpotong tidak boleh disetujui: pengguna tidak melihat semuanya. Menolak tetap bisa.
   const canApprove = canDecide && !approval?.truncated;
+
+  // Kotak konfirmasi risiko tinggi: tertutup sendiri bila Setujui tidak lagi mungkin (offline, kedaluwarsa, dan seterusnya),
+  // supaya tidak muncul lagi tiba-tiba; "Ya" baru aktif sesaat setelah kotak muncul; fokus ke Batal tanpa menggulir layar.
+  const [armed, setArmed] = useState(false);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!canApprove) setConfirming(false);
+  }, [canApprove]);
+  useEffect(() => {
+    setArmed(false);
+    if (!confirming) return;
+    cancelRef.current?.focus({ preventScroll: true });
+    const timer = setTimeout(() => setArmed(true), CONFIRM_ARM_MS);
+    return () => clearTimeout(timer);
+  }, [confirming]);
 
   const textareaId = "approval-comment";
 
@@ -203,7 +242,7 @@ function ApprovalBody({ entry, machineId, approvalId, focusHeading }: { entry: R
           <span className={`tabular-nums ${expired ? "font-semibold text-danger" : left < 60_000 ? "text-danger" : "text-muted"}`}>
             {expired ? t("approval.expired") : t("approval.remaining", { time: formatRemaining(left) })}
           </span>
-          {level && <span className={level === "high" ? "font-semibold text-danger" : "text-muted"}>{t(RISK_LABEL[level])}</span>}
+          {level && <RiskBadge level={level} />}
         </p>
         {approval.summary && <p className="mt-1 text-sm">{cleanLine(approval.summary, 200)}</p>}
         {approval.risk?.reasons.map((reason) => (
@@ -211,6 +250,7 @@ function ApprovalBody({ entry, machineId, approvalId, focusHeading }: { entry: R
             {cleanLine(reason.message, 160)}
           </p>
         ))}
+        {level && <p className="mt-1 text-xs text-muted">{t("approval.risk.note")}</p>}
       </header>
 
       {approval.truncated && (
@@ -220,7 +260,9 @@ function ApprovalBody({ entry, machineId, approvalId, focusHeading }: { entry: R
       )}
       {shell && (
         <Section title={t("approval.command")}>
-          <Pre label={t("approval.command")}>{shell.value}</Pre>
+          <Pre label={t("approval.command")}>
+            <CommandText value={shell.value} highlight={level === "medium" || level === "high"} />
+          </Pre>
         </Section>
       )}
       {others.length > 0 && (
@@ -273,12 +315,42 @@ function ApprovalBody({ entry, machineId, approvalId, focusHeading }: { entry: R
           <button
             type="button"
             disabled={!canApprove}
-            onClick={() => entry.store.decide(machineId, approvalId, "approve")}
+            onClick={() => (level === "high" ? setConfirming(true) : entry.store.decide(machineId, approvalId, "approve"))}
             className="min-h-12 rounded-lg bg-accent px-4 font-semibold text-on-accent active:opacity-80 disabled:opacity-40"
           >
             {t("approval.approve")}
           </button>
         </div>
+        {confirming && canApprove && (
+          <div role="alertdialog" aria-labelledby="approval-confirm-title" aria-describedby="approval-confirm-reasons" onKeyDown={(event) => event.key === "Escape" && setConfirming(false)} className="mt-2 flex flex-col gap-2 rounded-lg border border-danger p-3">
+            <p id="approval-confirm-title" className="font-semibold text-danger">
+              {t("approval.risk.confirm.title")}
+            </p>
+            <div id="approval-confirm-reasons">
+              {approval.risk?.reasons.map((reason) => (
+                <p key={reason.code} className="text-sm">
+                  {cleanLine(reason.message, 160)}
+                </p>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <button type="button" ref={cancelRef} onClick={() => setConfirming(false)} className="min-h-12 rounded-lg border border-line px-4 font-semibold">
+                {t("approval.risk.confirm.back")}
+              </button>
+              <button
+                type="button"
+                disabled={!armed}
+                onClick={() => {
+                  setConfirming(false);
+                  entry.store.decide(machineId, approvalId, "approve");
+                }}
+                className="min-h-12 rounded-lg bg-danger px-4 font-semibold text-on-accent active:opacity-80 disabled:opacity-40"
+              >
+                {t("approval.risk.confirm.yes")}
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Status keputusan dan penjelasan; diumumkan ke pembaca layar setiap kali berubah. */}

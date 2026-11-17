@@ -126,7 +126,7 @@ export function createNotifier(options: NotifierOptions): Notifier {
     const ranks = waiting.flatMap((p) => (p.risk ? [RISK_RANK[p.risk.level]] : []));
     const risk = ranks.length > 0 ? (["high", "medium", "low"] as const)[Math.min(...ranks)] : undefined;
     return {
-      payload: { v: 1, kind: "approval", machineId, ...session, count: Math.min(waiting.length, 9999), ...(only && fits(only.approvalId) ? { approvalId: only.approvalId } : {}) },
+      payload: { v: 1, kind: "approval", machineId, ...session, count: Math.min(waiting.length, 9999), ...(only && fits(only.approvalId) ? { approvalId: only.approvalId } : {}), ...(risk ? { risk } : {}) },
       signature,
       ...(risk ? { risk } : {}),
     };

@@ -356,6 +356,19 @@ describe("hasil review PR #61", () => {
     expect(JSON.stringify(seen)).not.toContain("SANGAT-RAHASIA");
   });
 
+  test("level risiko tertinggi ikut di isi push (hanya level), dan tidak ada bila tidak dinilai", async () => {
+    const t = setup();
+    t.waiting.push({ ...approval("a1"), risk: { level: "low", reasons: [] } } as PendingApproval, { ...approval("a2"), risk: { level: "high", reasons: [] } } as PendingApproval);
+    t.notifier.onEvent({ type: "approval.requested", machineId: "m1", sessionId: "s1" });
+    await settle();
+    expect(t.pushes[0]?.payload).toMatchObject({ kind: "approval", count: 2, risk: "high" });
+    const u = setup();
+    u.waiting.push(approval("b1"));
+    u.notifier.onEvent({ type: "approval.requested", machineId: "m1", sessionId: "s1" });
+    await settle();
+    expect("risk" in (u.pushes[0]?.payload ?? {})).toBe(false);
+  });
+
   test("tanpa penilaian risiko: tidak ada kolom risk di keputusan", async () => {
     const seen: NotifyDecision[] = [];
     const t = setup({ filter: (d) => (seen.push(d), true) });

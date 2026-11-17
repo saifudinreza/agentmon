@@ -2,20 +2,15 @@
 // menampilkan sisa waktu. Permintaan yang sudah lewat batas waktunya tidak ditampilkan (tidak bisa diputuskan).
 import type { PendingApproval } from "@agentmon/shared";
 import { useI18n } from "../i18n/react";
-import type { MessageKey } from "../i18n/id";
 import { useRelayState, type RelayEntry } from "../relay/RelayProvider";
 import { cleanLine } from "../timeline/describe";
 import { PATH_KEYS, shortenPath } from "../timeline/path";
 import { Link } from "../ui/Link";
 import { describeInput } from "./format";
+import { RiskBadge } from "./risk";
 import { formatRemaining, isExpired, remainingMs } from "./model";
 import { useNow } from "./useNow";
 
-export const RISK_LABEL: Record<"high" | "medium" | "low", MessageKey> = {
-  high: "approval.risk.high",
-  medium: "approval.risk.medium",
-  low: "approval.risk.low",
-};
 
 /** Satu baris yang menggambarkan apa yang diminta: perintah, berkas, atau ringkasan. */
 export function targetOf(approval: PendingApproval): string {
@@ -58,11 +53,12 @@ export function ApprovalList({ entry }: { entry: RelayEntry }) {
                 </span>
                 {(level || targetOf(approval)) && (
                   <span className="text-sm text-muted">
-                    {level ? <span className={level === "high" ? "font-semibold text-danger" : ""}>{t(RISK_LABEL[level])}</span> : null}
+                    {level ? <RiskBadge level={level} /> : null}
                     {level && targetOf(approval) ? " · " : null}
                     {targetOf(approval)}
                   </span>
                 )}
+                {approval.risk?.reasons[0] && <span className="text-sm text-muted">{cleanLine(approval.risk.reasons[0].message, 120)}</span>}
                 <span className="text-xs text-muted">{machineName(approval.machineId)}</span>
               </Link>
             </li>
