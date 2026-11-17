@@ -45,7 +45,8 @@ const ENV_TEMPLATE = /^\.env\.(example|sample|template|dist|defaults?)$/;
 const PRIVATE_KEY_EXTENSIONS = [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".ppk"];
 const PRIVATE_KEY_NAMES = new Set(["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"]);
 const CREDENTIAL_FILES = new Set([".netrc", "_netrc", ".npmrc", ".pypirc", ".git-credentials", ".dockercfg"]);
-const CREDENTIAL_FOLDERS = new Set([".ssh", ".aws", ".azure", ".kube", ".gnupg", ".docker"]);
+// ".agentmon" = data daemon sendiri: token kendali lokal, kredensial relay, dan aturan policy. Agent tidak boleh menyentuhnya.
+const CREDENTIAL_FOLDERS = new Set([".ssh", ".aws", ".azure", ".kube", ".gnupg", ".docker", ".agentmon"]);
 const SHELL_PROFILES = new Set([".bashrc", ".bash_profile", ".bash_login", ".zshrc", ".zprofile", ".zshenv", ".profile"]);
 // Berkas yang menentukan perintah apa yang dijalankan proyek (skrip, build, hook). PRD §9
 // menyebutnya sebagai "celah skrip": agent bisa mengubahnya lebih dulu, lalu perintah "aman"
@@ -102,7 +103,10 @@ export function classifyPath(filePath: string, options: ClassifyOptions = {}): S
   // daripada menandai berlebihan, dan ini hanya penanda.
   if (
     CREDENTIAL_FILES.has(base) ||
-    /credential|secret/.test(base) ||
+    /credential|secret|service[-_]?account|adminsdk|api[-_]?key|tfstate|\.pgpass|\.dev\.vars|local\.settings\.json|^appsettings\..+\.json|flaskenv|wp-config|database\.yml|kubeconfig|^auth\.json|id_(rsa|dsa|ecdsa|ed25519)|\.pem|cookies\.sqlite|_history$|^\.bash_history|^\.codex$/.test(base) ||
+    base === ".yarnrc.yml" ||
+    /^tokens?(\.(txt|json|ya?ml|key|pem))?$/.test(base) ||
+    /^token[._-].*\.(txt|json|ya?ml|key|pem)$/.test(base) ||
     folders.some((f) => CREDENTIAL_FOLDERS.has(f))
   ) {
     reasons.push(reason("credentials", "Berkas ini kemungkinan berisi kredensial atau rahasia akses."));
@@ -137,7 +141,19 @@ export function classifyPath(filePath: string, options: ClassifyOptions = {}): S
     reasons.push(reason("container_config", "Berkas Docker menentukan perintah build, variabel lingkungan, dan akses ke laptop."));
   }
 
-  if (SCRIPT_CONFIG_FILES.has(base) || folders.includes(".husky")) {
+  // Konfigurasi alat uji, lint, dan build ikut DIJALANKAN oleh `npm test` dan sejenisnya (vitest.config.ts, conftest.py, ...).
+  const runnerConfig =
+    /^(vitest|vite|jest|eslint|babel|webpack|rollup|playwright|cypress|karma|metro|next|nuxt|svelte|astro|tailwind|postcss|prettier|commitlint|lint-staged|tsup|esbuild|turbo)(\.[a-z0-9-]+)?\.config\.[cm]?[jt]sx?$/.test(base) ||
+    /^\.(eslintrc|babelrc|prettierrc|mocharc|huskyrc|lintstagedrc)(\.[a-z]+)?$/.test(base) ||
+    ["conftest.py", "pytest.ini", "tox.ini", "noxfile.py", "setup.cfg", ".pnpmfile.cjs", "directory.build.props", "directory.build.targets", "gradle.properties", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"].includes(base) ||
+    (base === "config.toml" && folders.includes(".cargo")) ||
+    /^vitest\.workspace\./.test(base) ||
+    ["bunfig.toml", "cmakelists.txt", "taskfile.yaml", ".justfile", "lefthook.yml", "gradlew", "mvnw", "gradle-wrapper.properties", "maven-wrapper.properties", ".yarnrc", "pnpm-workspace.yaml", ".swcrc", "mypy.ini", "karma.conf.js", "gulpfile.js", "gulpfile.ts"].includes(base) ||
+    base.endsWith(".mk") ||
+    /\.(sh|bash|zsh|ps1|bat|cmd)$/.test(base) ||
+    folders.includes("scripts") ||
+    (base === "tasks.json" && folders.includes(".vscode"));
+  if (SCRIPT_CONFIG_FILES.has(base) || runnerConfig || folders.includes(".husky")) {
     reasons.push(reason("script_config", "Berkas ini menentukan perintah yang dijalankan proyek (skrip dan build)."));
   }
 

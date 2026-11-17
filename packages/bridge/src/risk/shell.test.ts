@@ -126,3 +126,22 @@ describe("lexShell: ketahanan", () => {
     expect(performance.now() - started).toBeLessThan(1000);
   });
 });
+
+describe("lexShell: karakter yang dibaca shell berbeda-beda ditandai tidak pasti", () => {
+  const odd = [0x0b, 0x0c, 0x85, 0xa0, 0x2028, 0x2029, 0x3000, 0xfeff];
+  test.each(odd)("karakter U+%s (spasi/pemisah tak lazim) membuat perintah tidak pasti di kedua shell", (code) => {
+    const command = `Get-Content -Path${String.fromCharCode(code)}.env`;
+    expect(lexShell(command, "powershell").unbalanced).toBe(true);
+    expect(lexShell(command, "bash").unbalanced).toBe(true);
+  });
+  test("spasi dan tab biasa tidak ditandai", () => {
+    expect(lexShell("ls \t -la", "bash").unbalanced).toBe(false);
+    expect(lexShell("Get-Content  x", "powershell").unbalanced).toBe(false);
+  });
+  test("\r berdiri sendiri, kutip pintar, scriptblock, dan $'..' di PowerShell diperlakukan konservatif", () => {
+    expect(lexShell(`echo x${String.fromCharCode(13)}Remove-Item y`, "powershell").pipelines.length).toBe(2);
+    expect(lexShell("Get-ChildItem { Start-Process calc }", "powershell").unbalanced).toBe(true);
+    expect(lexShell(`echo ${String.fromCharCode(0x201c)}'${String.fromCharCode(0x201d)}; rm x #'`, "powershell").pipelines.length).toBeGreaterThan(1);
+    expect(lexShell("echo {a,b}", "bash").pipelines[0]![0]!.words[1]!.dynamic).toBe(true);
+  });
+});
