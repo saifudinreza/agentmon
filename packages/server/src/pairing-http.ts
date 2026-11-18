@@ -44,6 +44,8 @@ export type PairingRoutesOptions = {
   trustProxy?: boolean;
   /** Dipanggil setelah sebuah perangkat dicabut, untuk memutus koneksinya seketika. */
   onDeviceRevoked?: (deviceId: string) => void;
+  /** Dipanggil setelah sebuah laptop mencabut dirinya dari relay, untuk memutus sambungannya seketika. */
+  onMachineRemoved?: (machineId: string) => void;
   /** Batas laju; bawaannya diatur untuk pemakaian manusia dan bisa diganti test. */
   limits?: Partial<PairingLimits>;
   now?: () => number;
@@ -125,6 +127,18 @@ export function mountPairingRoutes(app: Hono, options: PairingRoutesOptions): vo
     const deviceId = c.req.param("deviceId");
     if (deviceId.length > 200 || !(await pairing.revokeDevice({ machineId }, deviceId))) return c.json({ error: "not-found" }, 404);
     options.onDeviceRevoked?.(deviceId);
+    return c.json({ ok: true });
+  });
+
+  // Laptop mencabut DIRINYA SENDIRI dari relay (perintah `uninstall`). Hanya laptop pemegang tokennya yang bisa, dan hanya dirinya:
+  // tidak ada nomor di jalur permintaan, jadi tidak ada jalan menghapus laptop lain. Token langsung tidak berlaku; permintaan kedua
+  // dijawab 401 seperti token yang salah. Datanya (pasangan HP, sesi, riwayat event) ikut terhapus oleh basis data.
+  app.delete("/machine", async (c) => {
+    const machineId = await machineOf(c);
+    if (!machineId) return c.json({ error: "unauthorized" }, 401);
+    if (!perMachine.take(machineId)) return c.json({ error: "rate-limited" }, 429);
+    if (!(await pairing.forgetMachine(machineId))) return c.json({ error: "unauthorized" }, 401);
+    options.onMachineRemoved?.(machineId);
     return c.json({ ok: true });
   });
 

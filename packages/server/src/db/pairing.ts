@@ -143,6 +143,16 @@ export function createPairingService(db: Database, options: PairingOptions = {})
     },
 
     /**
+     * Laptop mencabut DIRINYA SENDIRI dari relay (uninstall): barisnya dihapus, dan basis data menghapus turunannya (pasangan dengan HP,
+     * sesi, event, dan kode pairing yang belum terpakai) karena kunci asingnya bertipe cascade. HP yang tadinya dipasangkan hanya
+     * kehilangan hubungannya; perangkatnya sendiri tidak dihapus (bisa dipasangkan ke laptop lain). `false` bila laptopnya sudah tidak ada.
+     */
+    async forgetMachine(machineId: string): Promise<boolean> {
+      const rows = await db.delete(machines).where(eq(machines.id, machineId)).returning({ id: machines.id });
+      return rows.length > 0;
+    },
+
+    /**
      * Mencabut sebuah perangkat. Pencabut harus punya hubungan dengannya: laptop yang dipasangkan dengan perangkat itu,
      * atau HP yang berbagi laptop dengannya (termasuk dirinya sendiri). Selain itu ditolak (false), dan jawabannya sama
      * untuk "tidak ada" dan "bukan urusanmu", supaya nomor perangkat tidak bisa dicari tahu. Mencabut dua kali aman.

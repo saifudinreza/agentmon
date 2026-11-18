@@ -33,6 +33,7 @@ import { runPolicy } from "./policy/cli";
 import { runRegister } from "./register";
 import { toWebSocketUrl } from "./relay-client";
 import { runSetup } from "./setup";
+import { runUninstall, type UninstallOptions } from "./uninstall";
 import { resolveRelayConfig } from "./relay-config";
 
 // Bekal yang bisa diganti di test: lingkungan, tempat menulis keluaran.
@@ -46,6 +47,8 @@ export type CliDeps = {
   hostname?: () => string;
   // Hanya diisi test, supaya `status` tidak menyentuh pengaturan autostart sistem yang sebenarnya.
   autostartStatus?: () => Promise<AutostartStatus>;
+  // Hanya diisi test, untuk perintah `uninstall` (jaringan, git, penghentian daemon, dan autostart palsu).
+  uninstall?: Partial<Pick<UninstallOptions, "fetch" | "git" | "stopDaemon" | "portOpen" | "autostart" | "waitMs" | "now">>;
   // Hanya diisi test: sistem operasi, exec, dan pemeriksa port palsu untuk perintah `autostart`.
   autostart?: Partial<Pick<AutostartOptions, "platform" | "exec" | "portOpen" | "spawnDetached" | "homeDir" | "launch" | "startWaitMs">>;
 };
@@ -102,6 +105,8 @@ const USAGE = [
   "  revoke <nomor>            cabut sebuah HP yang hilang (butuh laptop yang sudah terdaftar di relay)",
   "  setup [--dry-run] [--no-pair] [--claude-dir <folder>]",
   "                            pasang hook ke Claude Code (aman dijalankan berulang), lalu tampilkan QR pairing",
+  "  uninstall [--dry-run] [--purge-data [--purge-policy]] [--purge-checkpoints] [--skip-relay]",
+  "                            hapus hook AgentMon, copot autostart, hentikan daemon, cabut dari relay (data lokal ditawarkan)",
   "  autostart install [--hold] | remove | status",
   "                            nyalakan daemon otomatis saat masuk ke laptop (tanpa hak admin) dan nyalakan lagi bila mati",
   "  policy test|preset        uji aturan otomatis tanpa menjalankan perintah (lihat docs/policy.md)",
@@ -111,7 +116,7 @@ const USAGE = [
 /** Menjalankan satu perintah. Mengembalikan kode keluar (0 = berhasil). */
 export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   const [command, ...rest] = argv;
-  if (!command || !["status", "pause", "resume", "approve", "deny", "ui", "pair", "devices", "revoke", "register", "policy", "setup", "autostart"].includes(command)) {
+  if (!command || !["status", "pause", "resume", "approve", "deny", "ui", "pair", "devices", "revoke", "register", "policy", "setup", "autostart", "uninstall"].includes(command)) {
     deps.err(USAGE);
     return command ? 2 : 0;
   }
@@ -133,6 +138,52 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     if (action === "install") return installAutostart({ ...base, hold });
     if (action === "remove") return removeAutostart(base);
     return reportAutostart(base);
+  }
+
+  // `uninstall` mengembalikan komputer ke keadaan sebelum AgentMon; tidak butuh daemon yang sedang berjalan.
+  if (command === "uninstall") {
+    const flags = new Set(["--dry-run", "--purge-data", "--purge-policy", "--purge-checkpoints", "--skip-relay"]);
+    let claudeDir: string | undefined;
+    const given = new Set<string>();
+    for (let i = 0; i < rest.length; i++) {
+      const arg = rest[i]!;
+      if (arg === "--claude-dir") {
+        claudeDir = rest[++i];
+        if (!claudeDir || claudeDir.startsWith("--")) {
+          deps.err("--claude-dir butuh nama folder (path absolut), bukan opsi lain.");
+          return 2;
+        }
+      } else if (flags.has(arg)) given.add(arg);
+      else {
+        deps.err(`Argumen tidak dikenal untuk uninstall: ${arg}`);
+        deps.err("Pemakaian: uninstall [--dry-run] [--purge-data [--purge-policy]] [--purge-checkpoints] [--skip-relay] [--claude-dir <folder>]");
+        return 2;
+      }
+    }
+    if (given.has("--purge-policy") && !given.has("--purge-data")) {
+      deps.err("--purge-policy hanya bermakna bersama --purge-data.");
+      return 2;
+    }
+    const portText = deps.env.AGENTMON_PORT;
+    const uninstallPort = portText === undefined ? DEFAULT_PORT : Number(portText);
+    if (!Number.isInteger(uninstallPort) || uninstallPort < 1 || uninstallPort > 65535) {
+      deps.err(`AGENTMON_PORT tidak valid: ${portText}`);
+      return 1;
+    }
+    return runUninstall({
+      home,
+      env: deps.env,
+      out: deps.out,
+      err: deps.err,
+      port: uninstallPort,
+      dryRun: given.has("--dry-run"),
+      purgeData: given.has("--purge-data"),
+      purgePolicy: given.has("--purge-policy"),
+      purgeCheckpoints: given.has("--purge-checkpoints"),
+      skipRelay: given.has("--skip-relay"),
+      ...(claudeDir ? { claudeDir } : {}),
+      ...(deps.uninstall ?? {}),
+    });
   }
 
   // `setup` memasang hook ke pengaturan Claude Code dan menawarkan pairing; tidak butuh daemon yang sedang berjalan.

@@ -48,6 +48,8 @@ export type ServerOptions = {
   // Halaman web lokal (alat pengembangan). Bawaan mati: alamat /dev tidak ada sama sekali.
   devUi?: boolean;
   onHook?: HookHandler;
+  /** Dipanggil untuk `POST /stop` (perintah uninstall): menghentikan daemon dengan rapi. Tanpa ini, /stop tidak didukung (501). */
+  onStop?: () => void;
   maxBodyBytes?: number;
 };
 
@@ -170,6 +172,15 @@ export function createDaemonServer(options: ServerOptions): DaemonServer {
       control.resume();
       logger.info("dilanjutkan");
       return reply(res, 200, control.status());
+    }
+
+    // Menghentikan daemon dari luar (perintah `uninstall`). Token yang sama dengan perintah lain; jawaban dikirim DULU, penghentian menyusul.
+    if (path === "/stop") {
+      if (req.method !== "POST") return reply(res, 405, { error: "metode tidak diizinkan" }, { allow: "POST" });
+      if (!options.onStop) return reply(res, 501, { error: "penghentian dari luar tidak didukung" });
+      logger.info("diminta berhenti lewat /stop");
+      res.once("finish", () => setImmediate(() => options.onStop?.()));
+      return reply(res, 200, { stopping: true });
     }
 
     // Keputusan untuk satu izin yang menunggu. Isinya bentuk ApprovalDecision dari paket
