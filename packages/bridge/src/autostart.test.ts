@@ -4,9 +4,10 @@
 //   - tidak ada rahasia (token, alamat relay) yang ditulis ke berkas autostart,
 //   - perintah CLI `autostart` dan laporan `status`.
 // Pemasangan SUNGGUHAN di macOS dan Linux tidak bisa dijalankan di CI Windows; yang teruji di sini adalah berkas dan perintahnya.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { startDaemon } from "./daemon";
 import {
@@ -19,6 +20,7 @@ import {
   buildWindowsLauncher,
   encodeVbs,
   installAutostart,
+  psQuote,
   removeAutostart,
   reportAutostart,
   resolveDaemonLaunch,
@@ -69,6 +71,8 @@ function options(over: Partial<AutostartOptions> & { platform: NonNullable<Autos
   const out: string[] = [];
   const err: string[] = [];
   const rec = recorder();
+  // Panggilan pertama = pemeriksaan sebelum memasang (belum ada daemon); sesudahnya daemon "menjawab".
+  let probes = 0;
   const o: AutostartOptions = {
     env: {},
     out: (t) => out.push(t),
@@ -80,6 +84,8 @@ function options(over: Partial<AutostartOptions> & { platform: NonNullable<Autos
     launch: launch(),
     uid: 501,
     userName: "dono",
+    portOpen: async () => probes++ > 0,
+    startWaitMs: 50,
     ...over,
   };
   return { o, out, err, rec, sb };
@@ -109,11 +115,13 @@ describe("resolveDaemonLaunch", () => {
 });
 
 describe("buildLaunchAgentPlist (macOS)", () => {
-  test("menyala saat login, dinyalakan lagi hanya bila berhenti karena galat, dan ada jeda", () => {
+  test("menyala saat login, SELALU dinyalakan lagi (keluar kode 0 karena sudah ada daemon lain tidak boleh mematikannya), dan ada jeda", () => {
     const plist = buildLaunchAgentPlist(launch());
     expect(plist).toContain(`<string>${LABEL}</string>`);
     expect(plist).toMatch(/<key>RunAtLoad<\/key>\s*<true\/>/);
-    expect(plist).toMatch(/<key>KeepAlive<\/key>\s*<dict>\s*<key>SuccessfulExit<\/key>\s*<false\/>/);
+    expect(plist).toMatch(/<key>KeepAlive<\/key>\s*<true\/>/);
+    expect(plist).not.toContain("SuccessfulExit");
+    expect(plist).toContain("<string>Adaptive</string>");
     expect(plist).toMatch(/<key>ThrottleInterval<\/key>\s*<integer>10<\/integer>/);
     expect(plist).toContain("<string>/usr/local/bin/node</string>");
     expect(plist).toContain("<string>/opt/agentmon/src/main.ts</string>");
@@ -135,7 +143,8 @@ describe("buildLaunchAgentPlist (macOS)", () => {
 describe("buildSystemdUnit (Linux)", () => {
   test("restart setelah galat, menyala saat login, tidak ada hak admin yang diminta", () => {
     const unit = buildSystemdUnit(launch());
-    expect(unit).toMatch(/\[Service\][\s\S]*Restart=on-failure/);
+    expect(unit).toMatch(/\[Service\][\s\S]*Restart=always/);
+    expect(unit).not.toContain("network-online"); // tidak berpengaruh pada unit pengguna
     expect(unit).toContain("RestartSec=5");
     expect(unit).toContain("WantedBy=default.target");
     expect(unit).toContain('ExecStart="/usr/local/bin/node" "/opt/agentmon/node_modules/tsx/dist/cli.mjs" "/opt/agentmon/src/main.ts"');
@@ -238,7 +247,7 @@ describe("pemasangan Linux", () => {
     const { o, rec, sb } = options({ platform: "linux" });
     expect(await installAutostart(o)).toBe(0);
     const file = join(sb.homeDir, ".config", "systemd", "user", SYSTEMD_UNIT);
-    expect(readFileSync(file, "utf8")).toContain("Restart=on-failure");
+    expect(readFileSync(file, "utf8")).toContain("Restart=always");
     expect(rec.calls.map(line)).toEqual([
       "systemctl --user show-environment",
       "systemctl --user daemon-reload",
@@ -297,16 +306,18 @@ describe("pemasangan Windows", () => {
     const bytes = readFileSync(script);
     expect([bytes[0], bytes[1]]).toEqual([0xff, 0xfe]);
     expect(bytes.subarray(2).toString("utf16le")).toContain("shell.Run");
-    expect(rec.calls.length).toBe(2);
-    expect(rec.calls.every((c) => c.file === "powershell.exe")).toBe(true);
-    const [set, kill] = rec.calls.map((c) => c.args[c.args.length - 1]!);
+    expect(rec.calls.map((c) => c.file)).toEqual(["where.exe", "powershell.exe", "powershell.exe", "powershell.exe"]);
+    const [, read, set, kill] = rec.calls.map((c) => c.args[c.args.length - 1]!);
+    expect(read).toContain("Get-ItemProperty");
+    expect(read).toContain("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8"); // path non-ASCII tidak boleh rusak lewat pipa
     expect(set).toContain("Set-ItemProperty");
+    expect(set).toContain("$ErrorActionPreference = 'Stop'");
     expect(set).toContain("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
     expect(set).toContain(`wscript.exe //B //Nologo "${script}"`);
     expect(kill).toContain("taskkill");
     expect(kill).toContain(WINDOWS_VBS_NAME);
     expect(rec.spawned).toEqual([{ file: "wscript.exe", args: ["//B", "//Nologo", script] }]);
-    expect(rec.calls[0]!.args).toContain("-NonInteractive");
+    expect(rec.calls[1]!.args).toContain("-NonInteractive");
   });
   test("apostrof di path digandakan dalam skrip PowerShell (tidak bisa menyuntikkan perintah)", async () => {
     const sb = sandbox();
@@ -314,7 +325,7 @@ describe("pemasangan Windows", () => {
     mkdirSync(dataDir, { recursive: true });
     const { o, rec } = options({ platform: "win32", dataDir });
     await installAutostart(o);
-    const set = rec.calls[0]!.args.at(-1)!;
+    const set = rec.calls.map((c) => c.args.at(-1)!).find((s) => s.includes("Set-ItemProperty"))!;
     expect(set).toContain("O''Brien''; Remove-Item x; ''");
     expect(set).not.toMatch(/[^']'; Remove-Item x/);
   });
@@ -326,13 +337,14 @@ describe("pemasangan Windows", () => {
     expect(rec.spawned).toEqual([]);
   });
   test("pencopotan: kunci Run dihapus, peluncur dihentikan, skrip dihapus", async () => {
-    const { o, rec, sb } = options({ platform: "win32" });
+    const win = fakeWindows();
+    const { o, sb } = options({ platform: "win32", exec: win.exec });
     await installAutostart(o);
-    rec.calls.length = 0;
+    win.scripts.length = 0;
     expect(await removeAutostart(o)).toBe(0);
-    const scripts = rec.calls.map((c) => c.args.at(-1)!);
-    expect(scripts[0]).toContain("Remove-ItemProperty");
-    expect(scripts[1]).toContain("taskkill");
+    expect(win.scripts.some((s) => s.includes("Remove-ItemProperty"))).toBe(true);
+    expect(win.scripts.some((s) => s.includes("taskkill"))).toBe(true);
+    expect(win.state.value).toBeUndefined();
     expect(existsSync(join(sb.dataDir, "autostart", WINDOWS_VBS_NAME))).toBe(false);
   });
   test("status: aktif hanya bila kunci Run menunjuk skrip kita DAN skripnya ada", async () => {
@@ -424,7 +436,7 @@ describe("perintah CLI autostart dan status", () => {
   });
   test("autostart status berjalan lewat CLI tanpa daemon dan tanpa mengubah apa pun", async () => {
     const { deps, out } = io();
-    const code = await runCli(["autostart", "status"], { env: { AGENTMON_HOME: sandbox().dataDir, AGENTMON_PORT: "47999" }, ...deps });
+    const code = await runCli(["autostart", "status"], { env: { AGENTMON_HOME: sandbox().dataDir, AGENTMON_PORT: "47999" }, ...deps, autostart: { platform: "linux", exec: recorder().exec } });
     expect(code).toBe(0);
     expect(out.join("\n")).toMatch(/Autostart:/);
     expect(out.join("\n")).toContain("Daemon: tidak berjalan di 127.0.0.1:47999");
@@ -503,5 +515,295 @@ describe("perintah CLI autostart dan status", () => {
     } finally {
       await daemon.stop();
     }
+  });
+});
+
+
+// ---- Regresi review PR #84 ---------------------------------------------------------------------------------------------------
+const OK = { code: 0, stdout: "", stderr: "" };
+
+/** Registri Windows tiruan yang cukup untuk memeriksa pasang, copot, dan status dari beberapa folder data. */
+function fakeWindows() {
+  const state = { value: undefined as string | undefined, disabled: false };
+  const scripts: string[] = [];
+  const kills: string[] = [];
+  const exec: Exec = async (file, args) => {
+    if (file === "where.exe") return OK;
+    const script = args.at(-1) ?? "";
+    scripts.push(script);
+    // PowerShell sungguhan: skrip yang tidak berakhir dengan `exit 0` membuat keluar kode 1 bila perintah terakhirnya gagal.
+    // Remove-ItemProperty pada kunci yang tidak ada gagal; dengan `exit 0` tidak.
+    const endsOk = /exit 0\s*$/.test(script);
+    if (script.includes("Set-ItemProperty")) {
+      state.value = /-Value '((?:[^']|'')*)'/.exec(script)![1]!.replace(/''/g, "'");
+      return OK;
+    }
+    if (script.includes("Remove-ItemProperty")) {
+      const existed = state.value !== undefined;
+      state.value = undefined;
+      return existed || endsOk ? OK : { code: 1, stdout: "", stderr: "Property AgentMon does not exist" };
+    }
+    if (script.includes("WildcardPattern")) {
+      kills.push(script);
+      return endsOk ? OK : { code: 1, stdout: "", stderr: "" };
+    }
+    if (script.includes("Get-ItemProperty")) return { code: 0, stdout: `${state.value ?? ""}\n${state.disabled ? "DISABLED\n" : ""}`, stderr: "" };
+    return OK;
+  };
+  return { state, scripts, kills, exec };
+}
+
+describe("review #84: copot, kunci Run bersama, dan status Windows", () => {
+  test("remove saat belum terpasang: berhasil (kode 0), tetap menghentikan peluncur yang mungkin hidup", async () => {
+    const win = fakeWindows();
+    const { o, out, err } = options({ platform: "win32", exec: win.exec });
+    expect(await removeAutostart(o)).toBe(0);
+    expect(err).toEqual([]);
+    expect(out.join("\n")).toMatch(/tidak terpasang/);
+    expect(win.kills.length).toBe(1);
+  });
+
+  test("setiap skrip PowerShell yang bisa gagal karena 'tidak ada' berakhir dengan exit 0", async () => {
+    const win = fakeWindows();
+    const { o } = options({ platform: "win32", exec: win.exec });
+    await installAutostart(o);
+    await removeAutostart(o);
+    const guarded = win.scripts.filter((s) => /Remove-ItemProperty|WildcardPattern|Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'/.test(s) && !s.includes("Set-ItemProperty"));
+    expect(guarded.length).toBeGreaterThanOrEqual(3);
+    for (const s of guarded) expect(s, s.slice(0, 60)).toMatch(/exit 0\s*$/);
+  });
+
+  test("dua folder data: remove dari B tidak menghapus kunci Run milik A, tidak membunuh peluncur A, dan menjelaskannya", async () => {
+    const win = fakeWindows();
+    const a = options({ platform: "win32", exec: win.exec });
+    const b = options({ platform: "win32", exec: win.exec });
+    await installAutostart(a.o);
+    const valueA = win.state.value;
+    expect(valueA).toContain(a.sb.dataDir);
+    win.kills.length = 0;
+    expect(await removeAutostart(b.o)).toBe(0);
+    expect(win.state.value).toBe(valueA); // kunci A utuh
+    expect(b.out.join("\n")).toMatch(/menunjuk ke instalasi lain/);
+    expect(win.kills.length).toBe(1);
+    expect(win.kills[0]).toContain(b.sb.dataDir.replace(/'/g, "''")); // hanya peluncur dari folder B
+    expect(win.kills[0]).not.toContain(a.sb.dataDir);
+    // penyaring proses memakai path lengkap folder ini, bukan sekadar nama berkas skrip yang sama di semua instalasi
+    expect(win.kills[0]).toContain("-like ('*' + $p + '*')");
+    expect(win.kills[0]).not.toContain(`-like '*${WINDOWS_VBS_NAME}*'`);
+    expect(existsSync(join(a.sb.dataDir, "autostart", WINDOWS_VBS_NAME))).toBe(true);
+  });
+
+  test("memasang dari folder lain menggantikan kunci Run dan memberi tahu", async () => {
+    const win = fakeWindows();
+    const a = options({ platform: "win32", exec: win.exec });
+    const b = options({ platform: "win32", exec: win.exec });
+    await installAutostart(a.o);
+    await installAutostart(b.o);
+    expect(win.state.value).toContain(b.sb.dataDir);
+    expect(b.out.join("\n")).toMatch(/DIGANTIKAN/);
+  });
+
+  test("peluncur dihentikan lewat pola yang di-escape (tanda [ ] di path tidak menjadi wildcard)", async () => {
+    const win = fakeWindows();
+    const sb = sandbox();
+    const dataDir = join(sb.root, "data [x] [a-z]");
+    mkdirSync(dataDir, { recursive: true });
+    const { o } = options({ platform: "win32", exec: win.exec, dataDir });
+    await installAutostart(o);
+    expect(win.kills[0]).toContain("[WildcardPattern]::Escape(");
+  });
+
+  test("status: aktif hanya bila nilai Run PERSIS milik folder data ini, skripnya ada, dan tidak dimatikan di Startup apps", async () => {
+    const win = fakeWindows();
+    const a = options({ platform: "win32", exec: win.exec });
+    const b = options({ platform: "win32", exec: win.exec });
+    await installAutostart(a.o);
+    expect(await autostartStatus(a.o)).toMatchObject({ enabled: true });
+    const other = await autostartStatus(b.o);
+    expect(other.enabled).toBe(false);
+    expect(other.detail).toMatch(/instalasi lain/);
+    win.state.disabled = true;
+    const off = await autostartStatus(a.o);
+    expect(off.enabled).toBe(false);
+    expect(off.detail).toMatch(/dimatikan di Pengaturan/);
+    win.state.disabled = false;
+    win.state.value = undefined;
+    expect((await autostartStatus(a.o)).enabled).toBe(false);
+  });
+
+  test("wscript.exe tidak ada (VBScript dinonaktifkan): pesan jelas, kode 1, tidak ada berkas dan tidak ada perubahan registri", async () => {
+    const win = fakeWindows();
+    const { o, err, sb } = options({ platform: "win32", exec: async (file, args) => (file === "where.exe" ? { code: 1, stdout: "", stderr: "" } : win.exec(file, args)) });
+    expect(await installAutostart(o)).toBe(1);
+    expect(err.join("\n")).toMatch(/wscript\.exe tidak ditemukan/);
+    expect(existsSync(join(sb.dataDir, "autostart"))).toBe(false);
+    expect(win.scripts).toEqual([]);
+  });
+});
+
+describe("review #84: tanda kutip tipografis dan path relatif", () => {
+  const typographic = [0x2018, 0x2019, 0x201a, 0x201b].map((c) => String.fromCharCode(c));
+  test.each(typographic.map((q) => [`U+${q.charCodeAt(0).toString(16).toUpperCase()}`, q] as const))("psQuote menggandakan %s seperti apostrof", (_n, q) => {
+    expect(psQuote(`O${q}Brien`)).toBe(`'O${q}${q}Brien'`);
+    expect(psQuote("O'Brien")).toBe("'O''Brien'");
+  });
+
+  test.runIf(process.platform === "win32")("di PowerShell SUNGGUHAN: path berisi tanda kutip tipografis tidak bisa menyuntikkan perintah", () => {
+    const marker = join(scratch, "suntikan-berhasil.txt").replace(/\\/g, "/");
+    const payloads = typographic.map((q) => `x${q}; New-Item -ItemType File -Path '${marker}' | Out-Null; ${q}y`);
+    // Satu proses PowerShell untuk semua (memulai PowerShell mahal): tiap string harus terbaca UTUH sebagai satu nilai.
+    const script = `$lengths = @(${payloads.map((p) => `(${psQuote(p)}).Length`).join(", ")}); $lengths -join ','`;
+    const out = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true }).trim();
+    expect(out.split(",").map(Number)).toEqual(payloads.map((p) => p.length));
+    expect(existsSync(marker)).toBe(false);
+  }, 60_000);
+
+  test("folder data relatif dijadikan absolut: nilai Run tidak bergantung pada folder kerja saat login", async () => {
+    const win = fakeWindows();
+    const sb = sandbox();
+    const before = process.cwd();
+    process.chdir(sb.root);
+    try {
+      const { o } = options({ platform: "win32", exec: win.exec, dataDir: "data relatif" });
+      expect(await installAutostart(o)).toBe(0);
+    } finally {
+      process.chdir(before);
+    }
+    const value = win.state.value!;
+    const path = /"(.+)"$/.exec(value)![1]!;
+    expect(isAbsolute(path)).toBe(true);
+    expect(path).toBe(join(sb.root, "data relatif", "autostart", WINDOWS_VBS_NAME));
+    expect(existsSync(path)).toBe(true);
+  });
+
+  test("XDG_CONFIG_HOME relatif diabaikan (spesifikasi XDG): jatuh ke ~/.config", async () => {
+    const { o, sb } = options({ platform: "linux", env: { XDG_CONFIG_HOME: "relatif/config" } });
+    await installAutostart(o);
+    expect(existsSync(join(sb.homeDir, ".config", "systemd", "user", SYSTEMD_UNIT))).toBe(true);
+  });
+});
+
+describe("review #84: skrip Windows dan karakter khusus", () => {
+  test("path berisi % ditolak (WScript.Shell.Run mengekspansi %VAR%)", () => {
+    expect(() => buildWindowsLauncher(launch({ cwd: "C:\\Users\\100%\\x" }))).toThrow(/tanda %/);
+    expect(() => buildWindowsLauncher(launch({ args: ["C:\\a\\%PATH%\\b.mjs", "C:\\m.ts"] }))).toThrow(/tanda %/);
+    expect(() => buildLaunchAgentPlist(launch({ cwd: "/Users/100%/x" }))).not.toThrow(); // % hanya masalah di skrip Windows
+  });
+  test("Timer yang kembali ke 0 tengah malam tidak membuat jeda 30 detik yang salah", () => {
+    expect(buildWindowsLauncher(launch())).toContain("If elapsed < 0 Then elapsed = elapsed + 86400");
+  });
+});
+
+describe("review #84: laporan 'menyala' harus terbukti", () => {
+  test("daemon manual sudah berjalan sebelum pasang: dijelaskan, tidak diklaim sebagai menyala", async () => {
+    const { o, out } = options({ platform: "linux", portOpen: async () => true });
+    expect(await installAutostart(o)).toBe(0);
+    const text = out.join("\n");
+    expect(text).toMatch(/sudah ada daemon yang berjalan/);
+    expect(text).not.toMatch(/Daemon menjawab/);
+  });
+  test("daemon tidak pernah menjawab sesudah dinyalakan: kode 1 dan petunjuk log, walau berkas terpasang", async () => {
+    const { o, err, sb } = options({ platform: "darwin", portOpen: async () => false });
+    expect(await installAutostart(o)).toBe(1);
+    expect(err.join("\n")).toMatch(/Daemon belum menjawab/);
+    expect(err.join("\n")).toContain("daemon.log");
+    expect(existsSync(join(sb.homeDir, "Library", "LaunchAgents", `${LABEL}.plist`))).toBe(true);
+  });
+  test("daemon menjawab sesudah dinyalakan: dilaporkan", async () => {
+    const { o, out } = options({ platform: "linux" });
+    await installAutostart(o);
+    expect(out.join("\n")).toMatch(/Daemon menjawab di 127\.0\.0\.1:47821/);
+  });
+  test("port khusus dari lingkungan dipakai untuk pemeriksaan", async () => {
+    const seen: number[] = [];
+    const { o } = options({ platform: "linux", launch: launch({ env: { AGENTMON_PORT: "51111" } }), portOpen: async (p) => (seen.push(p), seen.length > 1) });
+    await installAutostart(o);
+    expect(seen.every((p) => p === 51111)).toBe(true);
+  });
+});
+
+describe("review #84: status", () => {
+  const io = () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    return { out, err, deps: { out: (t: string) => out.push(t), err: (t: string) => err.push(t) } };
+  };
+  const fine = async () => ({ supported: true, enabled: false, mechanism: "x" });
+  const devicesBody = JSON.stringify({ devices: [{ id: "d1", name: "iPhone", pairedAt: "2026-11-01T00:00:00.000Z" }] });
+
+  test("daemon versi lama (tanpa laporan relay) tidak dilabeli 'tidak dipakai'", async () => {
+    const sb = sandbox();
+    const daemon = await startDaemon({ home: sb.dataDir, port: 0 });
+    try {
+      const { deps, out } = io();
+      await runCli(["status"], { env: { AGENTMON_HOME: sb.dataDir, AGENTMON_PORT: String(daemon.port) }, ...deps, autostartStatus: fine });
+      expect(out.join("\n")).toContain("Relay: tidak dilaporkan");
+      expect(out.join("\n")).not.toContain("Relay: tidak dipakai");
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  test("token laptop TIDAK dikirim ke relay http:// di host lain; http ke komputer sendiri dan https boleh; AGENTMON_RELAY_INSECURE=1 mengizinkan", async () => {
+    const sb = sandbox();
+    const daemon = await startDaemon({ home: sb.dataDir, port: 0, relayStatus: () => ({ configured: true, state: "ready", phoneReachable: false }) });
+    try {
+      for (const [url, insecure, expectCalled] of [
+        ["http://relay.contoh.com", undefined, false],
+        ["http://127.0.0.1:8787", undefined, true],
+        ["https://relay.contoh.com", undefined, true],
+        ["http://relay.contoh.com", "1", true],
+      ] as const) {
+        const urls: string[] = [];
+        const fetchSpy = (async (u: string) => (urls.push(String(u)), new Response(devicesBody, { status: 200 }))) as unknown as typeof fetch;
+        const { deps, out } = io();
+        await runCli(["status"], {
+          env: { AGENTMON_HOME: sb.dataDir, AGENTMON_PORT: String(daemon.port), AGENTMON_RELAY_URL: url, AGENTMON_RELAY_TOKEN: "t".repeat(40), ...(insecure ? { AGENTMON_RELAY_INSECURE: insecure } : {}) },
+          ...deps,
+          pair: { fetch: fetchSpy },
+          autostartStatus: fine,
+        });
+        expect(urls.length > 0, `${url} insecure=${insecure}`).toBe(expectCalled);
+        if (!expectCalled) expect(out.join("\n")).toMatch(/alamat relay tidak terenkripsi/);
+        else expect(out.join("\n")).toContain("Perangkat: 1 HP terpasang");
+      }
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  test("pemeriksaan relay dan autostart berjalan BERSAMAAN (bukan berurutan)", async () => {
+    const sb = sandbox();
+    const daemon = await startDaemon({ home: sb.dataDir, port: 0 });
+    try {
+      let autostartStarted = false;
+      const fetchWaitsForAutostart = (async () => {
+        // Bila `status` menunggu relay lebih dulu baru memeriksa autostart, ini tidak pernah terpenuhi (kecuali setelah batas waktu).
+        const end = Date.now() + 1500;
+        while (!autostartStarted && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+        return new Response(devicesBody, { status: 200 });
+      }) as unknown as typeof fetch;
+      const { deps } = io();
+      const started = Date.now();
+      await runCli(["status"], {
+        env: { AGENTMON_HOME: sb.dataDir, AGENTMON_PORT: String(daemon.port), AGENTMON_RELAY_URL: "https://relay.contoh.com", AGENTMON_RELAY_TOKEN: "t".repeat(40) },
+        ...deps,
+        pair: { fetch: fetchWaitsForAutostart },
+        autostartStatus: async () => ((autostartStarted = true), { supported: true, enabled: false, mechanism: "x" }),
+      });
+      expect(autostartStarted).toBe(true);
+      expect(Date.now() - started).toBeLessThan(1200);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  test("daemon mati: pesan menyebut autostart install", async () => {
+    const sb = sandbox();
+    writeFileSync(join(sb.dataDir, "token"), `${"ab".repeat(32)}\n`);
+    const { deps, err } = io();
+    const code = await runCli(["status"], { env: { AGENTMON_HOME: sb.dataDir, AGENTMON_PORT: "47998" }, ...deps, autostartStatus: fine });
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("autostart install");
   });
 });

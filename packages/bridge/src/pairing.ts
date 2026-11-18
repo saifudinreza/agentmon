@@ -174,7 +174,7 @@ function printable(text: string): string {
 export async function countPairedDevices(options: { relayUrl: string; machineToken: string; fetch?: typeof fetch }): Promise<number | undefined> {
   const http = options.fetch ?? fetch;
   try {
-    const response = await http(`${options.relayUrl.replace(/\/+$/, "")}/pair/devices`, { headers: { authorization: `Bearer ${options.machineToken}` }, signal: AbortSignal.timeout(8_000) });
+    const response = await http(`${options.relayUrl.replace(/\/+$/, "")}/pair/devices`, { headers: { authorization: `Bearer ${options.machineToken}` }, signal: AbortSignal.timeout(4_000) });
     if (!response.ok) return undefined;
     const parsed = PairedDevicesResponseSchema.safeParse(await response.json().catch(() => undefined));
     return parsed.success ? parsed.data.devices.length : undefined;

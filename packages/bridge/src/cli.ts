@@ -23,13 +23,15 @@
 // Logika ada di sini supaya bisa dites. Pintu masuk dari terminal ada di cli-main.ts.
 import { request } from "node:http";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { DEFAULT_PORT } from "./daemon";
 import { agentmonHome, paths } from "./home";
 import type { DaemonStatus } from "./control";
 import { countPairedDevices, runListDevices, runPair, runRevokeDevice, type PairOptions } from "./pairing";
-import { autostartStatus, installAutostart, removeAutostart, reportAutostart, type AutostartStatus } from "./autostart";
+import { autostartStatus, installAutostart, removeAutostart, reportAutostart, type AutostartOptions, type AutostartStatus } from "./autostart";
 import { runPolicy } from "./policy/cli";
 import { runRegister } from "./register";
+import { toWebSocketUrl } from "./relay-client";
 import { runSetup } from "./setup";
 import { resolveRelayConfig } from "./relay-config";
 
@@ -44,6 +46,8 @@ export type CliDeps = {
   hostname?: () => string;
   // Hanya diisi test, supaya `status` tidak menyentuh pengaturan autostart sistem yang sebenarnya.
   autostartStatus?: () => Promise<AutostartStatus>;
+  // Hanya diisi test: sistem operasi, exec, dan pemeriksa port palsu untuk perintah `autostart`.
+  autostart?: Partial<Pick<AutostartOptions, "platform" | "exec" | "portOpen" | "spawnDetached" | "homeDir" | "launch" | "startWaitMs">>;
 };
 
 type Reply = { status: number; body: unknown };
@@ -125,7 +129,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       deps.err("Pemakaian: autostart install [--hold] | autostart remove | autostart status");
       return 2;
     }
-    const base = { env: deps.env, out: deps.out, err: deps.err, dataDir: home };
+    const base = { env: deps.env, out: deps.out, err: deps.err, dataDir: resolve(home), ...deps.autostart };
     if (action === "install") return installAutostart({ ...base, hold });
     if (action === "remove") return removeAutostart(base);
     return reportAutostart(base);
@@ -292,7 +296,8 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   const printStatusDetails = async (status: DaemonStatus, daemonPort: number) => {
     deps.out(`Daemon: berjalan di 127.0.0.1:${daemonPort}`);
     const relay = status.relay;
-    if (!relay || relay.state === "off") deps.out("Relay: tidak dipakai (daftarkan laptop ini dengan `register`)");
+    if (!relay) deps.out("Relay: tidak dilaporkan (daemon versi lama: mulai ulang daemon)");
+    else if (relay.state === "off") deps.out("Relay: tidak dipakai (daftarkan laptop ini dengan `register`)");
     else if (relay.state === "ready") deps.out(`Relay: tersambung${relay.phoneReachable ? ", ada HP yang online" : ", tetapi tidak ada HP yang online"}`);
     else if (relay.state === "connecting") deps.out("Relay: menyambung...");
     else deps.out("Relay: terputus, mencoba lagi");
@@ -302,16 +307,27 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     } catch {
       relayConfig = undefined;
     }
-    if (relayConfig) {
+    // Pemeriksaan relay dan autostart berjalan BERSAMAAN supaya `status` tidak menjumlahkan waktu tunggunya.
+    const devicesLine = (async (): Promise<string> => {
+      if (!relayConfig) return "Perangkat: tidak diketahui (laptop belum terdaftar ke relay)";
+      // Token laptop tidak boleh dikirim sebagai teks biasa ke host lain: aturan yang sama dengan klien relay daemon.
+      try {
+        toWebSocketUrl(relayConfig.relayUrl, deps.env.AGENTMON_RELAY_INSECURE === "1");
+      } catch {
+        return "Perangkat: tidak diketahui (alamat relay tidak terenkripsi; pakai https atau izinkan dengan AGENTMON_RELAY_INSECURE=1)";
+      }
       const count = await countPairedDevices({ relayUrl: relayConfig.relayUrl, machineToken: relayConfig.token, ...(deps.pair?.fetch ? { fetch: deps.pair.fetch } : {}) });
-      deps.out(count === undefined ? "Perangkat: tidak diketahui (relay tidak terjangkau)" : `Perangkat: ${count} HP terpasang`);
-    } else deps.out("Perangkat: tidak diketahui (laptop belum terdaftar ke relay)");
-    const auto = await (deps.autostartStatus ?? (() => autostartStatus({ env: deps.env, out: deps.out, err: deps.err, dataDir: home })))();
+      return count === undefined ? "Perangkat: tidak diketahui (relay tidak terjangkau)" : `Perangkat: ${count} HP terpasang`;
+    })();
+    const autoStatus = (deps.autostartStatus ?? (() => autostartStatus({ env: deps.env, out: deps.out, err: deps.err, dataDir: resolve(home) })))();
+    deps.out(await devicesLine);
+    const auto = await autoStatus;
     deps.out(auto.supported ? (auto.enabled ? `Mulai otomatis: aktif (${auto.mechanism}${auto.detail ? `; ${auto.detail}` : ""})` : "Mulai otomatis: belum dipasang (pasang dengan: autostart install)") : `Mulai otomatis: ${auto.mechanism}`);
   };
 
   const notRunning = () => {
     deps.err(`Daemon tidak berjalan di 127.0.0.1:${port}. Jalankan dulu dengan: pnpm --filter @agentmon/bridge daemon`);
+    deps.err("  Agar daemon menyala sendiri setiap kali Anda masuk ke laptop: pnpm --filter @agentmon/bridge cli autostart install");
     return 1;
   };
 
