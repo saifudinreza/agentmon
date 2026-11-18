@@ -41,9 +41,9 @@ export function fakeRelay() {
     approvals: [] as PendingApproval[],
     devices: [] as ListedDevice[],
     // Web Push: konfigurasi yang diberikan relay, langganan terakhir yang tersimpan, dan berapa kali dihapus.
-    push: { config: { enabled: true, publicKey: FAKE_VAPID_PUBLIC_KEY } as PushConfigResponse, saved: undefined as PushSubscriptionRequest | undefined, removed: 0, prefs: { approvals: true, done: true } as PushPreferences },
+    push: { config: { enabled: true, publicKey: FAKE_VAPID_PUBLIC_KEY } as PushConfigResponse, saved: undefined as PushSubscriptionRequest | undefined, removed: 0, tests: 0, prefs: { approvals: true, done: true } as PushPreferences },
   };
-  const fail: { machines?: Error; sessions?: Error; events?: Error; approvals?: Error; devices?: Error; revoke?: Error; pushConfig?: Error; pushSave?: Error; pushRemove?: Error; pushPrefsLoad?: Error; pushPrefsSave?: Error } = {};
+  const fail: { machines?: Error; sessions?: Error; events?: Error; approvals?: Error; devices?: Error; revoke?: Error; pushConfig?: Error; pushSave?: Error; pushRemove?: Error; pushPrefsLoad?: Error; pushPrefsSave?: Error; pushTest?: Error } = {};
   const calls = { machines: 0, sessions: 0, eventsAfter: [] as number[] };
   let gate: Promise<void> | undefined;
   const api: RelayApi = {
@@ -81,6 +81,10 @@ export function fakeRelay() {
       if (fail.pushPrefsSave) throw fail.pushPrefsSave;
       data.push.prefs = { ...data.push.prefs, ...update };
       return { ...data.push.prefs };
+    }),
+    sendTestPush: vi.fn(async () => {
+      if (fail.pushTest) throw fail.pushTest;
+      data.push.tests++;
     }),
     removePushSubscription: vi.fn(async () => {
       if (fail.pushRemove) throw fail.pushRemove;

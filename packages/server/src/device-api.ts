@@ -54,6 +54,8 @@ export type DeviceApiOptions = {
     store: Pick<PushStore, "replace" | "removeAll" | "getPreferences" | "setPreferences">;
     vapidPublicKey?: string;
     isAllowedEndpoint: (endpoint: string) => boolean;
+    /** Mengirim notifikasi uji ke SATU HP (panduan pemasangan). Tanpa ini, POST /api/push/test dijawab 503. */
+    sendTest?: (deviceId: string) => Promise<{ attempted: number; delivered: number; failed: number; removed: number }>;
   };
   /** Asal PWA yang boleh memanggil dari browser, misalnya ["https://app.contoh.com"]. */
   allowedOrigins?: string[];
@@ -105,12 +107,15 @@ export function mountDeviceApi(app: Hono, options: DeviceApiOptions): void {
     ...(options.now ? { now: options.now } : {}),
   });
 
+  // Notifikasi uji memakai layanan push pihak ketiga: dibatasi ketat per HP (3 sekaligus, lalu satu tiap 20 detik).
+  const testLimiter = createKeyedRateLimiter({ capacity: 3, refillPerSecond: 0.05, ...(options.now ? { now: options.now } : {}) });
+
   const allowed = new Set(options.allowedOrigins ?? []);
   app.use(
     "/api/*",
     cors({
       origin: (origin) => (allowed.has(origin) ? origin : null),
-      allowMethods: ["GET", "PUT", "DELETE", "OPTIONS"],
+      allowMethods: ["GET", "PUT", "POST", "DELETE", "OPTIONS"],
       allowHeaders: ["authorization", "content-type"],
       maxAge: 600,
     }),
@@ -210,6 +215,17 @@ export function mountDeviceApi(app: Hono, options: DeviceApiOptions): void {
         return c.json(PushPreferencesSchema.parse(preferences));
       },
     );
+    // Notifikasi uji ke HP ini sendiri: bukti ujung ke ujung (relay, layanan push, HP) di akhir panduan pemasangan.
+    app.post("/api/push/test", async (c) => {
+      const auth = await authenticate(c);
+      if (auth instanceof Response) return auth;
+      if (!push.vapidPublicKey || !push.sendTest) return c.json({ error: "push-disabled" }, 503);
+      if (!testLimiter.take(auth.deviceId)) return c.json({ error: "rate-limited" }, 429);
+      const result = await push.sendTest(auth.deviceId);
+      if (result.attempted === 0) return c.json({ error: "no-subscription" }, 404);
+      if (result.delivered === 0) return c.json({ error: "send-failed" }, 502);
+      return c.json({ ok: true });
+    });
     // Berhenti menerima notifikasi di HP ini. Aman dipanggil berulang.
     app.delete("/api/push/subscription", async (c) => {
       const auth = await authenticate(c);

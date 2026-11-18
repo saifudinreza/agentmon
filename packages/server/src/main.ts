@@ -23,6 +23,7 @@ import { createMemoryDirectory, type RelayDirectory } from "./directory";
 import { createConsoleLogger } from "./logger";
 import { startRelayServer, type RelayServerOptions } from "./node";
 import { parseAdminSecret } from "./admin-http";
+import type { DeviceApiOptions } from "./device-api";
 import { createNotifier, notifyAfterSave, pendingLookup, type Notifier } from "./notifier";
 import { createEndpointPolicy, createPushService, parseVapidConfig, withPushPresence } from "./push";
 
@@ -70,11 +71,13 @@ if (process.env.DATABASE_URL) {
     store: createPushStore(database.db),
     isAllowedEndpoint: createEndpointPolicy((process.env.PUSH_ALLOWED_HOSTS ?? "").split(",")),
     ...(vapid.config ? { vapidPublicKey: vapid.config.publicKey } : {}),
+    sendTest: undefined as NonNullable<DeviceApiOptions["push"]>["sendTest"],
   };
   // Event dari laptop disimpan sebelum diteruskan dan di-ack, dan HP membaca riwayatnya lewat /api/*. Bila push menyala,
   // event baru (izin yang menunggu, agent selesai) juga memicu notifikasi lewat satu pemicu terpusat (notifier.ts).
   if (vapid.config) {
     const pushService = createPushService({ store: push.store, vapid: vapid.config, isAllowedEndpoint: push.isAllowedEndpoint, logger });
+    push.sendTest = (deviceId) => pushService.notifyDevice(deviceId, { v: 1, kind: "test", machineId: "test" });
     notifier = createNotifier({ push: pushService, pending: pendingLookup(eventStore), logger });
     persist = notifyAfterSave((event) => eventStore.saveEvent(event), notifier);
   } else {
