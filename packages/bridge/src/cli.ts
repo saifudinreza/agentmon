@@ -122,8 +122,8 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       else if (arg === "--no-pair") noPair = true;
       else if (arg === "--claude-dir") {
         claudeDir = rest[++i];
-        if (!claudeDir) {
-          deps.err("--claude-dir butuh nama folder.");
+        if (!claudeDir || claudeDir.startsWith("--")) {
+          deps.err("--claude-dir butuh nama folder (path absolut), bukan opsi lain.");
           return 2;
         }
       } else {

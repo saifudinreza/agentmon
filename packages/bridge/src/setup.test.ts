@@ -3,8 +3,8 @@
 //   - dijalankan dua kali tidak membuat hook ganda dan tidak menulis ulang,
 //   - berkas pengaturan (berisi token) izinnya tidak dilonggarkan dan isinya tidak pernah dicetak,
 //   - path dengan spasi berfungsi, dan prasyarat yang kurang dijelaskan tanpa mengubah apa pun.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { runCli } from "./cli";
@@ -18,6 +18,9 @@ afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 const ours = buildClaudeHookSettings({ token: TOKEN });
 const userHook = { type: "command", command: "echo halo" };
 const userHttp = { type: "http", url: "http://127.0.0.1:9000/lain", timeout: 5 };
+// Hook AgentMon dikenali dari alamat DAN header Bearer 64-heksadesimal: fixture "hook lama kita" harus memuat keduanya.
+const BEARER = { Authorization: `Bearer ${"cd".repeat(32)}` };
+const oldOurs = (url: string) => ({ type: "http", url, headers: BEARER, timeout: 1 });
 
 let counter = 0;
 const fresh = () => {
@@ -71,8 +74,14 @@ describe("mergeAgentmonHooks", () => {
 
   test("hook http milik pengguna ke alamat lain tidak dianggap milik kita", () => {
     expect(isAgentmonHook(userHttp)).toBe(false);
-    expect(isAgentmonHook({ type: "http", url: "http://127.0.0.1:9000/hook" })).toBe(true);
-    expect(isAgentmonHook({ type: "http", url: "http://localhost:47821/hook" })).toBe(false); // bukan bentuk yang kita tulis
+    expect(isAgentmonHook(oldOurs("http://127.0.0.1:9000/hook"))).toBe(true);
+    expect(isAgentmonHook(oldOurs("http://localhost:47821/hook"))).toBe(true); // versi lama yang memakai localhost
+    expect(isAgentmonHook(oldOurs("http://127.0.0.1:47821/hook/"))).toBe(true);
+    // hook alat lain ke alamat yang mirip (tanpa header Bearer 64-heksadesimal) BUKAN milik kita
+    expect(isAgentmonHook({ type: "http", url: "http://127.0.0.1:8080/hook" })).toBe(false);
+    expect(isAgentmonHook({ type: "http", url: "http://127.0.0.1:8080/hook", headers: { Authorization: "Bearer pendek" } })).toBe(false);
+    expect(isAgentmonHook({ type: "http", url: "http://127.0.0.1:8080/hook", headers: { "X-Api-Key": "cd".repeat(32) } })).toBe(false);
+    expect(isAgentmonHook({ type: "http", url: "http://evil.test:47821/hook", headers: BEARER })).toBe(false);
     expect(isAgentmonHook({ type: "command", command: "http://127.0.0.1:1/hook" })).toBe(false);
     const r = mergeAgentmonHooks({ hooks: { Stop: [{ hooks: [userHttp] }] } }, ours);
     if (!r.ok) throw new Error(r.reason);
@@ -103,7 +112,7 @@ describe("mergeAgentmonHooks", () => {
   });
 
   test("grup yang memuat hook pengguna DAN hook kita: hanya hook kita yang diganti", () => {
-    const mixed = { hooks: { Stop: [{ hooks: [userHook, { type: "http", url: "http://127.0.0.1:1/hook", timeout: 1 }] }] } };
+    const mixed = { hooks: { Stop: [{ hooks: [userHook, oldOurs("http://127.0.0.1:1/hook")] }] } };
     const r = mergeAgentmonHooks(mixed, ours);
     if (!r.ok) throw new Error(r.reason);
     const groups = (r.settings.hooks as Record<string, { hooks: unknown[] }[]>).Stop!;
@@ -112,7 +121,7 @@ describe("mergeAgentmonHooks", () => {
   });
 
   test("hook kita dari versi lama di event yang kini tidak dipakai dibuang", () => {
-    const r = mergeAgentmonHooks({ hooks: { UserPromptSubmit: [{ hooks: [{ type: "http", url: "http://127.0.0.1:47821/hook" }] }] } }, ours);
+    const r = mergeAgentmonHooks({ hooks: { UserPromptSubmit: [{ hooks: [oldOurs("http://127.0.0.1:47821/hook")] }] } }, ours);
     if (!r.ok) throw new Error(r.reason);
     expect((r.settings.hooks as Record<string, unknown>).UserPromptSubmit).toBeUndefined();
   });
@@ -304,20 +313,6 @@ describe("runSetup: pemasangan", () => {
     expect(readFileSync(k.file, "utf8")).toBe('{"model":"opus"}');
     expect(backups(k.claudeDir)).toEqual([]);
   });
-
-  test("tidak pernah menulis ke dalam folder proyek (cwd): hanya ke folder pengaturan pengguna", async () => {
-    const k = fresh();
-    const project = join(k.root, "proyek");
-    mkdirSync(project);
-    const before = process.cwd();
-    process.chdir(project);
-    try {
-      await setup({ home: k.home, claudeDir: k.claudeDir });
-    } finally {
-      process.chdir(before);
-    }
-    expect(readdirSync(project)).toEqual([]);
-  });
 });
 
 describe("runSetup: daemon dan pairing", () => {
@@ -375,6 +370,214 @@ describe("runSetup: daemon dan pairing", () => {
     expect(called).toBe(0);
   });
 });
+
+// ---- Regresi review PR #81 ---------------------------------------------------------------------------------------------------
+describe("review #81: hook alat lain dan hook lama", () => {
+  test("hook alat lain ke 127.0.0.1:8080/hook (tanpa Bearer 64-heksadesimal) tidak dibuang atau diganti", () => {
+    const other = { type: "http", url: "http://127.0.0.1:8080/hook", timeout: 3 };
+    const r = mergeAgentmonHooks({ hooks: { Stop: [{ hooks: [other] }] } }, ours);
+    if (!r.ok) throw new Error(r.reason);
+    expect((r.settings.hooks as Record<string, { hooks: unknown[] }[]>).Stop![0]!.hooks).toEqual([other]);
+    expect(r.replaced).toBe(0);
+  });
+
+  test("hook lama kita yang memakai localhost atau /hook/ diganti, tidak jadi ganda; jumlah yang diganti dilaporkan", async () => {
+    const k = fresh();
+    mkdirSync(k.claudeDir);
+    const legacy = { hooks: { Stop: [{ hooks: [oldOurs("http://localhost:47821/hook")] }], PreToolUse: [{ hooks: [oldOurs("http://127.0.0.1:47821/hook/")] }] } };
+    writeFileSync(k.file, JSON.stringify(legacy));
+    const r = await setup({ home: k.home, claudeDir: k.claudeDir });
+    expect(r.out.join("\n")).toContain("menggantikan 2 hook AgentMon lama");
+    const hooks = read(k.file).hooks as Record<string, { hooks: unknown[] }[]>;
+    for (const event of HOOK_EVENTS) expect(hooks[event]!.flatMap((g) => g.hooks).filter(isAgentmonHook).length, event).toBe(1);
+    expect(JSON.stringify(hooks)).not.toContain("localhost");
+  });
+
+  test("setup ulang setelah pengguna menambah hook di event yang sama: tidak menulis ulang dan tidak ada cadangan baru", async () => {
+    const k = fresh();
+    await setup({ home: k.home, claudeDir: k.claudeDir });
+    const settings = read(k.file) as { hooks: Record<string, unknown[]> };
+    settings.hooks.Stop!.push({ hooks: [userHook] }); // ditambahkan SESUDAH hook kita
+    settings.hooks.PreToolUse!.unshift({ matcher: "Bash", hooks: [userHook] }); // dan sebelumnya
+    writeFileSync(k.file, JSON.stringify(settings, null, 2));
+    const before = readFileSync(k.file, "utf8");
+    const r = await setup({ home: k.home, claudeDir: k.claudeDir, now: () => new Date(2026, 10, 18, 11, 0, 0) });
+    expect(r.out.join("\n")).toMatch(/sudah terpasang dan mutakhir/);
+    expect(readFileSync(k.file, "utf8")).toBe(before);
+    expect(backups(k.claudeDir)).toEqual([]);
+  });
+});
+
+describe("review #81: folder harus absolut dan token tidak boleh jatuh ke folder kerja", () => {
+  test.each(["settings-rel", "./relatif", "../naik", "~/.claude"])("claudeDir relatif ditolak tanpa menulis apa pun: %s", async (dir) => {
+    const k = fresh();
+    const project = join(k.root, "proyek");
+    mkdirSync(project);
+    const before = process.cwd();
+    process.chdir(project);
+    try {
+      const viaOption = await setup({ home: k.home, claudeDir: dir });
+      const viaEnv = await setup({ home: k.home, claudeDir: undefined as unknown as string, env: { CLAUDE_CONFIG_DIR: dir } });
+      expect(viaOption.code).toBe(1);
+      expect(viaEnv.code).toBe(1);
+      expect(viaOption.err.join("\n")).toMatch(/path absolut/);
+    } finally {
+      process.chdir(before);
+    }
+    expect(readdirSync(project)).toEqual([]);
+    expect(readdirSync(k.root).sort()).toEqual(["data agentmon", "proyek"]);
+  });
+
+  test("CLAUDE_CONFIG_DIR kosong atau hanya spasi jatuh ke folder bawaan (tidak ke folder kerja)", async () => {
+    const k = fresh();
+    const project = join(k.root, "proyek");
+    mkdirSync(project);
+    const before = process.cwd();
+    process.chdir(project);
+    try {
+      for (const value of ["", "   "]) {
+        const r = await setup({ home: k.home, claudeDir: undefined as unknown as string, env: { CLAUDE_CONFIG_DIR: value }, dryRun: true });
+        expect(r.out.join("\n")).toContain(join(homedir(), ".claude", "settings.json"));
+      }
+    } finally {
+      process.chdir(before);
+    }
+    expect(readdirSync(project)).toEqual([]);
+  });
+
+  test("--claude-dir yang diikuti opsi lain ditolak (tidak membuat folder bernama --dry-run)", async () => {
+    const k = fresh();
+    const err: string[] = [];
+    const project = join(k.root, "proyek");
+    mkdirSync(project);
+    const before = process.cwd();
+    process.chdir(project);
+    try {
+      expect(await runCli(["setup", "--claude-dir", "--dry-run"], { env: { AGENTMON_HOME: k.home }, out: () => undefined, err: (t) => err.push(t) })).toBe(2);
+    } finally {
+      process.chdir(before);
+    }
+    expect(readdirSync(project)).toEqual([]);
+    expect(err.join("\n")).toMatch(/path absolut/);
+  });
+});
+
+describe("review #81: --dry-run benar-benar tidak menulis apa pun", () => {
+  test("tidak membuat folder data maupun berkas token", async () => {
+    const root = join(scratch, `kering ${++counter}`);
+    const home = join(root, "belum ada");
+    const claudeDir = join(root, "claude");
+    mkdirSync(claudeDir, { recursive: true });
+    const r = await setup({ home, claudeDir, dryRun: true });
+    expect(r.code).toBe(0);
+    expect(r.out.join("\n")).toMatch(/AKAN dipasang/);
+    expect(existsSync(home)).toBe(false);
+    expect(readdirSync(claudeDir)).toEqual([]);
+  });
+
+  test("memakai token yang sudah ada untuk menghitung, tanpa mengubahnya", async () => {
+    const k = fresh();
+    await setup({ home: k.home, claudeDir: k.claudeDir });
+    const token = readFileSync(join(k.home, "token"), "utf8");
+    const dry = await setup({ home: k.home, claudeDir: k.claudeDir, dryRun: true });
+    expect(dry.out.join("\n")).toMatch(/sudah terpasang dan mutakhir/);
+    expect(readFileSync(join(k.home, "token"), "utf8")).toBe(token);
+  });
+});
+
+describe("review #81: penulisan yang gagal atau bentrok", () => {
+  test("pengaturan berubah selagi setup berjalan: batal, perubahan pihak lain tidak hilang, tanpa cadangan atau berkas sisa", async () => {
+    const k = fresh();
+    mkdirSync(k.claudeDir);
+    writeFileSync(k.file, '{"model":"opus"}');
+    const r = await setup({
+      home: k.home,
+      claudeDir: k.claudeDir,
+      now: () => {
+        writeFileSync(k.file, '{"model":"sonnet","ditulis":"claude code"}'); // Claude Code menulis di antara baca dan ganti
+        return new Date(2026, 10, 18, 9, 30, 15);
+      },
+    });
+    expect(r.code).toBe(1);
+    expect(r.err.join("\n")).toMatch(/berubah selagi setup berjalan/);
+    expect(readFileSync(k.file, "utf8")).toBe('{"model":"sonnet","ditulis":"claude code"}');
+    expect(readdirSync(k.claudeDir)).toEqual(["settings.json"]);
+  });
+
+  test("dua pemasangan dalam detik yang sama: nama cadangan tidak bentrok dan tidak gagal", async () => {
+    const k = fresh();
+    mkdirSync(k.claudeDir);
+    const same = () => new Date(2026, 10, 18, 9, 30, 15);
+    writeFileSync(k.file, '{"a":1}');
+    expect((await setup({ home: k.home, claudeDir: k.claudeDir, now: same })).code).toBe(0);
+    writeFileSync(k.file, '{"a":2}');
+    expect((await setup({ home: k.home, claudeDir: k.claudeDir, now: same })).code).toBe(0);
+    expect(backups(k.claudeDir)).toEqual(["settings.json.agentmon-backup-20261118-093015", "settings.json.agentmon-backup-20261118-093015-2"]);
+  });
+
+  test("cadangan lama dipangkas: hanya 5 terbaru yang disimpan (cadangan lama bisa memuat token)", async () => {
+    const k = fresh();
+    mkdirSync(k.claudeDir);
+    for (let i = 0; i < 8; i++) {
+      writeFileSync(k.file, JSON.stringify({ putaran: i }));
+      await setup({ home: k.home, claudeDir: k.claudeDir, now: () => new Date(2026, 10, 18, 9, 30, i) });
+    }
+    const kept = backups(k.claudeDir);
+    expect(kept.length).toBe(5);
+    expect(kept[0]).toBe("settings.json.agentmon-backup-20261118-093003");
+    expect(kept[4]).toBe("settings.json.agentmon-backup-20261118-093007");
+  });
+
+  test("berkas yang tidak ada hubungannya (mirip nama) tidak ikut terpangkas", async () => {
+    const k = fresh();
+    mkdirSync(k.claudeDir);
+    const milik = join(k.claudeDir, "settings.json.bak");
+    writeFileSync(milik, "punya saya");
+    for (let i = 0; i < 8; i++) {
+      writeFileSync(k.file, JSON.stringify({ putaran: i }));
+      await setup({ home: k.home, claudeDir: k.claudeDir, now: () => new Date(2026, 10, 18, 9, 30, i) });
+    }
+    expect(readFileSync(milik, "utf8")).toBe("punya saya");
+  });
+
+  test("settings.json berupa tautan simbolik: tautan tetap, berkas tujuannya yang diperbarui", async () => {
+    const k = fresh();
+    mkdirSync(k.claudeDir);
+    const dotfiles = join(k.root, "dotfiles");
+    mkdirSync(dotfiles);
+    const target = join(dotfiles, "claude-settings.json");
+    writeFileSync(target, '{"model":"opus"}');
+    try {
+      symlinkSync(target, k.file, "file");
+    } catch {
+      return; // tidak ada izin membuat tautan simbolik di mesin ini
+    }
+    const r = await setup({ home: k.home, claudeDir: k.claudeDir });
+    expect(r.code).toBe(0);
+    expect(lstatSync(k.file).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(target, "utf8")).model).toBe("opus");
+    expect(Object.keys(JSON.parse(readFileSync(target, "utf8")).hooks)).toEqual([...HOOK_EVENTS]);
+    expect(r.out.join("\n")).toContain(target);
+  });
+
+  test("disableAllHooks: true menimbulkan peringatan", async () => {
+    const k = fresh();
+    mkdirSync(k.claudeDir);
+    writeFileSync(k.file, '{"disableAllHooks":true}');
+    const r = await setup({ home: k.home, claudeDir: k.claudeDir });
+    expect(r.out.join("\n")).toMatch(/disableAllHooks.*mengabaikan semua hook/);
+  });
+
+  test("pengaturan relay rusak setelah hook terpasang: peringatan, bukan kegagalan", async () => {
+    const k = fresh();
+    writeFileSync(join(k.home, "relay.json"), "{rusak"); // berkas pengaturan relay yang rusak membuat resolveRelayConfig melempar galat
+    const r = await setup({ home: k.home, claudeDir: k.claudeDir, noPair: false });
+    expect(r.code).toBe(0);
+    expect(r.err.join("\n")).toMatch(/Pairing dilewati/);
+    expect(existsSync(k.file)).toBe(true);
+  });
+});
+
 
 describe("findOnPath", () => {
   test("menemukan program di PATH (folder ber-spasi) dan tidak menemukan yang tidak ada", () => {
