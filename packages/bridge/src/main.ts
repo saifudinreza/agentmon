@@ -71,9 +71,13 @@ async function main() {
     const policy = createPolicyRuntime({ home: agentmonHome(), logger: policyLogger });
     // "Sesi ini sudah mengubah proyek": disimpan di disk supaya tahan restart daemon dan sesi yang dilanjutkan; rusak = semua sesi dianggap sudah mengubah.
     const sessionFlags = createFileSessionFlags({ file: join(agentmonHome(), "session-flags.json"), logger: policyLogger });
+    // Diisi sesudah daemon dan relay siap: `POST /stop` (perintah uninstall) memakai penghentian rapi yang sama dengan Ctrl+C.
+    // eslint-disable-next-line prefer-const -- dipakai oleh penutup di atas sebelum nilainya ada
+    let requestShutdown: (() => void) | undefined;
     const daemon = await startDaemon({
       port: portFromEnv(),
       policyStatus: () => policy.status(),
+      onStop: () => requestShutdown?.(),
       devUi,
       timeline,
       // Menahan aksi sampai ada keputusan. Bawaan MATI, karena belum ada HP yang bisa menjawab
@@ -164,13 +168,17 @@ async function main() {
       }
     }
 
+    let stopping = false;
     const shutdown = () => {
+      if (stopping) return; // /stop lalu Ctrl+C (atau dua kali /stop) tidak menjalankannya dua kali
+      stopping = true;
       // Memberi relay kesempatan singkat (2 detik) menerima sisa antrean sebelum berhenti.
       void (relay ? relay.flush(2000) : Promise.resolve())
         .then(() => relay?.close())
         .then(() => daemon.stop())
         .then(() => process.exit(0));
     };
+    requestShutdown = shutdown;
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
   } catch (error) {

@@ -115,17 +115,17 @@ export function removeAgentmonHooks(existing: unknown): MergeResult {
 
 // ---- Berkas ------------------------------------------------------------------------------------------------------------------
 
-type Format = { indent: string | number; eol: string; bom: boolean; finalNewline: boolean };
+export type Format = { indent: string | number; eol: string; bom: boolean; finalNewline: boolean };
 
 /** Meniru gaya berkas yang ada supaya perbedaannya hanya pada hook (indentasi, akhir baris, BOM, baris akhir). */
-function detectFormat(text: string): Format {
+export function detectFormat(text: string): Format {
   const bom = text.charCodeAt(0) === 0xfeff;
   const body = bom ? text.slice(1) : text;
   const indent = /^([ \t]+)"/m.exec(body)?.[1] ?? 2;
   return { indent, eol: body.includes("\r\n") ? "\r\n" : "\n", bom, finalNewline: body.endsWith("\n") || body.trim() === "" };
 }
 
-function serialize(settings: Json, format: Format): string {
+export function serialize(settings: Json, format: Format): string {
   const text = JSON.stringify(settings, null, format.indent).replace(/\n/g, format.eol);
   return `${format.bom ? String.fromCharCode(0xfeff) : ""}${text}${format.finalNewline ? format.eol : ""}`;
 }
@@ -145,7 +145,7 @@ const KEEP_BACKUPS = 5;
  *     cadangan berisi token.
  *   - Isi berkas dibaca ulang tepat sebelum diganti: bila berubah selagi setup berjalan (mis. Claude Code menulisnya), setup batal.
  */
-function writeSettings(file: string, text: string, stamp: string, before: string | undefined): WriteOutcome {
+export function writeSettings(file: string, text: string, stamp: string, before: string | undefined): WriteOutcome {
   let target = file;
   try {
     if (lstatSync(file).isSymbolicLink()) target = realpathSync(file);
@@ -200,6 +200,59 @@ function writeSettings(file: string, text: string, stamp: string, before: string
   }
   pruneBackups(file);
   return { written: true, target, ...(backup ? { backup } : {}) };
+}
+
+/**
+ * Menghapus berkas pengaturan yang tinggal berisi apa pun SELAIN hook AgentMon (mis. berkas yang dibuat setup dan kini kosong), setelah
+ * mencadangkannya. Isinya dibaca ulang lebih dulu: bila berubah selagi berjalan, batal. Tautan simbolik tidak dihapus (milik repo dotfiles).
+ */
+export function deleteSettings(file: string, stamp: string, before: string): { backup: string } {
+  if (lstatSync(file).isSymbolicLink()) throw new SettingsWriteError("settings.json adalah tautan simbolik; tidak dihapus.");
+  if (readFileSync(file, "utf8") !== before) throw new SettingsWriteError("Pengaturan Claude Code berubah selagi berjalan. Tidak ada yang diubah; ulangi.");
+  let backup: string | undefined;
+  for (let n = 1; backup === undefined; n++) {
+    const candidate = `${file}.agentmon-backup-${stamp}${n > 1 ? `-${n}` : ""}`;
+    try {
+      copyFileSync(file, candidate, constants.COPYFILE_EXCL);
+      backup = candidate;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST" || n > 50) throw error;
+    }
+  }
+  try {
+    unlinkSync(file);
+  } catch (error) {
+    try {
+      unlinkSync(backup);
+    } catch {
+      /* tidak ada yang dibersihkan */
+    }
+    throw error;
+  }
+  return { backup };
+}
+
+/** Cadangan pengaturan milik AgentMon di sebelah settings.json (urut dari yang tertua). */
+export function listSettingsBackups(file: string): string[] {
+  try {
+    const prefix = `${basename(file)}.agentmon-backup-`;
+    return readdirSync(dirname(file))
+      .filter((name) => name.startsWith(prefix))
+      .sort()
+      .map((name) => join(dirname(file), name));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Folder pengaturan Claude Code. `||` (bukan `??`): CLAUDE_CONFIG_DIR kosong jatuh ke bawaan. WAJIB absolut: path relatif akan jatuh ke
+ * folder kerja, yaitu bisa di dalam repo proyek.
+ */
+export function resolveClaudeDir(env: Record<string, string | undefined>, override?: string): { ok: true; dir: string } | { ok: false; message: string } {
+  const requested = override ?? (env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude"));
+  if (!isAbsolute(requested)) return { ok: false, message: `Folder pengaturan Claude Code harus berupa path absolut (diterima: ${requested}).` };
+  return { ok: true, dir: resolve(requested) };
 }
 
 /** Menyimpan hanya cadangan terbaru: cadangan lama bisa memuat token dari pemasangan sebelumnya. Hanya berkas bernama cadangan kita. */
@@ -272,7 +325,7 @@ export type SetupOptions = {
 };
 
 const pad = (n: number) => String(n).padStart(2, "0");
-const stampOf = (d: Date) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+export const stampOf = (d: Date) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 
 function readExistingToken(home: string): string | undefined {
   try {
@@ -287,15 +340,14 @@ function readExistingToken(home: string): string | undefined {
 export async function runSetup(options: SetupOptions): Promise<number> {
   const { out, err, env } = options;
   const find = options.findProgram ?? ((names: readonly string[]) => findOnPath(names, env));
-  // `||` (bukan `??`): CLAUDE_CONFIG_DIR kosong harus jatuh ke bawaan. Folder WAJIB absolut: path relatif akan jatuh ke folder kerja,
-  // yaitu bisa di dalam repo proyek, dan berkas ini memuat token.
-  const requestedDir = options.claudeDir ?? (env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude"));
-  if (!isAbsolute(requestedDir)) {
-    err(`Folder pengaturan Claude Code harus berupa path absolut (diterima: ${requestedDir}).`);
+  // Folder WAJIB absolut: path relatif akan jatuh ke folder kerja, yaitu bisa di dalam repo proyek, dan berkas ini memuat token.
+  const resolved = resolveClaudeDir(env, options.claudeDir);
+  if (!resolved.ok) {
+    err(resolved.message);
     err("  Pakai path lengkap pada --claude-dir atau CLAUDE_CONFIG_DIR (tanpa ~ dan tanpa path relatif).");
     return 1;
   }
-  const claudeDir = resolve(requestedDir);
+  const claudeDir = resolved.dir;
   const settingsFile = join(claudeDir, "settings.json");
   const port = options.port ?? DEFAULT_PORT;
 

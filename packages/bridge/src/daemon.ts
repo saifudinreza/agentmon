@@ -52,6 +52,8 @@ export type DaemonOptions = {
   relayStatus?: () => RelayStatus;
   /** Keadaan aturan otomatis untuk perintah `status`. Bawaan: tidak dilaporkan. */
   policyStatus?: () => PolicyStatus;
+  /** Dipanggil saat daemon diminta berhenti lewat `POST /stop`. Bawaan: tidak didukung (501). */
+  onStop?: () => void;
   // Lama menunggu keputusan sebelum izin dianggap habis waktu (milidetik). Bawaan 540 detik.
   approvalTimeoutMs?: number;
   // Halaman web lokal (alat pengembangan) di /dev. Bawaan mati.
@@ -135,6 +137,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
     timeline,
     devUi: options.devUi ?? false,
     onHook: options.onHook,
+    ...(options.onStop ? { onStop: options.onStop } : {}),
     maxBodyBytes: options.maxBodyBytes,
   });
 

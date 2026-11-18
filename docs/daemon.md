@@ -233,6 +233,7 @@ Saat sebuah aksi ditahan, daemon menghitung **perubahan yang diusulkan agent** d
 |---|---|
 | `GET /health` | `status`, `version`, `pid`, `startedAt`, `uptimeMs` |
 | `POST /hook` | Menerima input hook (`Content-Type: application/json`, maksimum 10 MiB). Jawaban `200` |
+| `POST /stop` | Menghentikan daemon dengan rapi (dipakai `agentmon uninstall`). Jawaban `200 {"stopping":true}` dikirim dulu, lalu daemon berhenti. Butuh token yang sama dengan perintah lain; `501` bila daemon dijalankan tanpa dukungan ini |
 
 Kode lain: `400` (JSON atau bentuk tidak valid), `404`, `405`, `413` (terlalu besar), `415` (bukan JSON).
 

@@ -179,6 +179,7 @@ Keterbatasan: relay sudah bisa menerima langganan push (lihat bagian Web Push), 
 | `DELETE /api/devices/:id` | HP | mencabut perangkat itu (atau dirinya sendiri) |
 | `GET /pair/devices` | laptop (token laptop) | HP yang terpasang dengan laptop ini |
 | `DELETE /pair/devices/:id` | laptop | mencabut HP yang terpasang dengan laptop ini (untuk HP hilang) |
+| `DELETE /machine` | laptop | laptop mencabut DIRINYA SENDIRI (perintah `uninstall`): baris laptop, pemasangan, sesi, event, dan kode pairing-nya dihapus; token langsung tidak berlaku (permintaan kedua dijawab `401`); koneksi WebSocket laptop diputus. HP tetap ada, hanya hubungannya yang hilang. Tidak ada id di jalur, jadi tidak bisa dipakai menghapus laptop lain |
 
 Pencabut harus punya hubungan dengan perangkat itu (laptop yang dipasangkan dengannya, atau HP yang berbagi laptop). Selain itu dijawab `404` yang sama dengan "tidak ada", supaya nomor perangkat tidak bisa dicari tahu. Mencabut dua kali aman (idempoten).
 

@@ -68,7 +68,7 @@ export async function startRelayServer(options: RelayServerOptions): Promise<Run
   // pemeriksaan hosting; statistik tetap bisa dibaca di dalam proses lewat hub.stats().
   app.get("/health", (c) => c.json({ status: "ok" }));
   const onDeviceRevoked = (deviceId: string) => hub.disconnectDevice(deviceId);
-  if (options.pairing) mountPairingRoutes(app, { ...options.pairing, onDeviceRevoked });
+  if (options.pairing) mountPairingRoutes(app, { ...options.pairing, onDeviceRevoked, onMachineRemoved: (machineId) => hub.disconnectMachine(machineId) });
   if (options.admin) mountAdminRoutes(app, { ...options.admin, onMachineRotated: (machineId) => hub.disconnectMachine(machineId) });
   if (options.deviceApi) mountDeviceApi(app, { ...options.deviceApi, isMachineOnline: (id) => hub.isMachineOnline(id), onDeviceRevoked });
   // Galat tak terduga (misalnya database sesaat tidak terjangkau): jawab 500 yang polos dan catat.
