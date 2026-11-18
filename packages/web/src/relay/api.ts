@@ -58,6 +58,8 @@ export type RelayApi = {
   removePushSubscription(): Promise<void>;
   /** Jenis notifikasi yang diinginkan HP ini. Gagal `not-found` bila belum berlangganan. */
   pushPreferences(): Promise<PushPreferences>;
+  /** Meminta relay mengirim notifikasi uji ke HP ini. `not-found` = belum berlangganan; `server` = relay atau layanan push gagal. */
+  sendTestPush(): Promise<void>;
   /** Mengubah jenis notifikasi (yang tidak disebut tetap) dan mengembalikan hasilnya. */
   savePushPreferences(update: PushPreferencesUpdate): Promise<PushPreferences>;
   sessions(machineId: string): Promise<SessionSummary[]>;
@@ -83,7 +85,7 @@ export function createRelayApi(options: RelayApiOptions): RelayApi {
   const http = options.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  async function get<T>(path: string, parse: (json: unknown) => T, method: "GET" | "DELETE" | "PUT" = "GET", body?: unknown): Promise<T> {
+  async function get<T>(path: string, parse: (json: unknown) => T, method: "GET" | "DELETE" | "PUT" | "POST" = "GET", body?: unknown): Promise<T> {
     let response: Response;
     try {
       response = await http(`${base}${path}`, {
@@ -121,6 +123,7 @@ export function createRelayApi(options: RelayApiOptions): RelayApi {
     pushConfig: () => get("/api/push/key", (json) => PushConfigResponseSchema.parse(json)),
     savePushSubscription: (subscription) => get("/api/push/subscription", () => undefined, "PUT", subscription),
     removePushSubscription: () => get("/api/push/subscription", () => undefined, "DELETE"),
+    sendTestPush: () => get("/api/push/test", () => undefined, "POST"),
     pushPreferences: () => get("/api/push/preferences", (json) => PushPreferencesSchema.parse(json)),
     savePushPreferences: (update) => get("/api/push/preferences", (json) => PushPreferencesSchema.parse(json), "PUT", update),
     sessions: (machineId) => get(`/api/machines/${encodeURIComponent(machineId)}/sessions`, (json) => SessionsResponseSchema.parse(json).sessions),

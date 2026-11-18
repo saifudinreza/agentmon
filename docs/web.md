@@ -84,6 +84,18 @@ Kode berlaku sekitar 5 menit sejak QR dibuat, jadi langkah memasang lalu menempe
 
 - **Rollback** (`/r/<laptop>/<checkpoint>`, dari tautan "Kembalikan ke sini" di event checkpoint): layar meminta pratinjau dari laptop setelah koneksi siap (sekali, tidak diulang saat tersambung ulang), menampilkan berkas yang akan dibuat lagi, dikembalikan, atau dihapus (jalur ditampilkan dengan karakter berbahaya sebagai kodenya), hal yang tidak bisa dibatalkan, lalu konfirmasi dua ketukan. Tombol mati bila agent masih berjalan. Setelah berhasil ada tautan "Batalkan rollback". Perintah umum dikirim lewat `store.request`, yang menunggu balasan bernomor perintah yang sama dan melaporkan offline, laptop mati, ditolak, atau waktu habis (60 detik). Detail alur di `docs/daemon.md`. Diuji dengan jsdom; belum dicoba di HP nyata.
 
+## Panduan pemasangan (`src/onboarding/`, alamat `/panduan`)
+
+Memandu pengguna awam dari nol sampai notifikasi uji tiba (FR-54, FR-55). Tautan "Panduan pemasangan" ada di beranda.
+
+- **Deteksi** (`environment.ts`): sistem (iOS, Android, komputer), browser (termasuk browser di dalam aplikasi lain), versi iOS, dan apakah app dibuka dari ikon layar utama. Kemampuan (service worker, push, notifikasi) diperiksa langsung, bukan ditebak dari userAgent.
+- **Langkah** (`guide.ts`, murni dan diuji): pasang ke layar utama, pasangkan laptop, aktifkan notifikasi, uji notifikasi. Di Android memasang hanya saran (opsional); di iOS wajib.
+- **FR-55:** di iOS yang masih di tab Safari, langkah notifikasi terkunci dan tombol Aktifkan **tidak dipasang sama sekali**, jadi izin tidak mungkin diminta dari sana.
+- **Keterbatasan yang dijelaskan** (bukan galat): browser di dalam aplikasi lain (minta buka di Safari/Chrome), iOS di bawah 16.4, browser tanpa push, iOS selain Safari, dan komputer. Versi iOS yang tidak bisa dibaca tidak dianggap terlalu lama.
+- **Uji notifikasi** memanggil `POST /api/push/test` di relay (lihat `docs/relay.md`), jadi yang dibuktikan adalah jalur sungguhan relay, layanan push, lalu HP. Dua ketukan cepat hanya mengirim satu.
+
+**Belum diuji:** panduan belum dicoba oleh orang yang belum pernah melihat app (kriteria issue #046) dan belum dicoba di Android sungguhan; hanya tes otomatis dan, untuk iOS, pengalaman pemasangan di iPhone sebelumnya.
+
 ## Penampil diff (`src/diff/`)
 
 Layar keputusan menampilkan diff dengan penampil yang dimuat belakangan (`React.lazy`, `LazyDiffViewer`). Selama kodenya belum siap, atau bila gagal dimuat (mis. offline dan belum tersimpan), teks diff biasa yang sama tampil, jadi isi yang akan disetujui selalu terbaca; penampil hanya mengganti tampilannya.

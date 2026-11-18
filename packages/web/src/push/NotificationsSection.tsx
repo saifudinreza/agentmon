@@ -18,7 +18,7 @@ import { checkPush, currentPushEnv, disablePush, enablePush, type PushEnv, type 
 
 type View = { phase: "checking" } | { phase: "busy"; action: "enable" | "disable" } | { phase: "ready"; status: PushStatus };
 
-export function NotificationsSection({ entry, env: injected }: { entry: RelayEntry; /** Hanya untuk test. */ env?: PushEnv }) {
+export function NotificationsSection({ entry, env: injected, onStatus }: { entry: RelayEntry; /** Hanya untuk test. */ env?: PushEnv; /** Dikabari setiap status notifikasi yang pasti diketahui (dipakai panduan pemasangan). */ onStatus?: (status: PushStatus) => void }) {
   const { t } = useI18n();
   const env = useMemo(() => injected ?? currentPushEnv(entry.store.api), [injected, entry]);
   const [view, setView] = useState<View>({ phase: "checking" });
@@ -53,6 +53,10 @@ export function NotificationsSection({ entry, env: injected }: { entry: RelayEnt
 
   const busy = view.phase === "busy";
   const status = view.phase === "ready" ? view.status : undefined;
+  useEffect(() => {
+    if (status) onStatus?.(status);
+    // onStatus sengaja tidak jadi pemicu: hanya perubahan status yang dikabarkan.
+  }, [status]);
 
   // Jenis notifikasi (FR-33): hanya bila sudah aktif. Disimpan di relay per HP; tampilannya langsung berubah dan dikembalikan bila gagal.
   const [prefs, setPrefs] = useState<PushPreferences | undefined>();

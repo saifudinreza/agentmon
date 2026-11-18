@@ -382,3 +382,60 @@ describe("pengaturan jenis notifikasi (FR-33)", () => {
     expect(await (await prefs(base, T.d1)).json()).toEqual({ approvals: true, done: true });
   });
 });
+
+describe("POST /api/push/test (notifikasi uji dari panduan pemasangan)", () => {
+  async function startWithTest(sendTest?: (id: string) => Promise<{ attempted: number; delivered: number; failed: number; removed: number }>): Promise<string> {
+    const pairing = createPairingService(handle.db);
+    relay = await startRelayServer({
+      directory,
+      port: 0,
+      host: "127.0.0.1",
+      pairing: { pairing, directory },
+      deviceApi: {
+        directory,
+        store: createStore(handle.db),
+        devices: pairing,
+        allowedOrigins: [ORIGIN],
+        push: { store: pushStore, isAllowedEndpoint: createEndpointPolicy(), vapidPublicKey: KEYS.publicKey, ...(sendTest ? { sendTest } : {}) },
+      },
+    });
+    return `http://127.0.0.1:${relay.port}`;
+  }
+  const ok = { attempted: 1, delivered: 1, failed: 0, removed: 0 };
+
+  test("tanpa token atau token laptop: 401 dan tidak ada yang dikirim", async () => {
+    const sent: string[] = [];
+    const base = await startWithTest(async (id) => (sent.push(id), ok));
+    expect((await request(base, "POST", "/api/push/test", null)).status).toBe(401);
+    expect((await request(base, "POST", "/api/push/test", T.m1)).status).toBe(401);
+    expect(sent).toEqual([]);
+  });
+
+  test("mengirim HANYA ke HP pemanggil", async () => {
+    const sent: string[] = [];
+    const base = await startWithTest(async (id) => (sent.push(id), ok));
+    expect((await request(base, "POST", "/api/push/test", T.d1)).status).toBe(200);
+    expect((await request(base, "POST", "/api/push/test", T.d2)).status).toBe(200);
+    expect(sent).toEqual(["d1", "d2"]);
+  });
+
+  test("belum berlangganan: 404; layanan push menolak semua: 502", async () => {
+    const none = await startWithTest(async () => ({ attempted: 0, delivered: 0, failed: 0, removed: 0 }));
+    expect((await request(none, "POST", "/api/push/test", T.d1)).status).toBe(404);
+    await relay?.stop();
+    const failed = await startWithTest(async () => ({ attempted: 1, delivered: 0, failed: 1, removed: 0 }));
+    expect((await request(failed, "POST", "/api/push/test", T.d1)).status).toBe(502);
+  });
+
+  test("push belum dikonfigurasi: 503", async () => {
+    const base = await startWithTest();
+    expect((await request(base, "POST", "/api/push/test", T.d1)).status).toBe(503);
+  });
+
+  test("dibatasi per HP: setelah 3 kali, 429; HP lain tidak terpengaruh", async () => {
+    const base = await startWithTest(async () => ok);
+    for (let i = 0; i < 3; i++) expect((await request(base, "POST", "/api/push/test", T.d1)).status).toBe(200);
+    expect((await request(base, "POST", "/api/push/test", T.d1)).status).toBe(429);
+    expect((await request(base, "POST", "/api/push/test", T.d2)).status).toBe(200);
+  });
+});

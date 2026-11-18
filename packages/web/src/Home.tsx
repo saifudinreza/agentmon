@@ -6,6 +6,7 @@ import { ApprovalList } from "./approvals/ApprovalList";
 import { ApprovalScreen } from "./approvals/ApprovalScreen";
 import { DevicesScreen } from "./devices/DevicesScreen";
 import { useI18n } from "./i18n/react";
+import { Onboarding } from "./onboarding/Onboarding";
 import { PairScreen } from "./pairing/PairScreen";
 import { RollbackScreen } from "./rollback/RollbackScreen";
 import { setPendingLink } from "./pairing/pending";
@@ -135,6 +136,10 @@ export function Home({ focusHeading = false }: { focusHeading?: boolean }) {
         </Link>
       )}
 
+      <Link to="/panduan" className="inline-flex min-h-11 items-center self-start text-sm underline">
+        {t("guide.link")}
+      </Link>
+
       <section className="rounded-2xl border border-line bg-surface p-4">
         <h2 className="text-lg font-semibold">{t("home.pair.title")}</h2>
         <p className="mt-1 mb-4 text-sm text-muted">{t("home.pair.body")}</p>
@@ -188,6 +193,7 @@ export function Routes() {
   }, []);
 
   if (path === "/pair") return <PairScreen key="pair" focusHeading={focusHeading} />;
+  if (path === "/panduan") return <Onboarding key="panduan" focusHeading={focusHeading} />;
   if (path === "/devices") return <DevicesScreen key="devices" focusHeading={focusHeading} />;
   const approval = parseApprovalPath(path);
   if (approval) return <ApprovalScreen key={`a/${approval.machineId}/${approval.approvalId}`} {...approval} focusHeading={focusHeading} />;
