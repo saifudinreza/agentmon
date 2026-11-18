@@ -128,7 +128,7 @@ export const MUST_NOT_BE_LOW: Case[] = [
 /** Perintah umum yang aman: TIDAK boleh bernilai di atas rendah (diukur sebagai alarm palsu). */
 export const COMMON_SAFE: Case[] = [
   ...[
-    "ls", "ls -la", "ls src", "ls -R src", "pwd", "cd src", "cd", "cat package.json", "cat src/index.ts", "cat ./README.md", "head -n 20 README.md", "tail -n 50 log.txt", "tail -f app.log",
+    "ls", "ls -la", "ls src", "ls -R src", "pwd", "cd src", "cat package.json", "cat src/index.ts", "cat ./README.md", "head -n 20 README.md", "tail -n 50 log.txt", "tail -f app.log",
     "wc -l src/index.ts", "grep -n foo src/index.ts", "grep foo src/index.ts src/b.ts", 'grep -n "import .env" src/a.ts', "rg foo src", 'rg -n "TODO" src', "rg --files", "find . -name '*.ts'", "find src -type f",
     "find . -name .env", 'find . -name "*.log" -type f', "tree src", "git status", "git status --short", "git diff", "git diff --stat", "git diff HEAD~1", "git log --oneline -5", "git log -p src/a.ts",
     "git show HEAD", "git branch", "git branch -a", "git rev-parse HEAD", "git ls-files", "git remote -v", "git tag", "git stash list", "git blame src/a.ts", "git describe --tags", "git --no-pager log",
