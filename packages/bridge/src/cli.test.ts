@@ -156,6 +156,27 @@ describe("daemon tidak berjalan atau perintah salah", () => {
   });
 });
 
+describe("status melaporkan aturan otomatis (policy)", () => {
+  const statusWith = async (policy: { rules: number; allow: number; problems: string[] } | undefined) => {
+    daemon = await startDaemon({ home, port: 0, holdEnabled: true, ...(policy ? { policyStatus: () => policy } : {}) });
+    return cli(["status"], daemon.port);
+  };
+  test("belum ada aturan: dijelaskan bahwa semua izin naik ke HP", async () => {
+    expect((await statusWith({ rules: 0, allow: 0, problems: [] })).out).toContain("Aturan otomatis: belum ada (semua izin naik ke HP)");
+  });
+  test("ada aturan: jumlahnya, tanpa isi aturan", async () => {
+    expect((await statusWith({ rules: 5, allow: 3, problems: [] })).out).toContain("Aturan otomatis: 5 aturan (3 izinkan)");
+  });
+  test("berkas bermasalah: peringatan jelas dan dinyatakan tidak ada yang diputuskan otomatis", async () => {
+    const out = (await statusWith({ rules: 0, allow: 0, problems: ["Aturan Anda (policy.json): bukan JSON yang sah, semua aturannya diabaikan."] })).out;
+    expect(out).toContain("PERINGATAN aturan otomatis: Aturan Anda (policy.json): bukan JSON yang sah");
+    expect(out).toContain("berkas bermasalah, tidak ada izin yang diputuskan otomatis");
+  });
+  test("daemon lama tanpa laporan policy: baris policy tidak dicetak (tidak mengarang)", async () => {
+    expect((await statusWith(undefined)).out).not.toContain("Aturan otomatis");
+  });
+});
+
 describe("status menampilkan ringkasan perubahan", () => {
   test("perubahan dan tanda sensitif tampil, isi berkas tidak", async () => {
     const d = await startDaemonForCli();

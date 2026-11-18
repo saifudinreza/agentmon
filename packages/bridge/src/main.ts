@@ -11,6 +11,7 @@ import { agentmonHome, loadOrCreateMachineId, paths } from "./home";
 import { createLogger } from "./logger";
 import { createRelayClient, type RelayClient } from "./relay-client";
 import { resolveRelayConfig, type ResolvedRelayConfig } from "./relay-config";
+import { createPolicyRuntime } from "./policy/runtime";
 import { createTimeline } from "./timeline";
 
 function portFromEnv(): number {
@@ -64,8 +65,12 @@ async function main() {
           },
         })
       : undefined;
+    // Aturan otomatis (policy) milik pengguna: ~/.agentmon/policy.json. Tanpa berkas itu tidak ada aksi yang diputuskan otomatis.
+    const policyLogger = createLogger(paths(agentmonHome()).log);
+    const policy = createPolicyRuntime({ home: agentmonHome(), logger: policyLogger });
     const daemon = await startDaemon({
       port: portFromEnv(),
+      policyStatus: () => policy.status(),
       devUi,
       timeline,
       // Menahan aksi sampai ada keputusan. Bawaan MATI, karena belum ada HP yang bisa menjawab
@@ -82,6 +87,7 @@ async function main() {
         phoneReachable: relay?.canReachPhone() ?? false,
       }),
       onHook: createClaudeCodeHandler({
+        policy,
         // Checkpoint git sebelum alat pengubah berkas. Matikan dengan AGENTMON_CHECKPOINT=0.
         ...(checkpoints ? { checkpoint: (cwd: string, sessionId: string) => (checkpoints as CheckpointService).create(cwd, { sessionId }) } : {}),
         // Perintah baru dari pengguna ke agent berarti agent mulai bekerja walau belum ada event alat.
@@ -131,6 +137,13 @@ async function main() {
     } else {
       console.log("Relay: tidak dipakai (daftarkan laptop ini dengan perintah register, atau isi AGENTMON_RELAY_URL dan AGENTMON_RELAY_TOKEN)");
     }
+    const policyState = policy.status();
+    for (const problem of policyState.problems) console.error(`PERINGATAN aturan otomatis: ${problem}`);
+    console.log(
+      policyState.rules === 0
+        ? "Aturan otomatis: belum ada (semua izin naik ke HP). Lihat docs/policy.md."
+        : `Aturan otomatis: ${policyState.rules} aturan (${policyState.allow} izinkan). Hanya berlaku bila penahanan aksi menyala.`,
+    );
     console.log(`AgentMon daemon berjalan di http://127.0.0.1:${daemon.port}`);
     console.log(`Data dan log: ${daemon.home}`);
     console.log(

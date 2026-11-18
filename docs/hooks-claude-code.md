@@ -224,7 +224,7 @@ Pembanding: hook `node` sekitar 200 ms per panggilan (bagian 4). Hanya 15 sampel
 - Munculnya prompt di terminal interaktif setelah tanpa keputusan atau `ask`.
 - `PostToolUse` untuk alat yang gagal, dan event khusus kegagalan bila ada.
 - `interrupt` pada `deny`, dan `additionalContext` di event selain `PreToolUse`.
-- Interaksi `allow` dengan aturan deny atau ask milik pengguna, serta beberapa hook sekaligus pada satu event.
+- Interaksi `allow` dengan aturan deny atau ask milik pengguna (dokumentasi resmi Claude Code menyatakan `allow` dari PreToolUse **tidak** menimpa aturan deny/ask; AgentMon bersandar pada itu dan hanya memutuskan otomatis di PreToolUse, lihat `docs/policy.md`. Belum diuji sendiri dengan Claude Code sungguhan), serta beberapa hook sekaligus pada satu event.
 - `updatedInput` dengan sebagian kolom saja.
 - Pembatasan URL hook `http` lewat pengaturan `allowedHttpHookUrls` (header sudah terbukti, lihat bagian 8a).
 - Kondisi gagal hook `http` di macOS dan Linux (bagian 8b hanya diuji di Windows).

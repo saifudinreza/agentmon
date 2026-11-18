@@ -7,7 +7,8 @@
 //   2. Default ketat: tanpa aturan izinkan yang cocok, hasilnya `ask`. Risiko rendah saja tidak cukup.
 //   3. Ragu berarti tanya: perintah berantai, substitusi, redirect, kata dinamis, kutip tak tertutup: setiap bagiannya
 //      harus diizinkan, dan yang tidak bisa dianalisis tidak pernah `allow`.
-//   4. Celah skrip: bila berkas skrip/build berubah di sesi ini (`scriptsChanged`), aturan izinkan untuk shell ditangguhkan.
+//   4. Celah skrip: bila agent sudah mengubah proyek di sesi ini (`scriptsChanged`), aturan izinkan untuk perintah shell yang menjalankan
+//      kode proyek (risiko bukan rendah, mis. `npm test`) ditangguhkan; perintah baca-saja yang dikenali tetap jalan.
 //   5. Repo tidak dipercaya: ditegakkan di `loadPolicy` (config.ts); aturan `allow` dari repo tidak pernah sampai ke sini.
 //   6. Aturan agent (`agentRule` ask/deny) tidak pernah dilonggarkan.
 //   7. Bisa diaudit: hasil memuat `ruleId` dan `matched` (aturan penyebab) untuk dicatat pemanggil.
@@ -339,7 +340,9 @@ export function evaluatePolicy(input: PolicyInput, load: PolicyLoad, context: Po
 
     const allows = load.rules.filter((r) => r.action === "allow");
     if (allows.length === 0) return decision("ask", "no-allow-rules", risk); // aturan 2
-    if (context.scriptsChanged === true && SHELL_TOOLS.has(tool)) return decision("ask", "scripts-changed", risk); // aturan 4
+    // Aturan 4. Hanya perintah yang BUKAN baca-saja ditangguhkan (mis. `npm test`, yang menjalankan kode proyek): perintah baca-saja
+    // yang dikenali (git status, ls, cat berkas proyek) tidak menjalankan skrip proyek, jadi tidak ada alasan menanyakannya.
+    if (context.scriptsChanged === true && SHELL_TOOLS.has(tool) && risk.level !== "low") return decision("ask", "scripts-changed", risk);
     if (!target.analyzable) return decision("ask", "not-analyzable", risk); // aturan 3
 
     // Setiap bagian harus diizinkan oleh minimal satu aturan allow (aturan 3).

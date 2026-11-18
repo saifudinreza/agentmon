@@ -127,6 +127,8 @@ Penangan hook Claude Code (`adapters/claude-code-handler.ts`) menahan aksi lewat
 | `PreToolUse` untuk alat baca-saja (`Read`, `Glob`, `Grep`, ...) | Tidak | Tidak mengubah apa pun |
 | Mode `bypassPermissions` | Tidak, hanya dipantau | Pengguna memilih agent berjalan tanpa izin (keputusan PRD §18) |
 
+**Keputusan otomatis (policy).** Sebelum menahan, daemon bertanya ke policy engine (`docs/policy.md`, bagian "Tersambung ke hook") untuk aksi `Bash`, `PowerShell`, dan alat pengubah berkas di `PreToolUse`. Aksi yang diizinkan atau ditolak aturan pengguna dijawab langsung, dicatat sebagai `approval.auto_resolved`, dan **tidak memicu notifikasi**; selebihnya ditahan seperti di atas.
+
 **Terjemahan hasil** (`toClaudeDecision`):
 
 | Hasil | Jawaban ke Claude Code |

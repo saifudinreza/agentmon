@@ -46,10 +46,11 @@ import { computeToolDiff, type ToolDiffInput } from "../diff";
 import { assessRisk, type AssessInput } from "../risk";
 import { summarizeDiff } from "../control";
 import { buildDiffSummary } from "../diff-summary";
-import type { HookContext, HookHandler } from "../server";
+import type { HookContext, HookHandler, HookInput, HookResponse } from "../server";
 // Penerjemah dari file tetangga. "./claude-code" = file claude-code di folder yang sama.
 import type { CheckpointResult } from "../checkpoint";
-import { buildClaudeEvent, FILE_MUTATING_TOOLS, holdCandidate, mapClaudeCodeHook, toClaudeDecision, type HoldCandidate, type Stamp } from "./claude-code";
+import type { PolicyHook } from "../policy/runtime";
+import { buildClaudeEvent, FILE_MUTATING_TOOLS, holdCandidate, mapClaudeCodeHook, policyCandidate, POLICY_SHELL_TOOLS, toClaudeDecision, type HoldCandidate, type Stamp } from "./claude-code";
 
 // ---- BATAS UKURAN ISI EVENT ------------------------------------------------------------
 //
@@ -126,6 +127,11 @@ export type ClaudeCodeHandlerOptions = {
   // rollback dari HP). Nomor urut dan stempelnya tetap dari penangan ini, jadi urutan event sesi tidak bentrok.
   // Dipanggil untuk SETIAP hook yang masuk (sebelum diproses), mis. untuk tahu agent baru menerima perintah.
   onHookInput?: (input: Record<string, unknown>) => void;
+  /**
+   * Policy engine (issue #037): keputusan OTOMATIS untuk aksi yang aman atau terlarang, supaya hanya yang perlu keputusan yang naik ke HP.
+   * Tanpa ini, semua berjalan seperti sebelumnya. Galat policy tidak pernah menjadi "izinkan".
+   */
+  policy?: PolicyHook;
   registerEmitter?: (emit: (type: EventType, payload: Record<string, unknown>, sessionId: string) => void) => void;
 };
 
@@ -192,13 +198,14 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
 
   // CATATAN SESI untuk rekap saat sesi berakhir: kapan mulai, berkas apa yang diubah (disetujui), dan berapa yang
   // ditolak. Dibatasi seperti nomor antrean: sesi yang mati mendadak tidak boleh membuat ingatan membengkak.
-  type SessionStats = { startedMs: number; files: Set<string>; rejected: number };
+  // `mutated` = agent sudah mengubah proyek di sesi ini lewat alat (dasar `scriptsChanged` di policy). `autoApproved` = jumlah izin otomatis.
+  type SessionStats = { startedMs: number; files: Set<string>; rejected: number; autoApproved: number; mutated: boolean };
   const stats = new Map<string, SessionStats>();
   const MAX_RECAP_FILES = 200;
   const statsOf = (sessionId: string, startedMs: number): SessionStats => {
     let entry = stats.get(sessionId);
     if (!entry) {
-      entry = { startedMs: Number.isFinite(startedMs) ? startedMs : now().getTime(), files: new Set(), rejected: 0 };
+      entry = { startedMs: Number.isFinite(startedMs) ? startedMs : now().getTime(), files: new Set(), rejected: 0, autoApproved: 0, mutated: false };
       stats.set(sessionId, entry);
       if (stats.size > maxTracked) {
         const oldest = stats.keys().next().value;
@@ -317,23 +324,88 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
   // CHECKPOINT sebelum alat pengubah berkas. Berjalan di PreToolUse SEBELUM aksi ditahan atau dilepas, jadi
   // fotonya menangkap keadaan sebelum perubahan. Gagal, nonaktif (bukan repo git), atau lambat hanya dicatat:
   // agent tetap berjalan.
-  const takeCheckpoint = async (input: Record<string, unknown>, context: HookContext) => {
-    if (!options.checkpoint || input.hook_event_name !== "PreToolUse") return;
+  // Mengembalikan: true = checkpoint dibuat; false = DICOBA tetapi gagal atau tidak mungkin (bukan repo git, dst.); undefined = tidak berlaku
+  // (bukan alat pengubah berkas) atau fitur checkpoint dimatikan pengguna. Policy memakainya: edit berkas tidak di-auto-approve tanpa checkpoint.
+  const takeCheckpoint = async (input: Record<string, unknown>, context: HookContext): Promise<boolean | undefined> => {
+    if (!options.checkpoint || input.hook_event_name !== "PreToolUse") return undefined;
     const toolName = typeof input.tool_name === "string" ? input.tool_name : "";
     const sessionId = typeof input.session_id === "string" ? input.session_id : "";
     const cwd = typeof input.cwd === "string" ? input.cwd : "";
-    if (!FILE_MUTATING_TOOLS.has(toolName) || !sessionId || !cwd) return;
+    if (!FILE_MUTATING_TOOLS.has(toolName) || !sessionId || !cwd) return undefined;
     try {
       const result = await options.checkpoint(cwd, sessionId);
       if (result.ok) {
         context.logger.info(`checkpoint ${result.id} dibuat dalam ${result.durationMs} ms (alat=${toolName})`);
         emitOwn("checkpoint.created", { checkpointId: result.id }, sessionId, context);
-      } else {
-        context.logger.info(`checkpoint tidak dibuat (${result.reason}): ${result.message}`);
+        return true;
       }
+      context.logger.info(`checkpoint tidak dibuat (${result.reason}): ${result.message}`);
+      return false;
     } catch (error) {
       context.logger.error(`checkpoint gagal: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
+  };
+
+  // KEPUTUSAN OTOMATIS dari policy engine. Mengembalikan `{ response }` bila aksinya diputuskan di sini (izinkan atau tolak),
+  // dan `undefined` bila harus lanjut ke alur normal (tanya HP, atau terminal).
+  //
+  // Syarat (semua harus terpenuhi, kalau tidak: alur normal):
+  //   - ada policy, penahanan menyala (pengguna memilih AgentMon ikut menentukan), dan tidak dijeda (jeda = AgentMon tidak ikut campur);
+  //   - aksi bisa diputuskan di PreToolUse (lihat policyCandidate) dan mode izin agent mengizinkannya (PRD §18);
+  //   - untuk IZINKAN pada alat pengubah berkas: checkpoint sudah dibuat (tidak ada auto-approve tanpa jaring pengaman).
+  // Galat apa pun, di sini maupun di policy, tidak pernah menjadi "izinkan".
+  const MUTATION_ONLY_CODES = new Set(["runs-project-code", "network", "network-tool"]);
+  const applyPolicy = (input: HookInput, context: HookContext, checkpoint: boolean | undefined): { response: HookResponse } | undefined => {
+    const policy = options.policy;
+    if (!policy) return undefined;
+    const candidate = policyCandidate(input);
+    if (!candidate) return undefined;
+    const { logger, control } = context;
+    if (!control.holdEnabled || control.isPaused()) return undefined;
+
+    const session = statsOf(candidate.sessionId, now().getTime());
+    const isFileTool = FILE_MUTATING_TOOLS.has(candidate.toolName);
+    let decision: ReturnType<PolicyHook["decide"]>;
+    try {
+      decision = policy.decide({ toolName: candidate.toolName, toolInput: candidate.toolInput, ...(candidate.cwd !== undefined ? { cwd: candidate.cwd } : {}) }, { scriptsChanged: session.mutated });
+    } catch (error) {
+      logger.error(`policy gagal, memakai alur izin normal: ${error instanceof Error ? error.message : String(error)}`);
+      decision = undefined;
+    }
+
+    // Catat apakah aksi INI mengubah proyek, untuk keputusan berikutnya di sesi yang sama: menjalankan `npm test` setelah agent
+    // mengubah berkas tidak lagi boleh otomatis (agent bisa mengubah kode yang akan dijalankan). Menjalankan tes saja bukan perubahan.
+    if (isFileTool) session.mutated = true;
+    else if (POLICY_SHELL_TOOLS.has(candidate.toolName)) {
+      const risk = decision?.risk ?? assessSafely(candidate);
+      if (risk.level !== "low" && !risk.reasons.every((reason) => MUTATION_ONLY_CODES.has(reason.code))) session.mutated = true;
+    }
+
+    if (!decision || decision.action === "ask") return undefined;
+
+    if (decision.action === "allow") {
+      if (isFileTool && checkpoint === false) {
+        logger.info(`tidak diizinkan otomatis (checkpoint tidak ada): alat=${candidate.toolName}, aturan=${decision.ruleId ?? "-"}; ditanyakan seperti biasa`);
+        return undefined;
+      }
+      emitOwn("approval.auto_resolved", { approvalId: newId(), toolName: candidate.toolName, status: "auto_approved", policy: { action: "allow", ruleId: decision.ruleId }, risk: decision.risk }, candidate.sessionId, context);
+      session.autoApproved += 1;
+      if (isFileTool) {
+        for (const key of ["file_path", "notebook_path"]) {
+          const value = candidate.toolInput[key];
+          if (typeof value === "string" && value.trim() !== "" && value.length <= 1000 && session.files.size < MAX_RECAP_FILES) session.files.add(value);
+        }
+      }
+      logger.info(`diizinkan otomatis alat=${candidate.toolName} aturan=${decision.ruleId ?? "-"} (${decision.matched.join(",") || "-"})`);
+      return { response: toClaudeDecision("PreToolUse", { status: "approved" }) };
+    }
+
+    // deny
+    emitOwn("approval.auto_resolved", { approvalId: newId(), toolName: candidate.toolName, status: "auto_denied", policy: { action: "deny", ruleId: decision.ruleId }, risk: decision.risk }, candidate.sessionId, context);
+    session.rejected += 1;
+    logger.info(`ditolak otomatis alat=${candidate.toolName} aturan=${decision.ruleId ?? "-"}`);
+    return { response: toClaudeDecision("PreToolUse", { status: "denied", comment: decision.reason ?? "Ditolak otomatis oleh aturan AgentMon." }) };
   };
 
   // MENAHAN satu aksi sampai ada keputusan, lalu menerjemahkannya jadi jawaban.
@@ -447,7 +519,7 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
                 durationMs: recap ? Math.max(0, now().getTime() - recap.startedMs) : 0,
                 filesChanged: recap ? [...recap.files] : [],
                 rejected: recap?.rejected ?? 0,
-                autoApproved: 0, // belum ada policy engine
+                autoApproved: recap?.autoApproved ?? 0,
               },
               result.sessionId,
               context,
@@ -482,7 +554,11 @@ export function createClaudeCodeHandler(options: ClaudeCodeHandlerOptions): Hook
           break;
       }
 
-      await takeCheckpoint(input as Record<string, unknown>, context);
+      const checkpoint = await takeCheckpoint(input as Record<string, unknown>, context);
+
+      // Keputusan otomatis dari policy (izinkan atau tolak) dijawab di sini, tanpa menahan dan tanpa memberi tahu HP.
+      const automatic = applyPolicy(input, context, checkpoint);
+      if (automatic) return automatic.response;
 
       // APAKAH AKSI INI DITAHAN? Hanya bila penahanan menyala dan tidak dijeda, aksinya layak
       // ditahan (alat pengubah berkas di PreToolUse, atau permintaan izin dari Claude), dan

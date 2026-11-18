@@ -161,6 +161,13 @@ describe("aturan 4: skrip/build berubah di sesi ini menangguhkan aturan izinkan 
     expect(run(bash("npm test"), rules, { scriptsChanged: true })).toMatchObject({ action: "ask", why: "scripts-changed" });
   });
 
+  test("hanya perintah yang menjalankan kode proyek yang ditangguhkan: perintah baca-saja yang dikenali tetap otomatis", () => {
+    const rules = [allow("tes", "npm test"), allow("baca", "git status", "ls *")];
+    expect(run(bash("git status"), rules, { scriptsChanged: true }).action).toBe("allow");
+    expect(run(bash("ls src"), rules, { scriptsChanged: true }).action).toBe("allow");
+    expect(run(bash("npm test"), rules, { scriptsChanged: true })).toMatchObject({ action: "ask", why: "scripts-changed" });
+  });
+
   test("penangguhan tidak melonggarkan apa pun: tolak dan tanya tetap berlaku", () => {
     expect(run(bash("npm test"), [allow("tes", "npm test"), deny("d", "npm test")], { scriptsChanged: true }).action).toBe("deny");
   });

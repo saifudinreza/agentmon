@@ -40,12 +40,16 @@ export type RelayStatus = {
   phoneReachable: boolean;
 };
 
+/** Keadaan aturan otomatis (policy) untuk perintah `status`. Hanya jumlah dan masalah; tidak memuat isi aturan. */
+export type PolicyStatus = { rules: number; allow: number; problems: string[] };
+
 export type DaemonStatus = {
   paused: boolean;
   holdEnabled: boolean;
   pending: PendingSummary[];
   message: string;
   relay?: RelayStatus;
+  policy?: PolicyStatus;
 };
 
 export type DaemonControl = {
@@ -84,6 +88,8 @@ export function createDaemonControl(options: {
   canAnswer?: () => boolean;
   /** Keadaan relay untuk `status`. Bawaan: tidak dilaporkan. */
   relayStatus?: () => RelayStatus;
+  /** Keadaan aturan otomatis untuk `status`. Bawaan: tidak dilaporkan. */
+  policyStatus?: () => PolicyStatus;
 }): DaemonControl {
   const { holdEnabled, approvals } = options;
   const canAnswer = options.canAnswer ?? (() => true);
@@ -132,7 +138,7 @@ export function createDaemonControl(options: {
           ...(a.diff && a.diff.sensitive.length > 0 ? { sensitive: a.diff.sensitive.map((r) => r.code) } : {}),
         }),
       );
-      return { paused, holdEnabled, pending, message: describe(pending.map((p) => p.toolName)), ...(options.relayStatus ? { relay: options.relayStatus() } : {}) };
+      return { paused, holdEnabled, pending, message: describe(pending.map((p) => p.toolName)), ...(options.relayStatus ? { relay: options.relayStatus() } : {}), ...(options.policyStatus ? { policy: options.policyStatus() } : {}) };
     },
   };
 }
