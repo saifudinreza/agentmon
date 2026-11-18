@@ -7,7 +7,8 @@
 //   2. Default ketat: tanpa aturan izinkan yang cocok, hasilnya `ask`. Risiko rendah saja tidak cukup.
 //   3. Ragu berarti tanya: perintah berantai, substitusi, redirect, kata dinamis, kutip tak tertutup: setiap bagiannya
 //      harus diizinkan, dan yang tidak bisa dianalisis tidak pernah `allow`.
-//   4. Celah skrip: bila berkas skrip/build berubah di sesi ini (`scriptsChanged`), aturan izinkan untuk shell ditangguhkan.
+//   4. Celah skrip: bila agent sudah mengubah proyek di sesi ini (`scriptsChanged`), aturan izinkan untuk perintah shell yang menjalankan
+//      kode proyek (risiko bukan rendah, mis. `npm test`) ditangguhkan; perintah baca-saja yang dikenali tetap jalan.
 //   5. Repo tidak dipercaya: ditegakkan di `loadPolicy` (config.ts); aturan `allow` dari repo tidak pernah sampai ke sini.
 //   6. Aturan agent (`agentRule` ask/deny) tidak pernah dilonggarkan.
 //   7. Bisa diaudit: hasil memuat `ruleId` dan `matched` (aturan penyebab) untuk dicatat pemanggil.
@@ -36,7 +37,14 @@ import { assessRisk, lexShell, type AssessOptions, type ShellKind, type Stage } 
 import { filePathOf } from "../risk/assess";
 import type { PolicyLoad, Rule } from "./config";
 
-export type PolicyInput = { toolName: string; toolInput: unknown; cwd?: string };
+export type PolicyInput = {
+  toolName: string;
+  toolInput: unknown;
+  /** Folder kerja agent: dasar menyelesaikan jalur relatif dan menilai "di luar proyek". */
+  cwd?: string;
+  /** Akar proyek (mis. folder repo git): dasar pencocokan pola jalur aturan (`src/**`), supaya `cwd` yang berada di subfolder tidak menggeser maknanya. Bawaan: `cwd`. */
+  projectRoot?: string;
+};
 
 export type PolicyContext = {
   /** Berkas skrip/build (package.json, Makefile, dan sejenisnya) sudah berubah di sesi ini: aturan izinkan shell ditangguhkan. */
@@ -105,6 +113,8 @@ const defaultRealpath = (path: string): string | undefined => {
     return undefined;
   }
 };
+/** Perintah yang tidak menjalankan program apa pun yang bisa diubah agent (hanya membaca berkas dan menampilkannya). Tetap boleh otomatis setelah ada perubahan. */
+const INERT_COMMANDS = new Set(["ls", "dir", "pwd", "cat", "type", "head", "tail", "wc", "echo", "get-childitem", "get-content", "get-location"]);
 /** Pembungkus yang meneruskan perintah lain; dibuka untuk pencocokan aturan tolak/tanya. */
 const WRAPPERS = new Set(["command", "env", "builtin", "nohup", "time", "sudo", "doas", "exec", "nice", "stdbuf", "timeout", "xargs", "setsid", "pkexec"]);
 /** Nama pendek PowerShell untuk cmdlet yang sering ditolak. Hanya untuk aturan tolak/tanya. */
@@ -187,10 +197,13 @@ function shellParts(command: string, kind: ShellKind, depth: number, out: Part[]
   return ok;
 }
 
-/** Jalur relatif terhadap proyek dengan pemisah `/`, atau undefined bila di luar proyek, terlalu panjang, atau tidak bisa dipastikan. */
-function relativeToProject(path: string | undefined, cwd: string | undefined): string | undefined {
+/**
+ * Jalur relatif terhadap AKAR PROYEK dengan pemisah `/`, atau undefined bila di luar proyek, terlalu panjang, atau tidak bisa dipastikan.
+ * Jalur relatif diselesaikan terhadap `cwd` (folder kerja agent), lalu dinilai terhadap `root`.
+ */
+function relativeToProject(path: string | undefined, cwd: string | undefined, root: string | undefined): string | undefined {
   if (path === undefined || cwd === undefined || cwd === "" || path.includes("\0") || path.length > MAX_PATH_LENGTH) return undefined;
-  const rel = relative(resolve(cwd), resolve(cwd, path));
+  const rel = relative(resolve(root && root !== "" ? root : cwd), resolve(cwd, path));
   if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return undefined;
   return rel.split(sep).join("/");
 }
@@ -208,7 +221,7 @@ function targetOf(input: PolicyInput): Target {
   if (WRITE_TOOLS.has(tool) || READ_TOOLS.has(tool)) {
     // Kunci jalur dipilih oleh fungsi yang SAMA dengan penilai risiko, supaya keduanya selalu membicarakan berkas yang sama.
     const raw = toolInput ? filePathOf(toolInput) : null;
-    const parts: Part[] = [{ kind: "file", path: relativeToProject(raw ?? undefined, input.cwd) }];
+    const parts: Part[] = [{ kind: "file", path: relativeToProject(raw ?? undefined, input.cwd, input.projectRoot) }];
     // Alat pencari memuat pola jalur sendiri (Glob.pattern, Grep.glob): pola itu juga diperiksa terhadap aturan jalur.
     // Grep.pattern adalah REGEX isi berkas, bukan jalur: tidak diperlakukan sebagai jalur.
     if (READ_TOOLS.has(tool) && toolInput) {
@@ -339,7 +352,12 @@ export function evaluatePolicy(input: PolicyInput, load: PolicyLoad, context: Po
 
     const allows = load.rules.filter((r) => r.action === "allow");
     if (allows.length === 0) return decision("ask", "no-allow-rules", risk); // aturan 2
-    if (context.scriptsChanged === true && SHELL_TOOLS.has(tool)) return decision("ask", "scripts-changed", risk); // aturan 4
+    // Aturan 4. Setelah agent mengubah proyek, aturan izinkan untuk perintah shell ditangguhkan, KECUALI perintah yang benar-benar inert
+    // (ls, cat, pwd, ...). `git status` dan `git diff` TIDAK inert: keduanya menjalankan program yang disebut konfigurasi repo
+    // (core.fsmonitor, driver diff) yang bisa saja baru ditulis agent.
+    if (context.scriptsChanged === true && SHELL_TOOLS.has(tool) && !(target.analyzable && target.parts.every((p) => p.kind === "shell" && INERT_COMMANDS.has(canonicalName(p.words[0] ?? ""))))) {
+      return decision("ask", "scripts-changed", risk);
+    }
     if (!target.analyzable) return decision("ask", "not-analyzable", risk); // aturan 3
 
     // Setiap bagian harus diizinkan oleh minimal satu aturan allow (aturan 3).

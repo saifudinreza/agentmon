@@ -385,6 +385,33 @@ export function holdCandidate(input: HookInput): HoldCandidate | undefined {
   return candidate;
 }
 
+/**
+ * Aksi yang boleh diputuskan OTOMATIS oleh policy (issue #037).
+ *
+ * Hanya `PreToolUse`: dokumentasi resmi Claude Code menyatakan keputusan `allow` dari hook PreToolUse TIDAK menimpa aturan deny atau
+ * ask milik pengguna (deny tetap memblokir, ask tetap bertanya). `PermissionRequest` sengaja tidak dipakai: hook itu muncul juga
+ * karena aturan ask, dan inputnya tidak memberi tahu sebabnya, jadi `allow` di sana bisa menimpa aturan ask milik pengguna.
+ *
+ * Hanya alat yang memang akan menanyakan izin (shell dan alat pengubah berkas), dan hanya di mode izin `default` dan `acceptEdits`.
+ * Mode lain (plan, auto, dontAsk, bypassPermissions) punya aturan sendiri: AgentMon tidak ikut memutuskan (PRD §18).
+ */
+export const POLICY_SHELL_TOOLS: ReadonlySet<string> = new Set(["Bash", "PowerShell"]);
+export function policyCandidate(input: HookInput): HoldCandidate | undefined {
+  if (input.hook_event_name !== "PreToolUse") return undefined;
+  const mode = input.permission_mode;
+  if (mode !== undefined && mode !== "default" && mode !== "acceptEdits") return undefined;
+  const sessionId = text(input.session_id);
+  const toolName = text(input.tool_name);
+  if (!sessionId || !toolName) return undefined;
+  if (!POLICY_SHELL_TOOLS.has(toolName) && !FILE_MUTATING_TOOLS.has(toolName)) return undefined;
+  const toolInput = input.tool_input === undefined ? {} : input.tool_input;
+  if (!isRecord(toolInput)) return undefined;
+  const candidate: HoldCandidate = { point: "PreToolUse", sessionId, toolName, toolInput };
+  const cwd = text(input.cwd);
+  if (cwd) candidate.cwd = cwd;
+  return candidate;
+}
+
 // Alasan bawaan bila pengguna menolak tanpa menulis komentar.
 export const DEFAULT_DENY_REASON = "Ditolak oleh pengguna lewat AgentMon.";
 

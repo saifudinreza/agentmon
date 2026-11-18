@@ -2,7 +2,7 @@
 
 Mesin aturan di laptop yang memutuskan satu permintaan izin: **izinkan otomatis**, **tanya** (naik ke HP), atau **tolak otomatis**. Kodenya di `packages/bridge/src/policy/`. Rujukan: PRD §9 (delapan aturan keselamatan), FR-80 sampai FR-84.
 
-> **Belum tersambung ke hook.** Issue ini hanya membuat mesinnya dan perintah untuk mengujinya. Penyambungan ke alur izin ada di issue #037, dan tampilannya di HP di #038. Sampai itu, tidak ada aksi yang diizinkan otomatis oleh mesin ini.
+> **Sudah tersambung ke hook** (issue #037, lihat bagian "Tersambung ke hook" di bawah). Tampilan aturan aktif di HP ada di #038. Tanpa berkas `policy.json`, tidak ada aksi yang diputuskan otomatis dan semuanya berjalan seperti sebelumnya.
 
 ## Tiga hasil
 | Hasil | Arti |
@@ -53,7 +53,7 @@ Tanpa `commands` atau `paths`, aturan berlaku untuk semua pemakaian alat itu. `c
 | 1 | **Batas keras.** Risiko tinggi tidak pernah `allow`, apa pun aturannya (termasuk "izinkan semua"). Diuji terhadap seluruh korpus berbahaya penilai risiko (250+ kasus). Aturan tolak tetap bisa menolaknya | `evaluate.ts`, sebelum aturan izinkan dibaca |
 | 2 | **Default ketat.** Tanpa aturan izinkan yang cocok: tanya. Risiko rendah saja tidak cukup | hasil bawaan |
 | 3 | **Ragu berarti tanya.** Pipa, spasi/pemisah Unicode tak lazim, rantai (`&&` `;` `\|\|` `&` baris baru), pipa, substitusi, subshell, redirect ke berkas, heredoc, variabel (`$X`), ekspansi `{a,b}`, scriptblock PowerShell `{ }`, `\r` yang berdiri sendiri, awalan variabel lingkungan, kutip tidak tertutup: **setiap bagian harus diizinkan**, dan yang tidak bisa dianalisis tidak pernah `allow`. Hanya `> /dev/null` (di bash) dan `2>&1` yang dianggap tidak berefek. Aturan tolak dan tanya melihat sampai ke dalam substitusi | `shellParts` di `evaluate.ts`, dan `risk/shell.ts` |
-| 4 | **Celah skrip.** Bila `package.json`, Makefile, atau konfigurasi sejenis berubah di sesi ini, aturan izinkan untuk **shell** ditangguhkan (`scriptsChanged`). Penyambung (#037) yang mengisinya | `PolicyContext.scriptsChanged` |
+| 4 | **Celah skrip.** Bila agent sudah mengubah proyek di sesi ini (`scriptsChanged`), aturan izinkan untuk perintah shell **ditangguhkan, kecuali perintah yang benar-benar inert** (`ls`, `cat`, `pwd`, `head`, `tail`, `wc`, `echo`, `Get-ChildItem`, `Get-Content`). `git status` dan `git diff` **tidak** inert: keduanya menjalankan program yang disebut konfigurasi repo (`core.fsmonitor`, driver diff) yang bisa saja baru ditulis agent. Penyambung (#037) yang mengisinya: lihat bagian "Tersambung ke hook" | `PolicyContext.scriptsChanged` |
 | 5 | **Repo tidak dipercaya.** `<proyek>/.agentmon/policy.json` hanya boleh memperketat: aturan `allow` darinya dibuang dan pengguna diberi tahu; id aturan `deny`/`ask`-nya diberi awalan `repo:` | `loadPolicy` di `config.ts` |
 | 6 | **Aturan agent tetap berlaku.** `agentRule` `deny`/`ask` tidak pernah dilonggarkan | `PolicyContext.agentRule` |
 | 7 | **Bisa diaudit.** Setiap hasil membawa `ruleId` (aturan penyebab) dan `matched` (semua aturan yang terlibat). Pencatatan ke timeline dikerjakan #037 | `PolicyDecision` |
@@ -77,7 +77,60 @@ pnpm --filter @agentmon/bridge cli policy preset baca-saja
 
 Preset (**hanya contoh**; gabungan beberapa preset menambah izin, jadi baca isinya): `baca-saja` (git status/diff/log, ls, pwd), `tes-dan-lint` (npm/pnpm test, lint, typecheck), `edit-di-proyek` (ubah berkas di `src/` dan `docs/`).
 
+## Tersambung ke hook
+Penangan hook Claude Code (`adapters/claude-code-handler.ts`) bertanya ke policy lewat `policy/runtime.ts` untuk setiap aksi yang memenuhi **semua** syarat ini; bila salah satu tidak terpenuhi, alur izin normal yang berjalan (tanya HP, atau terminal).
+
+| Syarat | Alasan |
+|---|---|
+| Hook **`PreToolUse`** untuk `Bash`, `PowerShell`, atau alat pengubah berkas (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) | Dokumentasi resmi Claude Code menyatakan keputusan `allow` dari hook PreToolUse **tidak menimpa aturan deny atau ask milik pengguna**: aturan deny tetap memblokir dan aturan ask tetap bertanya (*Permissions › Extend permissions with hooks › Precedence among rules, hooks, and mods*). `PermissionRequest` **sengaja tidak dipakai**: hook itu juga muncul karena aturan ask, inputnya tidak memberi tahu sebabnya, dan `allow` di sana bisa menimpa aturan ask milik pengguna |
+| **Penahanan aksi menyala** (`AGENTMON_HOLD=1` atau `autostart install --hold`) dan **tidak dijeda** | Pengguna yang memilih AgentMon ikut menentukan. `pause` berarti AgentMon tidak ikut campur sama sekali |
+| Mode izin agent **`default` atau `acceptEdits`** (atau tidak disebut) | `bypassPermissions`: hanya dipantau (PRD §18). `plan`, `auto`, `dontAsk` dan mode yang belum dikenal punya aturan sendiri; AgentMon tidak ikut memutuskan |
+| Untuk **izinkan** pada alat pengubah berkas: **checkpoint sudah berhasil dibuat** | Auto-approve tidak boleh tanpa jaring pengaman (Pilar 3). Checkpoint gagal, atau mustahil (folder bukan repo git), berarti ditanyakan seperti biasa dan dicatat di log. Bila pengguna mematikan checkpoint (`AGENTMON_CHECKPOINT=0`), itu pilihan sadar dan edit tetap boleh otomatis |
+
+**Hasil keputusan:**
+- **Izinkan** → jawaban `allow` di `PreToolUse`, event `approval.auto_resolved` (`auto_approved`, dengan aturan penyebab), **tanpa kartu, tanpa `approval.requested`, dan karena itu tanpa notifikasi push** (relay hanya memicu push dari `approval.requested`). Di timeline HP tampil berbeda dari izin yang diputuskan manusia.
+- **Tolak** → jawaban `deny` dengan alasan yang dibaca agent (aturan penyebab, catatan `note` dari aturan Anda yang sudah dibersihkan dari karakter kontrol, dan permintaan untuk tidak menyiasatinya), event `auto_denied`.
+- **Tanya** → tidak ada keputusan di sini; alur normal berjalan (aksi berkas ditahan di `PreToolUse`, perintah shell di `PermissionRequest`).
+
+**Rekap sesi** (`session.recap`) kini mengisi `autoApproved`, dan penolakan otomatis ikut dihitung di `rejected`.
+
+**Celah skrip (`scriptsChanged`).** Daemon mencatat per sesi apakah agent sudah **mengubah proyek**. Yang menandai sesi (di **setiap** hook `PreToolUse`, tidak bergantung pada mode izin, jeda, atau penahanan):
+- setiap alat pengubah berkas,
+- **semua alat yang tidak dikenal sebagai baca-saja** (MCP, subagen, dan sejenisnya),
+- perintah shell yang bukan baca-saja (risiko selain rendah), **termasuk yang berlabel jaringan atau "menjalankan kode proyek"** (`curl -o`, `git pull`, `npm pkg set`, `rsync`), KECUALI perintah yang dilepas otomatis oleh aturan Anda sendiri (mis. `npm test`: menjalankannya berulang bukan perubahan oleh agent).
+
+Setelah itu aturan izinkan untuk perintah shell **ditangguhkan** di sesi itu (kecuali yang inert), jadi agent tidak bisa mengedit berkas tes lalu menjalankannya tanpa Anda tahu. Sesi lain tidak terpengaruh.
+
+Catatan ini **tahan restart**: disimpan di `~/.agentmon/session-flags.json` (paling banyak 2000 sesi, 14 hari), jadi daemon yang dimulai ulang (mis. oleh autostart setelah crash), sesi yang dilanjutkan setelah `SessionEnd`, dan banyak sesi lain tidak menghapusnya. **Gagal tertutup**: berkas yang ada tetapi rusak membuat semua sesi dianggap sudah mengubah proyek; id sesi yang bentuknya aneh juga.
+
+**Gagal berarti alur normal.** Galat di policy, berkas aturan rusak, atau policy yang melempar galat tidak pernah menjadi "izinkan": tanpa keputusan, dicatat di log **sekali per masalah** (`aturan otomatis: ...`), dan tampil di `status`. Daemon mati berarti hook gagal dan Claude Code berjalan seperti biasa. Aturan dibaca ulang di setiap permintaan, jadi perubahan `policy.json` langsung berlaku.
+
+**Akar proyek.** Pola jalur aturan (`src/**`, `migrations/**`) dan berkas aturan proyek dihitung dari **akar proyek** (folder repo git terdekat di atas folder kerja), bukan dari folder kerja yang bisa berada di subfolder. Repo git di folder rumah (atau di atasnya) **bukan** proyek: dipakai folder kerja apa adanya. Berkas aturan proyek yang lewat tautan ke luar proyek (termasuk jalur jaringan) tidak dibaca. **Catatan (`note`) dari aturan proyek tidak dikirim ke agent** (agent membacanya sebagai instruksi: repo jahat bisa menyelipkan kalimat); catatan dari aturan Anda sendiri dikirim.
+
+**Sandbox.** Input yang meminta keluar dari sandbox (`dangerouslyDisableSandbox: true`) tidak pernah diputuskan otomatis.
+
+**Jejak audit.** `approval.auto_resolved` memuat aturan penyebab dan **ringkasan apa yang diputuskan** (perintah atau jalur berkas, satu baris, dipotong 200 karakter, tanpa karakter kontrol), tampil di timeline HP. Keputusan dijawab ke agent walau pengiriman event ke relay tertunda; event tersimpan di timeline lokal dan dikirim ulang oleh klien relay.
+
+**Perintah `status`** menampilkan jumlah aturan atau peringatan berkas bermasalah.
+
+### Pengukuran: jumlah permintaan ke HP pada skenario yang sama
+Skenario tetap (diuji otomatis di `adapters/claude-code-policy.test.ts`): satu sesi dengan 20 aksi, yaitu membaca (`git status` x2, `git diff`, `ls`, `git log`), tes dan lint (`npm test` x3, `pnpm lint`), empat edit di `src/` dan `docs/`, lalu aksi berisiko (`package.json`, `.env`, `npm install`, `rm -rf`, `git push`, `curl | sh`) dan dua `npm test` setelah edit.
+
+Garis dasarnya hanya menghitung aksi yang **memang akan ditanyakan Claude Code**: lima perintah baca-saja bawaan (`git status`, `git diff`, `ls`, `git log`) tidak pernah ditanyakan Claude Code sendiri, jadi tidak ada permintaan ke HP dengan atau tanpa policy.
+
+| | Permintaan ke HP |
+|---|---|
+| Tanpa policy | **15** |
+| Dengan tiga preset (`baca-saja`, `tes-dan-lint`, `edit-di-proyek`) | **8** (turun 47%) |
+
+Yang tetap naik ke HP: keenam aksi berisiko, dan dua `npm test` yang dijalankan **setelah** agent mengedit berkas (celah skrip). Tujuh aksi lainnya (tes, lint, edit di `src/` dan `docs/`) diputuskan otomatis dan tercatat. Penghematan terbesar datang dari tes dan edit yang berulang; aksi berisiko tidak berkurang.
+
 ## Batas yang perlu diketahui
+- **Perubahan yang sudah ada sebelum sesi mulai tidak terlacak.** Catatan "sudah mengubah proyek" hanya melihat apa yang dilakukan agent di sesi yang dilihat daemon. Bila sesi sebelumnya (yang Anda setujui, atau aturan Anda izinkan) menulis berkas tes jahat lalu Anda memulai sesi baru, `npm test` di sesi baru berjalan otomatis. Begitu pula perubahan yang terjadi saat daemon mati (hook gagal dan Claude Code berjalan tanpa AgentMon). Pertahanan sebenarnya butuh sidik jari isi berkas proyek; dilacak di issue terpisah.
+- **Checkpoint tidak mencakup semuanya.** Checkpoint memotret berkas yang dilacak git dan yang belum dilacak, tetapi **tidak** berkas yang di-`.gitignore` dan tidak isi submodule. Edit yang "aman" karena checkpoint berhasil tetap tidak bisa dipulihkan bila mengenai berkas semacam itu.
+- **`acceptEdits`.** Di mode ini Claude Code sendiri sudah menerima edit; `approval.auto_resolved` tetap dicatat bila aturan Anda cocok, jadi hitungan `autoApproved` bisa mencakup edit yang toh tidak akan ditanyakan.
+- **Keputusan otomatis bergantung pada perilaku Claude Code yang terdokumentasi** (PreToolUse `allow` tidak menimpa aturan deny/ask). Itu dari dokumentasi resmi, bukan dari uji pada versi Claude Code Anda; versi yang lebih lama bisa berbeda. Bila Anda memakai aturan deny atau ask di pengaturan Claude Code, coba satu kali dengan perintah yang kena aturannya untuk memastikan.
+- **Mengubah aturan dari HP** (#038) butuh keputusan bertanda tangan (#034, belum ada); sampai itu, aturan hanya diubah di laptop.
 - **Pola `*` mempercayai kata biasa.** `cat *` mengizinkan `cat src/a.ts`. Perintah yang menulis ke argumen posisional di luar daftar yang dilarang (di atas) tetap bisa lolos lewat `*`; jangan beri `*` pada perintah yang tidak Anda pahami argumennya.
 - **Kerahasiaan bacaan lewat `*` bergantung pada daftar nama berkas rahasia milik penilai** (`.env`, `*.pem`, `.dev.vars`, `local.settings.json`, ...). Berkas rahasia bernama tak lazim (`passwords.txt`, `notes-prod.md`) **bisa terbaca otomatis** oleh `cat *`, `Get-Content *`, atau alat Read. Untuk perintah yang membaca isi, lebih aman memakai pola persis atau aturan `paths` yang menyebut folder tertentu. Revisi git (`HEAD~1`, sha, `main~2`) untuk `git show/diff/grep/cat-file/blame` tidak lewat `*` karena riwayat bisa memuat rahasia yang pernah di-commit; tulis pola persis bila perlu. Nama cabang polos (`git diff main`) tidak terdeteksi.
 - **Tautan simbolik dan junction** diselesaikan (realpath) secara bawaan oleh mesin ini, jadi `src/lnk/x` yang menunjuk ke luar proyek ditanyakan. Penyambung (#037) dan CLI memakai bawaan itu; jangan menimpanya dengan fungsi yang tidak menyelesaikan tautan.

@@ -346,6 +346,17 @@ describe("hasil review PR #61", () => {
     expect(order).toEqual([1, 2]); // bukan [2, 1]: layar HP berakhir dengan jumlah terbaru
   });
 
+  test("keputusan otomatis policy (approval.auto_resolved) dan penyelesaian lain tidak memicu push (issue #037)", async () => {
+    const t = setup();
+    t.waiting.push(approval("a1")); // walau ada izin menunggu, event penyelesaian bukan pemicu
+    for (const type of ["approval.auto_resolved", "approval.resolved", "tool.requested", "checkpoint.created", "session.recap"] as const) {
+      t.notifier.onEvent({ type, machineId: "m1", sessionId: "s1" });
+    }
+    await settle();
+    expect(t.pushes).toEqual([]);
+    expect(t.notifier.activeSessions()).toBe(0);
+  });
+
   test("risiko tertinggi yang menunggu ikut dalam keputusan untuk penyaring (#037), tanpa isi permintaan", async () => {
     const seen: NotifyDecision[] = [];
     const t = setup({ filter: (d) => (seen.push(d), true) });

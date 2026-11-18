@@ -295,6 +295,13 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   // Rincian tambahan `status`: relay, HP terpasang, dan autostart.
   const printStatusDetails = async (status: DaemonStatus, daemonPort: number) => {
     deps.out(`Daemon: berjalan di 127.0.0.1:${daemonPort}`);
+    const policy = status.policy;
+    if (policy) {
+      for (const problem of policy.problems) deps.out(`PERINGATAN aturan otomatis: ${problem}`);
+      if (policy.problems.length > 0) deps.out("Aturan otomatis: berkas bermasalah, tidak ada izin yang diputuskan otomatis (semuanya naik ke HP)");
+      else if (policy.rules === 0) deps.out("Aturan otomatis: belum ada (semua izin naik ke HP)");
+      else deps.out(`Aturan otomatis: ${policy.rules} aturan (${policy.allow} izinkan)`);
+    }
     const relay = status.relay;
     if (!relay) deps.out("Relay: tidak dilaporkan (daemon versi lama: mulai ulang daemon)");
     else if (relay.state === "off") deps.out("Relay: tidak dipakai (daftarkan laptop ini dengan `register`)");

@@ -74,6 +74,17 @@ describe("describeEvent: setiap jenis event punya tampilan sendiri", () => {
     expect(describeEvent(ev("approval.auto_resolved", { approvalId: "a", toolName: "Bash", status: "auto_denied", policy: { action: "deny", ruleId: null } }))).toMatchObject({ titleKey: "event.approval.auto_denied", tone: "bad" });
   });
 
+  test("approval.auto_resolved memuat ringkasan apa yang diputuskan (jejak audit), dibersihkan dan dipotong untuk layar HP", () => {
+    const policy = { action: "allow", ruleId: "tes" };
+    const base = { approvalId: "a", toolName: "Bash", status: "auto_approved", policy };
+    expect(describeEvent(ev("approval.auto_resolved", { ...base, summary: "npm test" })).detail).toBe("tes: npm test");
+    expect(describeEvent(ev("approval.auto_resolved", { ...base, policy: { action: "allow", ruleId: null }, summary: "npm test" })).detail).toBe("npm test");
+    expect(describeEvent(ev("approval.auto_resolved", base)).detail).toBe("tes");
+    const hostile = describeEvent(ev("approval.auto_resolved", { ...base, summary: `rm -rf x${String.fromCharCode(0x202e)}gpj.sh${String.fromCharCode(27)}[2J` })).detail ?? "";
+    expect(hostile).not.toContain(String.fromCharCode(0x202e));
+    expect(hostile).not.toContain(String.fromCharCode(27));
+  });
+
   test("agent.notification, agent.stopped, review, checkpoint, dan rekap", () => {
     expect(describeEvent(ev("agent.notification", { title: "Izin", message: "Perlu keputusan" })).detail).toBe("Izin: Perlu keputusan");
     expect(describeEvent(ev("agent.notification", { message: "Halo" })).detail).toBe("Halo");

@@ -14,8 +14,8 @@
 //   - Berkas tidak ada: tidak ada aturan, dan itu wajar (bukan masalah).
 //   - Aturan di dalam repo (`<proyek>/.agentmon/policy.json`) hanya boleh MEMPERKETAT: aturan `allow` darinya diabaikan.
 //     Repo tidak dipercaya; repo jahat tidak boleh mengizinkan aksinya sendiri.
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { isAbsolute, join, relative } from "node:path";
 import { MAX_POLICY_BYTES, PolicyFileSchema, type PolicyFile, type Rule } from "@agentmon/shared";
 
 // Bentuk berkasnya didefinisikan di paket shared (dipakai juga oleh HP); diteruskan di sini untuk kemudahan.
@@ -94,7 +94,23 @@ function parseFile(text: string | undefined, label: string): { status: FileStatu
  * Memuat aturan. `userPath` adalah berkas milik pengguna; `repoPath` (opsional) berkas di dalam proyek.
  * Tidak pernah melempar galat. Berkas pengguna yang rusak berarti TIDAK ADA aturan izinkan.
  */
-export function loadPolicy(options: { userPath: string; repoPath?: string; readText?: ReadText }): PolicyLoad {
+/**
+ * Apakah berkas ini, setelah semua tautan simbolik atau junction diselesaikan, tetap berada DI DALAM akar proyek? Berkas aturan proyek yang
+ * lewat tautan ke luar proyek (folder lain, jalur jaringan UNC/SMB) tidak dibaca: membacanya bisa menggantung atau menghubungi host luar.
+ * `undefined` = berkasnya tidak ada.
+ */
+function insideRoot(path: string, root: string): boolean | undefined {
+  try {
+    const real = realpathSync(path);
+    if (real.startsWith("\\\\") || real.startsWith("//")) return false;
+    const rel = relative(realpathSync(root), real);
+    return !rel.startsWith("..") && !isAbsolute(rel);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : false;
+  }
+}
+
+export function loadPolicy(options: { userPath: string; repoPath?: string; repoRoot?: string; readText?: ReadText }): PolicyLoad {
   const read = options.readText ?? readTextFile;
   const problems: string[] = [];
   const rules: Rule[] = [];
@@ -106,7 +122,14 @@ export function loadPolicy(options: { userPath: string; repoPath?: string; readT
   let repoStatus: FileStatus = "missing";
   let ignoredRepoAllow = 0;
   if (options.repoPath !== undefined) {
-    const repo = parseFile(read(options.repoPath, true), "Aturan di dalam proyek (.agentmon/policy.json)");
+    const label = "Aturan di dalam proyek (.agentmon/policy.json)";
+    const contained = options.repoRoot !== undefined ? insideRoot(options.repoPath, options.repoRoot) : true;
+    const repo =
+      contained === undefined
+        ? parseFile(undefined, label)
+        : contained === false
+          ? ({ status: "invalid", problem: `${label}: berkas menunjuk ke luar proyek lewat tautan, diabaikan tanpa dibaca.` } as ReturnType<typeof parseFile>)
+          : parseFile(read(options.repoPath, true), label);
     repoStatus = repo.status;
     if (repo.problem) problems.push(repo.problem);
     for (const rule of repo.file?.rules ?? []) {
