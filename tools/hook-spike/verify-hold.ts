@@ -144,7 +144,7 @@ async function runScenario(s: Scenario): Promise<{ problems: string[]; result: R
   }, 40);
 
   const settingsFile = `${work}/settings.json`;
-  writeFileSync(settingsFile, JSON.stringify(buildClaudeHookSettings({ port: daemon.port, token: daemon.token })));
+  writeFileSync(settingsFile, JSON.stringify(buildClaudeHookSettings({ port: daemon.port, token: daemon.hookToken })));
 
   const started = performance.now();
   await new Promise<void>((resolve) => {

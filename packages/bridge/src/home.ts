@@ -14,6 +14,7 @@ export function agentmonHome(): string {
 export function paths(home: string) {
   return {
     token: join(home, "token"),
+    hookToken: join(home, "hook-token"),
     state: join(home, "daemon.json"),
     log: join(home, "daemon.log"),
     machineId: join(home, "machine-id"),
@@ -30,8 +31,19 @@ export function isValidToken(token: string): boolean {
 // Token dibuat sekali lalu dipakai ulang. Disimpan sebagai berkas biasa supaya hook
 // dan CLI di laptop yang sama bisa membacanya, sedangkan program dari luar tidak.
 export function loadOrCreateToken(home: string): string {
+  return loadOrCreateSecret(home, paths(home).token);
+}
+
+// Token KHUSUS hook (issue #82). Ini yang ditulis `setup` ke pengaturan Claude Code, jadi agent yang membaca pengaturannya
+// hanya mendapat token yang bisa memanggil /hook, TIDAK bisa memanggil API kendali (/approve, /deny, /pause, /stop, ...).
+// Batasnya: agent berjalan sebagai pengguna yang sama dan bisa membaca berkas `token` juga, jadi ini mempersempit jalan,
+// bukan menutupnya; yang menutupnya adalah keputusan bertanda tangan dari HP (#034).
+export function loadOrCreateHookToken(home: string): string {
+  return loadOrCreateSecret(home, paths(home).hookToken);
+}
+
+function loadOrCreateSecret(home: string, file: string): string {
   mkdirSync(home, { recursive: true, mode: 0o700 });
-  const file = paths(home).token;
   try {
     // Flag "wx" = buat hanya bila belum ada, dan atomik. Jika dua daemon berebut
     // membuat token, hanya satu yang menang dan yang lain membaca hasilnya.

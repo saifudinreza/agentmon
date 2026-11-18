@@ -39,6 +39,8 @@ export type HookHandler = (input: HookInput, context: HookContext) => Promise<Ho
 
 export type ServerOptions = {
   token: string;
+  /** Token khusus hook: hanya boleh memanggil /hook (issue #82). Tanpa ini, hanya `token` yang diterima. */
+  hookToken?: string;
   logger: Logger;
   version: string;
   machineId: string;
@@ -130,10 +132,17 @@ export function createDaemonServer(options: ServerOptions): DaemonServer {
       return handleDevRequest(req, res, path, { token, port, approvals, control, timeline, logger, reply, readJson });
     }
 
-    const guard = guardRequest(req, { port, token });
+    const guard = guardRequest(req, { port, token, ...(options.hookToken ? { hookToken: options.hookToken } : {}) });
     if (!guard.ok) {
       logger.error(`ditolak ${guard.status} ${req.method} ${path}: ${guard.message}`);
       reply(res, guard.status, { error: guard.message });
+      return;
+    }
+    // Token hook hanya untuk melapor dan menunggu keputusan. API kendali (setujui, tolak, jeda, berhenti, ...) butuh token kendali,
+    // yang tidak ditulis ke pengaturan agent.
+    if (guard.role === "hook" && path !== "/hook") {
+      logger.error(`ditolak 403 ${req.method} ${path}: token hook tidak boleh memanggil API kendali`);
+      reply(res, 403, { error: "token hook hanya untuk /hook" });
       return;
     }
 

@@ -33,8 +33,17 @@ Daemon hanya mendengarkan di `127.0.0.1`, jadi tidak terjangkau dari jaringan. K
 
 Daemon tidak mengirim header CORS, jadi browser tidak bisa membaca jawabannya.
 
+**Dua token (issue #82).** Daemon punya dua token di `~/.agentmon`:
+
+| Berkas | Boleh memanggil | Dipakai oleh |
+|---|---|---|
+| `hook-token` | hanya `POST /hook` | hook Claude Code (inilah yang ditulis `setup` ke `settings.json`) |
+| `token` | semuanya (`/status`, `/pause`, `/resume`, `/stop`, keputusan, `/dev/*`, dan `/hook`) | CLI dan halaman lokal |
+
+Token hook yang dipakai di jalur selain `/hook` dijawab `403`. Tujuannya mempersempit jalan agent yang diawasi: pengaturan agent tidak lagi memuat token yang bisa menyetujui izinnya sendiri. **Batasnya, jujur:** agent berjalan sebagai pengguna yang sama dan bisa membaca berkas `~/.agentmon/token` juga; yang benar-benar menutup celah ini adalah keputusan bertanda tangan dari HP (#034). Pemasangan lama (yang menulis `token` ke pengaturan) tetap jalan karena token kendali juga diterima di `/hook`; jalankan `setup` lagi untuk memakai token hook, lalu hapus `~/.agentmon/token` dan mulai ulang daemon agar token kendali lama (yang pernah tertulis di pengaturan) berganti.
+
 ## Menghubungkan Claude Code (hook `http`)
-Claude Code mengirim input hook sebagai `POST` JSON ke `/hook`. Contoh pengaturan (isi `<token>` dengan isi berkas `token`):
+Claude Code mengirim input hook sebagai `POST` JSON ke `/hook`. Contoh pengaturan (isi `<token>` dengan isi berkas `hook-token`, token khusus hook; lihat bagian Keamanan):
 
 ```json
 {

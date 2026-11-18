@@ -213,10 +213,51 @@ describe("runSetup: pemasangan", () => {
   test("TOKEN tidak pernah dicetak, di keluaran maupun galat, dan token berasal dari berkas data daemon", async () => {
     const k = fresh();
     const r = await setup({ home: k.home, claudeDir: k.claudeDir });
-    const token = readFileSync(join(k.home, "token"), "utf8").trim();
+    const token = readFileSync(join(k.home, "hook-token"), "utf8").trim();
     expect(token).toMatch(/^[0-9a-f]{64}$/);
     expect(readFileSync(k.file, "utf8")).toContain(token);
     expect([...r.out, ...r.err].join("\n")).not.toContain(token);
+  });
+
+  test("issue #82: pengaturan Claude Code hanya memuat token HOOK; token kendali (berkas token) tidak pernah ditulis ke sana", async () => {
+    const k = fresh();
+    mkdirSync(k.home, { recursive: true });
+    const control = "cd".repeat(32);
+    writeFileSync(join(k.home, "token"), `${control}\n`);
+    const r = await setup({ home: k.home, claudeDir: k.claudeDir });
+    const hook = readFileSync(join(k.home, "hook-token"), "utf8").trim();
+    expect(hook).not.toBe(control);
+    const text = readFileSync(k.file, "utf8");
+    expect(text).toContain(hook);
+    expect(text).not.toContain(control);
+    expect([...r.out, ...r.err].join("\n")).not.toContain(control);
+    expect(readFileSync(join(k.home, "token"), "utf8").trim()).toBe(control); // setup tidak menyentuh token kendali
+  });
+
+  test("issue #82: daemon LAMA yang menolak token hook (401) membuat setup memperingatkan; daemon baru (405) tidak", async () => {
+    const old = await setup({ home: fresh().home, claudeDir: fresh().claudeDir, portOpen: async () => true, probeHook: async () => 401 });
+    expect(old.out.join("\n")).toMatch(/daemon yang berjalan masih versi lama/);
+    const current = await setup({ home: fresh().home, claudeDir: fresh().claudeDir, portOpen: async () => true, probeHook: async () => 405 });
+    expect(current.out.join("\n")).not.toMatch(/versi lama/);
+    const down = await setup({ home: fresh().home, claudeDir: fresh().claudeDir, portOpen: async () => true, probeHook: async () => undefined });
+    expect(down.out.join("\n")).not.toMatch(/versi lama/);
+  });
+
+  test("issue #82: token KENDALI yang tertinggal di pengaturan lama atau cadangan diperingatkan, dan tidak dicetak", async () => {
+    const control = "ef".repeat(32);
+    const withControlInSettings = fresh();
+    mkdirSync(withControlInSettings.claudeDir);
+    mkdirSync(withControlInSettings.home, { recursive: true });
+    writeFileSync(join(withControlInSettings.home, "token"), `${control}\n`);
+    writeFileSync(withControlInSettings.file, JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "http", url: "http://127.0.0.1:47821/hook", headers: { Authorization: `Bearer ${control}` } }] }] } }));
+    const r = await setup({ home: withControlInSettings.home, claudeDir: withControlInSettings.claudeDir });
+    expect(r.out.join("\n")).toMatch(/token KENDALI/);
+    expect([...r.out, ...r.err].join("\n")).not.toContain(control);
+
+    const clean = fresh();
+    mkdirSync(clean.home, { recursive: true });
+    writeFileSync(join(clean.home, "token"), `${control}\n`);
+    expect((await setup({ home: clean.home, claudeDir: clean.claudeDir })).out.join("\n")).not.toMatch(/token KENDALI/);
   });
 
   test("pengaturan pengguna tetap utuh dan dicadangkan; cadangan identik dengan aslinya", async () => {
@@ -478,10 +519,10 @@ describe("review #81: --dry-run benar-benar tidak menulis apa pun", () => {
   test("memakai token yang sudah ada untuk menghitung, tanpa mengubahnya", async () => {
     const k = fresh();
     await setup({ home: k.home, claudeDir: k.claudeDir });
-    const token = readFileSync(join(k.home, "token"), "utf8");
+    const token = readFileSync(join(k.home, "hook-token"), "utf8");
     const dry = await setup({ home: k.home, claudeDir: k.claudeDir, dryRun: true });
     expect(dry.out.join("\n")).toMatch(/sudah terpasang dan mutakhir/);
-    expect(readFileSync(join(k.home, "token"), "utf8")).toBe(token);
+    expect(readFileSync(join(k.home, "hook-token"), "utf8")).toBe(token);
   });
 });
 

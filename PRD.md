@@ -423,6 +423,7 @@ Approve dari HP pada dasarnya mengizinkan eksekusi kode di laptop.
 | QR atau tautan pairing bocor | Kode sekali pakai dan singkat. Rahasia E2E di fragmen URL. |
 | Token di database bocor | Hanya hash token yang disimpan. |
 | Situs web mengakses daemon di `localhost` | Bind ke `127.0.0.1`, token lokal, validasi `Host` dan `Origin`. |
+| Agent yang diawasi menyetujui izinnya sendiri lewat token daemon | Token hook (di pengaturan agent) hanya boleh memanggil `/hook`; API kendali butuh token kendali yang tidak ditulis ke pengaturan. **Belum tuntas:** agent masih bisa membaca berkas token kendali (pengguna yang sama); yang menutupnya adalah keputusan bertanda tangan dari HP (#034). Sisa ancaman lewat `/hook`: event palsu untuk sesi lain dan banjir permintaan izin palsu ke HP. |
 | HP hilang | Cabut dari perangkat lain atau CLI. |
 
 **Gerbang rilis:** rollback dari HP (tahap 2.5) dan keputusan dari HP (tahap 2) belum ditandatangani sampai tahap 4 selesai. **Rilis publik wajib menunggu semua tiga pilar, tahap 4, dan tahap 6 selesai.** Sebelum itu, hanya relay milik sendiri dengan kode milik sendiri.

@@ -88,7 +88,7 @@ async function waitUntilClosed(probe: (port: number) => Promise<boolean>, port: 
 }
 
 /** Nama berkas yang dikenal di folder data. Hanya ini yang boleh dihapus oleh --purge-data. */
-const DATA_FILES = ["token", "machine-id", "daemon.json", "daemon.log", "daemon.log.1", "checkpoints.json", "session-flags.json", "claude-hooks.json"];
+const DATA_FILES = ["token", "hook-token", "machine-id", "daemon.json", "daemon.log", "daemon.log.1", "checkpoints.json", "session-flags.json", "claude-hooks.json"];
 
 export async function runUninstall(options: UninstallOptions): Promise<number> {
   const { out, err, env, home } = options;

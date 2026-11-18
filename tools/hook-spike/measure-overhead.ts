@@ -41,7 +41,7 @@ const daemon = await startDaemon({
 });
 
 const settingsFile = `${work}/settings.json`;
-writeFileSync(settingsFile, JSON.stringify(buildClaudeHookSettings({ port: daemon.port, token: daemon.token })));
+writeFileSync(settingsFile, JSON.stringify(buildClaudeHookSettings({ port: daemon.port, token: daemon.hookToken })));
 
 const prompt =
   "Ada 15 berkas bernama f1.txt sampai f15.txt di folder ini. Baca masing-masing dengan alat Read, " +
