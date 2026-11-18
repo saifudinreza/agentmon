@@ -234,6 +234,32 @@ describe("runSetup: pemasangan", () => {
     expect(readFileSync(join(k.home, "token"), "utf8").trim()).toBe(control); // setup tidak menyentuh token kendali
   });
 
+  test("issue #82: daemon LAMA yang menolak token hook (401) membuat setup memperingatkan; daemon baru (405) tidak", async () => {
+    const old = await setup({ home: fresh().home, claudeDir: fresh().claudeDir, portOpen: async () => true, probeHook: async () => 401 });
+    expect(old.out.join("\n")).toMatch(/daemon yang berjalan masih versi lama/);
+    const current = await setup({ home: fresh().home, claudeDir: fresh().claudeDir, portOpen: async () => true, probeHook: async () => 405 });
+    expect(current.out.join("\n")).not.toMatch(/versi lama/);
+    const down = await setup({ home: fresh().home, claudeDir: fresh().claudeDir, portOpen: async () => true, probeHook: async () => undefined });
+    expect(down.out.join("\n")).not.toMatch(/versi lama/);
+  });
+
+  test("issue #82: token KENDALI yang tertinggal di pengaturan lama atau cadangan diperingatkan, dan tidak dicetak", async () => {
+    const control = "ef".repeat(32);
+    const withControlInSettings = fresh();
+    mkdirSync(withControlInSettings.claudeDir);
+    mkdirSync(withControlInSettings.home, { recursive: true });
+    writeFileSync(join(withControlInSettings.home, "token"), `${control}\n`);
+    writeFileSync(withControlInSettings.file, JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "http", url: "http://127.0.0.1:47821/hook", headers: { Authorization: `Bearer ${control}` } }] }] } }));
+    const r = await setup({ home: withControlInSettings.home, claudeDir: withControlInSettings.claudeDir });
+    expect(r.out.join("\n")).toMatch(/token KENDALI/);
+    expect([...r.out, ...r.err].join("\n")).not.toContain(control);
+
+    const clean = fresh();
+    mkdirSync(clean.home, { recursive: true });
+    writeFileSync(join(clean.home, "token"), `${control}\n`);
+    expect((await setup({ home: clean.home, claudeDir: clean.claudeDir })).out.join("\n")).not.toMatch(/token KENDALI/);
+  });
+
   test("pengaturan pengguna tetap utuh dan dicadangkan; cadangan identik dengan aslinya", async () => {
     const k = fresh();
     mkdirSync(k.claudeDir);

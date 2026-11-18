@@ -209,7 +209,7 @@ try {
   async function withClaude(name: string, click: string, check: (r: { created: boolean; resultText: string }) => string[]) {
     const dir = `${base}/${name}`;
     const settingsFile = `${base}/_work/${name}-settings.json`;
-    writeFileSync(settingsFile, JSON.stringify(buildClaudeHookSettings({ port: daemon.port, token: daemon.token })));
+    writeFileSync(settingsFile, JSON.stringify(buildClaudeHookSettings({ port: daemon.port, token: daemon.hookToken })));
     const claude = new Promise<void>((resolve) => {
       const child = spawn("bash", [runScript, name, "-", PROMPT], {
         env: { ...process.env, SPIKE_SETTINGS: settingsFile, SPIKE_OUT: base, SPIKE_TURNS: "8" },

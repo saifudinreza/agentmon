@@ -411,6 +411,20 @@ describe("token hook terpisah dari token kendali (issue #82)", () => {
     expect(JSON.parse(status.body).paused).toBeFalsy();
   });
 
+  test("jalur keputusan yang SUNGGUHAN (/decision) dan variasi jalur/metode: tetap 403 untuk token hook, tidak ada izin yang terjawab", async () => {
+    const d = await start();
+    for (const [method, path] of [["POST", "/decision"], ["GET", "//hook"], ["GET", "/HOOK"], ["GET", "/hook/.."], ["GET", "/./hook"], ["HEAD", "/status"], ["OPTIONS", "/status"], ["OPTIONS", "/pause"]] as const) {
+      const res = await send(d.port, { method, path, headers: { ...hookAuth(d), ...json }, ...(method === "POST" ? { body: "{}" } : {}) });
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+  });
+
+  test("/hook dengan query tetap diterima untuk token hook; metode selain POST dijawab 405 (token diterima)", async () => {
+    const d = await start();
+    expect((await send(d.port, { method: "POST", path: "/hook?x=1", headers: { ...hookAuth(d), ...json }, body: input })).status).toBe(200);
+    expect((await send(d.port, { method: "GET", path: "/hook", headers: hookAuth(d) })).status).toBe(405);
+  });
+
   test("token kendali tetap bisa memanggil semuanya, termasuk /hook (pemasangan lama yang belum menjalankan setup ulang)", async () => {
     const d = await start();
     expect((await send(d.port, { path: "/status", headers: auth(d) })).status).toBe(200);

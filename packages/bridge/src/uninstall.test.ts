@@ -519,7 +519,7 @@ describe("relay", () => {
 
 describe("data lokal: ditawarkan, dihapus hanya bila diminta", () => {
   function populate(sb: ReturnType<typeof sandbox>) {
-    for (const name of ["token", "machine-id", "daemon.json", "daemon.log", "daemon.log.1", "checkpoints.json", "session-flags.json", "claude-hooks.json"]) writeFileSync(join(sb.home, name), "x");
+    for (const name of ["token", "hook-token", "machine-id", "daemon.json", "daemon.log", "daemon.log.1", "checkpoints.json", "session-flags.json", "claude-hooks.json"]) writeFileSync(join(sb.home, name), "x");
     mkdirSync(join(sb.home, "autostart"));
     writeFileSync(join(sb.home, "autostart", "agentmon-daemon.vbs"), "x");
     writeFileSync(join(sb.home, "policy.json"), JSON.stringify({ version: 1, rules: [] }));
@@ -543,7 +543,7 @@ describe("data lokal: ditawarkan, dihapus hanya bila diminta", () => {
     populate(sb);
     const r = await uninstall(sb, { purgeData: true });
     expect(r.code).toBe(0);
-    for (const name of ["token", "machine-id", "daemon.json", "daemon.log", "daemon.log.1", "checkpoints.json", "session-flags.json", "claude-hooks.json"]) expect(existsSync(join(sb.home, name)), name).toBe(false);
+    for (const name of ["token", "hook-token", "machine-id", "daemon.json", "daemon.log", "daemon.log.1", "checkpoints.json", "session-flags.json", "claude-hooks.json"]) expect(existsSync(join(sb.home, name)), name).toBe(false);
     expect(existsSync(join(sb.home, "autostart"))).toBe(false);
     expect(readdirSync(sb.home).sort()).toEqual(["folder-saya", "milik-saya.txt", "policy.json"]);
     expect(readFileSync(join(sb.home, "folder-saya", "penting.txt"), "utf8")).toBe("penting");

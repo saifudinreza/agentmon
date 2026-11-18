@@ -20,6 +20,7 @@ import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:pa
 import { DEFAULT_PORT } from "./daemon";
 import { buildClaudeHookSettings, HOOK_EVENTS, type ClaudeHookSettings } from "./hook-config";
 import { isValidToken, loadOrCreateHookToken, paths } from "./home";
+import { request as httpRequest } from "node:http";
 import { runPair, type PairOptions } from "./pairing";
 import { resolveRelayConfig } from "./relay-config";
 
@@ -320,12 +321,46 @@ export type SetupOptions = {
   /** Hanya untuk test. */
   findProgram?: (names: readonly string[]) => string | undefined;
   portOpen?: (port: number) => Promise<boolean>;
+  /** Status jawaban `GET /hook` dengan token hook (undefined bila tidak terjangkau). Hanya untuk tes. */
+  probeHook?: (port: number, token: string) => Promise<number | undefined>;
   pair?: (options: PairOptions) => Promise<number>;
   pairOverrides?: Partial<PairOptions>;
 };
 
 const pad = (n: number) => String(n).padStart(2, "0");
 export const stampOf = (d: Date) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+
+/** `GET /hook` dengan token hook: daemon baru menjawab 405 (metode salah, tetapi tokennya diterima); daemon lama 401. */
+function probeHookStatus(port: number, token: string): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path: "/hook", method: "GET", headers: { authorization: `Bearer ${token}` }, timeout: 1500 }, (res) => {
+      res.resume();
+      resolve(res.statusCode);
+    });
+    req.on("timeout", () => req.destroy());
+    req.on("error", () => resolve(undefined));
+    req.end();
+  });
+}
+
+/** Token kendali yang masih tertinggal di pengaturan lama atau cadangannya (bisa dibaca agent). */
+function controlTokenLeaks(home: string, settingsFile: string, originalText: string | undefined): boolean {
+  let control: string;
+  try {
+    control = readFileSync(paths(home).token, "utf8").trim();
+  } catch {
+    return false;
+  }
+  if (!isValidToken(control)) return false;
+  if (originalText?.includes(control)) return true;
+  return listSettingsBackups(settingsFile).some((file) => {
+    try {
+      return readFileSync(file, "utf8").includes(control);
+    } catch {
+      return false;
+    }
+  });
+}
 
 function readExistingToken(home: string): string | undefined {
   try {
@@ -426,11 +461,21 @@ export async function runSetup(options: SetupOptions): Promise<number> {
     out("PERINGATAN: pengaturan Anda memuat \"disableAllHooks\": true, jadi Claude Code mengabaikan semua hook (termasuk AgentMon). Hapus baris itu agar hook berjalan.");
   }
   out("Hook ini berlaku untuk SEMUA sesi Claude Code Anda. Bila daemon tidak berjalan, hook gagal dengan tenang dan Claude Code berjalan seperti biasa.");
-  out("Berkas pengaturan memuat token daemon: jangan dibagikan atau dimasukkan ke repo.");
+  out("Berkas pengaturan memuat token hook (hanya bisa memanggil /hook): jangan dibagikan atau dimasukkan ke repo.");
+  if (!options.dryRun && controlTokenLeaks(options.home, settingsFile, originalText)) {
+    out("PERINGATAN: pengaturan lama Anda atau cadangannya memuat token KENDALI (token yang bisa menyetujui izin), dan agent bisa membacanya. Putar token itu: hapus berkas token di folder data, hapus cadangan lama, lalu mulai ulang daemon.");
+  }
 
   // 4. Daemon dan pairing.
   const open = await (options.portOpen ?? isPortOpen)(port);
-  if (open) out(`Daemon: berjalan di 127.0.0.1:${port}`);
+  if (open) {
+    out(`Daemon: berjalan di 127.0.0.1:${port}`);
+    // Daemon versi lama tidak mengenal token hook: semua hook ditolak (401) dan pemantauan berhenti tanpa terlihat.
+    const hookToken = options.dryRun ? undefined : readExistingToken(options.home);
+    if (hookToken && (await (options.probeHook ?? probeHookStatus)(port, hookToken)) === 401) {
+      out("PERINGATAN: daemon yang berjalan masih versi lama dan menolak token hook, jadi hook tidak akan bekerja. Mulai ulang daemon (hentikan lalu nyalakan lagi).");
+    }
+  }
   else {
     out(`Daemon: belum berjalan. Nyalakan dengan: pnpm --filter @agentmon/bridge daemon`);
     out("  Agar daemon menyala sendiri setiap kali Anda masuk ke laptop: pnpm --filter @agentmon/bridge cli autostart install");
