@@ -11,12 +11,12 @@ import type { IncomingMessage } from "node:http";
 import { tokensEqual } from "./home";
 
 export type GuardResult =
-  | { ok: true }
+  | { ok: true; /** Hanya pada penjaga utama: token apa yang dipakai. "hook" hanya boleh memanggil /hook. */ role?: "control" | "hook" }
   | { ok: false; status: 401 | 403; message: string };
 
 const deny = (status: 401 | 403, message: string): GuardResult => ({ ok: false, status, message });
 
-export function guardRequest(req: IncomingMessage, options: { port: number; token: string }): GuardResult {
+export function guardRequest(req: IncomingMessage, options: { port: number; token: string; hookToken?: string }): GuardResult {
   const host = req.headers.host;
   if (host !== `127.0.0.1:${options.port}` && host !== `localhost:${options.port}`) {
     return deny(403, "host tidak diizinkan");
@@ -28,10 +28,13 @@ export function guardRequest(req: IncomingMessage, options: { port: number; toke
   }
 
   const match = /^Bearer (\S+)$/.exec(h.authorization ?? "");
-  if (!match?.[1] || !tokensEqual(match[1], options.token)) {
-    return deny(401, "kredensial tidak valid");
-  }
-  return { ok: true };
+  if (!match?.[1]) return deny(401, "kredensial tidak valid");
+  // Kedua pembandingan selalu dijalankan (bukan berhenti di yang pertama) supaya waktunya tidak membedakan token mana yang cocok.
+  const isControl = tokensEqual(match[1], options.token);
+  const isHook = options.hookToken !== undefined && tokensEqual(match[1], options.hookToken);
+  if (isControl) return { ok: true, role: "control" };
+  if (isHook) return { ok: true, role: "hook" };
+  return deny(401, "kredensial tidak valid");
 }
 
 // ---- Penjaga untuk halaman web lokal (alat pengembangan) -------------------------------

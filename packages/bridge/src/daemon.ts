@@ -11,7 +11,7 @@ import type { AddressInfo } from "node:net";
 import { createApprovalEngine, type ApprovalEngine } from "./approvals";
 import { createDaemonControl, type DaemonControl, type PolicyStatus, type RelayStatus } from "./control";
 import { createTimeline, type Timeline } from "./timeline";
-import { agentmonHome, loadOrCreateMachineId, loadOrCreateToken, paths } from "./home";
+import { agentmonHome, loadOrCreateHookToken, loadOrCreateMachineId, loadOrCreateToken, paths } from "./home";
 import { createLogger } from "./logger";
 import { createDaemonServer, type HookHandler } from "./server";
 
@@ -72,6 +72,8 @@ export type RunningDaemon = {
   timeline: Timeline;
   home: string;
   token: string;
+  /** Token khusus hook: hanya boleh memanggil /hook (issue #82). */
+  hookToken: string;
   stop(): Promise<void>;
 };
 
@@ -115,6 +117,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
   const home = options.home ?? agentmonHome();
   const requestedPort = options.port ?? DEFAULT_PORT;
   const token = loadOrCreateToken(home);
+  const hookToken = loadOrCreateHookToken(home); // dibuat di sini supaya `setup` bisa memakainya, dan daemon menerimanya hanya untuk /hook
   const file = paths(home);
   const logger = createLogger(file.log, options.logMaxBytes);
 
@@ -129,6 +132,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
 
   const { server, drain } = createDaemonServer({
     token,
+    hookToken,
     logger,
     version: DAEMON_VERSION,
     machineId: loadOrCreateMachineId(home),
@@ -166,6 +170,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
     timeline,
     home,
     token,
+    hookToken,
     async stop() {
       // Urutan penting: (1) batalkan semua izin yang menunggu, sehingga hook yang menunggu
       // mendapat jawaban "tanpa keputusan"; (2) tunggu jawaban itu selesai terkirim; baru

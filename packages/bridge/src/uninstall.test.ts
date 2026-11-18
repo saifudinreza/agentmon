@@ -143,7 +143,7 @@ describe("hook: setup lalu uninstall mengembalikan pengaturan seperti semula", (
     const walk = (value: unknown): unknown[] => (Array.isArray(value) ? value.flatMap(walk) : typeof value === "object" && value !== null ? [value, ...Object.values(value).flatMap(walk)] : []);
     expect(walk(read(sb.file)).filter(isAgentmonHook)).toEqual([]);
     expect(readFileSync(sb.file, "utf8")).not.toContain("127.0.0.1");
-    expect(readFileSync(sb.file, "utf8")).not.toContain(readFileSync(join(sb.home, "token"), "utf8").trim()); // token tidak tersisa di pengaturan
+    expect(readFileSync(sb.file, "utf8")).not.toContain(readFileSync(join(sb.home, "hook-token"), "utf8").trim()); // token tidak tersisa di pengaturan
   });
 
   test("gaya berkas (tab, CRLF, BOM) dipertahankan", async () => {
@@ -293,7 +293,7 @@ describe("--dry-run: hanya melaporkan", () => {
     const r = await uninstall(sb, { dryRun: true, purgeData: true, purgeCheckpoints: true, fetch: (async () => (fetched++, new Response("{}"))) as unknown as typeof fetch, portOpen: async () => true, stopDaemon: async () => (stopped++, true), autostart: { platform: "linux", exec, homeDir: sb.root } });
     expect(readFileSync(sb.file, "utf8")).toBe(before);
     expect(fetched).toBe(0);
-    expect(existsSync(join(sb.home, "token"))).toBe(true);
+    expect(existsSync(join(sb.home, "hook-token"))).toBe(true);
     expect(existsSync(join(sb.home, "relay.json"))).toBe(true);
     expect(r.text).toMatch(/AKAN membuang 6 hook AgentMon/);
     expect(r.text).toMatch(/AKAN mencabut laptop ini dari relay\.contoh\.com/);

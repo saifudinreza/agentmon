@@ -368,3 +368,57 @@ describe("machine-id", () => {
     expect(() => loadOrCreateMachineId(home)).toThrow(/Berkas machine-id rusak/);
   });
 });
+
+describe("token hook terpisah dari token kendali (issue #82)", () => {
+  const hookAuth = (d: RunningDaemon) => ({ authorization: `Bearer ${d.hookToken}` });
+  const input = JSON.stringify({ hook_event_name: "SessionStart", session_id: "s1" });
+
+  test("dua token berbeda, tersimpan di dua berkas, dan token hook stabil antar-restart", async () => {
+    const d = await start();
+    expect(d.hookToken).toMatch(/^[0-9a-f]{64}$/);
+    expect(d.hookToken).not.toBe(d.token);
+    expect(readFileSync(paths(home).hookToken, "utf8").trim()).toBe(d.hookToken);
+    const first = d.hookToken;
+    await d.stop();
+    daemon = undefined;
+    expect((await start()).hookToken).toBe(first);
+  });
+
+  test("token hook bisa memanggil /hook", async () => {
+    const d = await start();
+    const res = await send(d.port, { method: "POST", path: "/hook", headers: { ...hookAuth(d), ...json }, body: input });
+    expect(res.status).toBe(200);
+  });
+
+  test.each([
+    ["GET", "/health"],
+    ["GET", "/status"],
+    ["POST", "/pause"],
+    ["POST", "/resume"],
+    ["POST", "/stop"],
+    ["POST", "/decision/abc"],
+    ["POST", "/approve"],
+    ["POST", "/deny"],
+    ["GET", "/dev/api/approvals"],
+  ])("token hook TIDAK bisa memanggil %s %s (403, tidak ada yang berubah)", async (method, path) => {
+    let stopped = 0;
+    const d = await start({ onStop: () => (stopped += 1) });
+    const res = await send(d.port, { method, path, headers: { ...hookAuth(d), ...json }, ...(method === "POST" ? { body: "{}" } : {}) });
+    expect([401, 403]).toContain(res.status);
+    if (!path.startsWith("/dev")) expect(res.status).toBe(403);
+    expect(stopped).toBe(0);
+    const status = await send(d.port, { path: "/status", headers: auth(d) });
+    expect(JSON.parse(status.body).paused).toBeFalsy();
+  });
+
+  test("token kendali tetap bisa memanggil semuanya, termasuk /hook (pemasangan lama yang belum menjalankan setup ulang)", async () => {
+    const d = await start();
+    expect((await send(d.port, { path: "/status", headers: auth(d) })).status).toBe(200);
+    expect((await send(d.port, { method: "POST", path: "/hook", headers: { ...auth(d), ...json }, body: input })).status).toBe(200);
+  });
+
+  test("token yang salah tetap 401 (bukan 403)", async () => {
+    const d = await start();
+    expect((await send(d.port, { path: "/status", headers: { authorization: `Bearer ${"0".repeat(64)}` } })).status).toBe(401);
+  });
+});

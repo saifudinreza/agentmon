@@ -213,10 +213,25 @@ describe("runSetup: pemasangan", () => {
   test("TOKEN tidak pernah dicetak, di keluaran maupun galat, dan token berasal dari berkas data daemon", async () => {
     const k = fresh();
     const r = await setup({ home: k.home, claudeDir: k.claudeDir });
-    const token = readFileSync(join(k.home, "token"), "utf8").trim();
+    const token = readFileSync(join(k.home, "hook-token"), "utf8").trim();
     expect(token).toMatch(/^[0-9a-f]{64}$/);
     expect(readFileSync(k.file, "utf8")).toContain(token);
     expect([...r.out, ...r.err].join("\n")).not.toContain(token);
+  });
+
+  test("issue #82: pengaturan Claude Code hanya memuat token HOOK; token kendali (berkas token) tidak pernah ditulis ke sana", async () => {
+    const k = fresh();
+    mkdirSync(k.home, { recursive: true });
+    const control = "cd".repeat(32);
+    writeFileSync(join(k.home, "token"), `${control}\n`);
+    const r = await setup({ home: k.home, claudeDir: k.claudeDir });
+    const hook = readFileSync(join(k.home, "hook-token"), "utf8").trim();
+    expect(hook).not.toBe(control);
+    const text = readFileSync(k.file, "utf8");
+    expect(text).toContain(hook);
+    expect(text).not.toContain(control);
+    expect([...r.out, ...r.err].join("\n")).not.toContain(control);
+    expect(readFileSync(join(k.home, "token"), "utf8").trim()).toBe(control); // setup tidak menyentuh token kendali
   });
 
   test("pengaturan pengguna tetap utuh dan dicadangkan; cadangan identik dengan aslinya", async () => {
@@ -478,10 +493,10 @@ describe("review #81: --dry-run benar-benar tidak menulis apa pun", () => {
   test("memakai token yang sudah ada untuk menghitung, tanpa mengubahnya", async () => {
     const k = fresh();
     await setup({ home: k.home, claudeDir: k.claudeDir });
-    const token = readFileSync(join(k.home, "token"), "utf8");
+    const token = readFileSync(join(k.home, "hook-token"), "utf8");
     const dry = await setup({ home: k.home, claudeDir: k.claudeDir, dryRun: true });
     expect(dry.out.join("\n")).toMatch(/sudah terpasang dan mutakhir/);
-    expect(readFileSync(join(k.home, "token"), "utf8")).toBe(token);
+    expect(readFileSync(join(k.home, "hook-token"), "utf8")).toBe(token);
   });
 });
 

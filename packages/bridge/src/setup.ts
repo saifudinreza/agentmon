@@ -19,7 +19,7 @@ import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { DEFAULT_PORT } from "./daemon";
 import { buildClaudeHookSettings, HOOK_EVENTS, type ClaudeHookSettings } from "./hook-config";
-import { isValidToken, loadOrCreateToken, paths } from "./home";
+import { isValidToken, loadOrCreateHookToken, paths } from "./home";
 import { runPair, type PairOptions } from "./pairing";
 import { resolveRelayConfig } from "./relay-config";
 
@@ -329,7 +329,7 @@ export const stampOf = (d: Date) => `${d.getFullYear()}${pad(d.getMonth() + 1)}$
 
 function readExistingToken(home: string): string | undefined {
   try {
-    const token = readFileSync(paths(home).token, "utf8").trim();
+    const token = readFileSync(paths(home).hookToken, "utf8").trim();
     return isValidToken(token) ? token : undefined;
   } catch {
     return undefined;
@@ -368,7 +368,7 @@ export async function runSetup(options: SetupOptions): Promise<number> {
   let hookSettings: ClaudeHookSettings;
   try {
     // --dry-run tidak membuat apa pun: bila belum ada token, dipakai token tiruan hanya untuk menghitung perubahan.
-    hookSettings = buildClaudeHookSettings({ port, token: options.dryRun ? readExistingToken(options.home) ?? "0".repeat(64) : loadOrCreateToken(options.home) });
+    hookSettings = buildClaudeHookSettings({ port, token: options.dryRun ? readExistingToken(options.home) ?? "0".repeat(64) : loadOrCreateHookToken(options.home) });
   } catch (error) {
     err(`Tidak bisa menyiapkan konfigurasi hook: ${error instanceof Error ? error.message.replace(/[0-9a-f]{64}/gi, "***") : String(error)}`);
     return 1;
