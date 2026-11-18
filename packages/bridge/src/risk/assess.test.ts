@@ -10,10 +10,11 @@ import { afterAll, describe, expect, test } from "vitest";
 import { assessRisk, MAX_ASSESSABLE_LENGTH, MAX_SCANNED_LENGTH, type AssessOptions } from "./assess";
 import { COMMON_MEDIUM_BY_DESIGN, COMMON_SAFE, MUST_BE_HIGH, MUST_NOT_BE_LOW, type Case } from "./corpus";
 import { REVIEW_HIGH, REVIEW_NOT_LOW, REVIEW_SAFE } from "./corpus-review";
+import { ISSUE79_HIGH, ISSUE79_NOT_LOW, ISSUE79_NOT_RUNS_PROJECT_CODE, ISSUE79_RUNS_PROJECT_CODE, ISSUE79_SAFE } from "./corpus-79";
 
-const HIGH = [...MUST_BE_HIGH, ...REVIEW_HIGH];
-const NOT_LOW = [...MUST_NOT_BE_LOW, ...REVIEW_NOT_LOW];
-const SAFE = [...COMMON_SAFE, ...REVIEW_SAFE];
+const HIGH = [...MUST_BE_HIGH, ...REVIEW_HIGH, ...ISSUE79_HIGH];
+const NOT_LOW = [...MUST_NOT_BE_LOW, ...REVIEW_NOT_LOW, ...ISSUE79_NOT_LOW];
+const SAFE = [...COMMON_SAFE, ...REVIEW_SAFE, ...ISSUE79_SAFE];
 
 const levelOf = (c: Case, options?: AssessOptions): RiskLevel => assessRisk({ toolName: c.tool, toolInput: c.input, ...(c.cwd !== undefined ? { cwd: c.cwd } : {}) }, options).level;
 const label = (c: Case) => `${c.tool}: ${c.note.replace(/\n/g, "\\n")}`;
@@ -439,5 +440,31 @@ describe("kinerja (PRD §14: p95 < 20 ms)", () => {
     const start = performance.now();
     assessRisk({ toolName: "Bash", toolInput: { command }, cwd: "/work/proj" });
     expect(performance.now() - start).toBeLessThan(100);
+  });
+});
+
+describe("issue #79: alasan runs-project-code disempitkan", () => {
+  const codes = (command: string) => assessRisk({ toolName: "Bash", toolInput: { command }, cwd: "/work/proj" }).reasons.map((r) => r.code);
+
+  test.each(ISSUE79_NOT_RUNS_PROJECT_CODE)("bukan runs-project-code (tetap sedang): %s", (command) => {
+    const risk = assessRisk({ toolName: "Bash", toolInput: { command }, cwd: "/work/proj" });
+    expect(risk.level).not.toBe("low");
+    expect(risk.reasons.map((r) => r.code), command).not.toContain("runs-project-code");
+  });
+
+  test.each(ISSUE79_RUNS_PROJECT_CODE)("tetap runs-project-code sedang saja: %s", (command) => {
+    const risk = assessRisk({ toolName: "Bash", toolInput: { command }, cwd: "/work/proj" });
+    expect(risk.level, command).toBe("medium");
+    expect(risk.reasons.map((r) => r.code), command).toEqual(["runs-project-code"]);
+  });
+
+  test("npm explore dengan perintah di dalamnya dinilai juga", () => {
+    expect(codes("npm explore pkg -- rm -rf ~")).not.toEqual(["runs-project-code"]);
+  });
+
+  test("mount folder proyek sendiri dan volume bernama tidak dianggap berbahaya (tetap sedang, bukan tinggi)", () => {
+    for (const command of ["docker run -v .:/app img", "docker run -v ./src:/app img", "docker run -v data:/var/lib img"]) {
+      expect(assessRisk({ toolName: "Bash", toolInput: { command }, cwd: "/work/proj" }).level, command).toBe("medium");
+    }
   });
 });

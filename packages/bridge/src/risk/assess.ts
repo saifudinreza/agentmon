@@ -357,7 +357,12 @@ function candidates(word: Word): string[] {
 
 type ScanMode = "read" | "write";
 
-function scanPaths(words: readonly Word[], mode: ScanMode, ctx: Ctx, acc: Acc, options: { rev?: boolean } = {}): void {
+function scanPaths(input: readonly Word[], mode: ScanMode, ctx: Ctx, acc: Acc, options: { rev?: boolean } = {}): void {
+  // PowerShell: `Get-Content a,..\b` adalah ARRAY jalur; tiap elemennya dinilai sendiri.
+  const words =
+    ctx.shell === "powershell"
+      ? input.flatMap((w) => (!w.text.startsWith("-") && w.text.includes(",") && !/\s/.test(w.text) ? w.text.split(",").filter(Boolean).map((part) => ({ text: part, dynamic: w.dynamic })) : [w]))
+      : input;
   for (const word of words) {
     const text = word.text;
     if (/^\/[A-Za-z?]$/.test(text)) continue; // opsi gaya Windows (/s, /q)
@@ -609,6 +614,8 @@ function assessStage(stage: Stage, ctx: Ctx, acc: Acc, depth: number, flags: Sta
   assessRedirects(stage, ctx, acc);
   if (words.length === 0) return false;
   if (ctx.shell === "powershell") assessBlocks({ words, redirects: [] }, ctx, acc, depth);
+  // `--%` (stop-parsing) meneruskan sisanya apa adanya dan MEMPERLUAS %VAR% di lingkungan: nilainya tidak terlihat.
+  if (ctx.shell === "powershell" && words.some((w) => w.text === "--%")) acc.add("medium", "dynamic-argument");
 
   let viaXargs = flags.viaXargs;
   for (let n = 0; n < 6 && words.length > 0; n++) {
@@ -666,7 +673,7 @@ function assessStage(stage: Stage, ctx: Ctx, acc: Acc, depth: number, flags: Sta
   } else if (name === "git") {
     gitStage(args, ctx, acc, f);
   } else if (INFRA.has(name)) {
-    infraStage(name, args, acc);
+    infraStage(name, args, ctx, acc);
   } else if (PKG.has(name)) {
     pkgStage(name, args, ctx, acc);
   } else if (SHELLS.has(name) || LANGS.has(name) || EVALS.has(name) || /^python[0-9.]*$/.test(name)) {
@@ -686,18 +693,16 @@ function assessStage(stage: Stage, ctx: Ctx, acc: Acc, depth: number, flags: Sta
   } else if (name === "awk" || name === "gawk" || name === "mawk") {
     awkStage(args, ctx, acc);
   } else if (name === "jq") {
-    scanPaths(args, "read", ctx, acc);
-    acc.add("low", "read-only");
+    jqStage(args, ctx, acc);
   } else if (MUTATORS.has(name)) {
     mutatorStage(name, args, ctx, acc);
     assessEmbedded(args, ctx, acc, depth);
   } else if (name === "find") {
     findStage(args, ctx, acc, depth, f);
   } else if (READ_ONLY.has(name)) {
-    readStage(name, args, ctx, acc);
+    readStage(name, args, ctx, acc, f);
   } else if (RUNNERS.has(name)) {
-    acc.add("medium", "runs-project-code");
-    scanPaths(args, "read", ctx, acc);
+    runnerStage(name, args, ctx, acc);
   } else if (GENERIC_WRAPPERS.has(name)) {
     acc.add("medium", "unknown-command");
     scanPaths(args, "write", ctx, acc);
@@ -769,23 +774,82 @@ function mutatorStage(name: string, args: readonly Word[], ctx: Ctx, acc: Acc): 
   scanPaths(args, "write", ctx, acc);
 }
 
-/** sed tanpa -i, tanpa perintah w/e, dan tanpa -f hanya membaca; selainnya mengubah berkas atau menjalankan perintah. */
+// Opsi sed yang aman. Selain ini (-f, --file, -l, --follow-symlinks, ...) berarti tidak bisa dipastikan hanya membaca.
+const SED_PLAIN_FLAGS = /^-[nErszu]+$/;
+const SED_LONG_OK = set("--quiet", "--silent", "--regexp-extended", "--separate", "--null-data", "--unbuffered", "--posix", "--sandbox");
+
+/**
+ * Skrip sed yang hanya mencetak, menghapus baris, atau mengganti teks. Daftar PUTIH: perintah s dengan pembatas "/" tanpa
+ * flag w atau e, alamat berupa nomor atau /regex/, dan perintah p d q Q = n N x h H g G D P l. Yang lain (w, W, e, r, R, a, i,
+ * c, y, pembatas selain "/", flag w/e) membuat skrip ini tidak lolos.
+ */
+export function safeSedScript(script: string): boolean {
+  let t = script.replace(/s\/(?:[^/\\\n]|\\.)*\/(?:[^/\\\n]|\\.)*\/[gpiImM0-9]*/g, "\uE000");
+  t = t.replace(/\/(?:[^/\\\n]|\\.)*\/[IM]*/g, "\uE001");
+  return /^[\s\uE000\uE0010-9$,~+!;{}pdqQ=nNxhHgGDPl]*$/.test(t);
+}
+
+/** sed hanya membaca bila SEMUA opsinya dikenal dan skripnya lolos daftar putih; selainnya sedang. */
 function sedStage(args: readonly Word[], ctx: Ctx, acc: Acc): void {
   if (args.some((w) => (/^-[A-Za-z]*i/.test(w.text) && !w.text.startsWith("--")) || w.text.startsWith("--in-place"))) {
     mutatorStage("sed", args, ctx, acc);
     return;
   }
-  const scripty = args.some((w) => w.text === "-f" || w.text.startsWith("--file") || /(^|[;{}\n0-9$/!,\s])[wWe](?![A-Za-z0-9_])/.test(w.text) || /\/[gpiImMx0-9]*[we][gpiImMx0-9]*$/.test(w.text));
-  scanPaths(args, "read", ctx, acc);
-  if (scripty) acc.add("medium", "unknown-command");
+  const scripts: Word[] = [];
+  let scriptFlag = false;
+  let unknown = false;
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i]!;
+    const t = w.text;
+    if (t === "-e" || t === "--expression" || /^-[nErszu]*e$/.test(t)) {
+      scriptFlag = true;
+      const value = args[(i += 1)];
+      if (value) scripts.push(value);
+      else unknown = true;
+    } else if (t.startsWith("--expression=")) {
+      scriptFlag = true;
+      scripts.push({ text: t.slice("--expression=".length), dynamic: w.dynamic });
+    } else if (SED_PLAIN_FLAGS.test(t) || SED_LONG_OK.has(t) || t === "--") {
+      continue;
+    } else if (isFlag(w) && t !== "-") {
+      unknown = true; // -f, --file, -l, --follow-symlinks, opsi yang tidak dikenal
+    } else if (!scriptFlag && scripts.length === 0) {
+      scripts.push(w);
+    }
+  }
+  // Skrip sed (/foo/p, $p) bukan jalur berkas; yang dinilai sebagai jalur hanya argumen selain skripnya.
+  scanPaths(args.filter((w) => !scripts.includes(w) && !w.text.startsWith("--expression=")), "read", ctx, acc);
+  if (unknown || scripts.length === 0 || scripts.some((w) => w.dynamic || !safeSedScript(w.text))) acc.add("medium", "unknown-command");
   else acc.add("low", "read-only");
 }
 
-/** awk yang tidak memanggil system(), getline, atau menulis/menyalurkan keluaran hanya membaca. */
+// Isi skrip awk yang bisa menjalankan perintah, menulis berkas, atau membaca lingkungan dan argumen.
+const AWK_UNSAFE = /@|\bENVIRON\b|\bARGV\b|\bARGC\b|\bsystem\b|\bgetline\b|\|\s*"|"\s*\||\bprintf?\b[^;}]*[>|]|>>/;
+
+/** awk hanya membaca bila opsinya hanya -F dan -v, dan skripnya tidak memuat hal-hal di atas. */
 function awkStage(args: readonly Word[], ctx: Ctx, acc: Acc): void {
-  const scripty = args.some((w) => w.text === "-f" || /system\s*\(|getline|\|\s*"|"\s*\||\bprintf?\b[^;}]*[>|]|>>/.test(w.text));
-  scanPaths(args.filter((w) => !/\s/.test(w.text)), "read", ctx, acc);
-  if (scripty) acc.add("medium", "unknown-command");
+  let script: Word | undefined;
+  let unknown = false;
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i]!;
+    const t = w.text;
+    if (t === "-F" || t === "-v" || t === "--field-separator" || t === "--assign") i += 1;
+    else if (/^-[Fv]./.test(t) || t.startsWith("--field-separator=") || t.startsWith("--assign=") || t === "--") continue;
+    else if (isFlag(w) && t !== "-") unknown = true; // -f, -E, -i, --file, --include, --load, ...
+    else if (!script) script = w;
+  }
+  scanPaths(args.filter((w) => w !== script && !/\s/.test(w.text)), "read", ctx, acc);
+  if (unknown || !script || script.dynamic || AWK_UNSAFE.test(script.text)) acc.add("medium", "unknown-command");
+  else acc.add("low", "read-only");
+}
+
+/** jq membaca JSON, tetapi `env` dan `$ENV` membaca variabel lingkungan (bisa berisi rahasia). */
+function jqStage(args: readonly Word[], ctx: Ctx, acc: Acc): void {
+  // Program jq (`.env`, `.a.b`) bukan jalur berkas: positional pertama, kecuali program dibaca dari berkas (-f).
+  const fromFile = args.some((w) => w.text === "-f" || w.text === "--from-file");
+  const program = fromFile ? undefined : args.find((w) => !isFlag(w));
+  scanPaths(args.filter((w) => w !== program), "read", ctx, acc);
+  if (args.some((w) => w.dynamic || /(^|[^.\w$])env\b|\$ENV|\binput_filename\b/.test(w.text))) acc.add("medium", "secret-env");
   else acc.add("low", "read-only");
 }
 
@@ -819,23 +883,71 @@ function findStage(args: readonly Word[], ctx: Ctx, acc: Acc, depth: number, f: 
   acc.add("low", "read-only");
 }
 
-function readStage(name: string, args: readonly Word[], ctx: Ctx, acc: Acc): void {
+function readStage(name: string, args: readonly Word[], ctx: Ctx, acc: Acc, f: StageFlags): void {
   let scan = [...args];
-  if (PATTERN_FIRST.has(name) && !args.some((w) => ["-e", "-f", "--regexp", "--file"].includes(w.text))) {
+  // Select-String -Path * -Pattern x: tanpa ini `*` (nilai -Path) dikira pola pencarian dan tidak diperiksa sebagai jalur.
+  const namedPattern = args.some((w) => ["-e", "-f", "--regexp", "--file"].includes(w.text) || (ctx.shell === "powershell" && psFlag(w, "pattern")));
+  if (PATTERN_FIRST.has(name) && !namedPattern) {
     const first = args.findIndex((w) => !isFlag(w));
     if (first >= 0) scan = args.filter((_, i) => i !== first);
   }
-  if (name === "sort" && args.some((w) => w.text === "-o" || w.text.startsWith("--output"))) {
+  // sort -o berkas, -oberkas, -ro berkas, --output(=): menulis berkas. --compress-program (boleh disingkat) menjalankan program.
+  if (name === "sort") {
+    const longOpt = (w: Word, full: string) => w.text.length >= 4 && w.text.startsWith("--") && full.startsWith(w.text.split("=")[0]!);
+    if (args.some((w) => longOpt(w, "--compress-program"))) acc.add("high", "runs-program-option");
+    if (args.some((w) => (/^-[A-Za-z0-9]*o/.test(w.text) && !w.text.startsWith("--")) || longOpt(w, "--output"))) {
+      acc.add("medium", "writes-file");
+      scanPaths(args, "write", ctx, acc);
+      return;
+    }
+  }
+  // uniq ENTRADA SAIDA: argumen kedua adalah berkas yang DITIMPA.
+  if (name === "uniq" && positional(args).length >= 2) {
     acc.add("medium", "writes-file");
     scanPaths(args, "write", ctx, acc);
     return;
   }
+  // tree -o berkas dan history -w/-a/-n/-r berkas menulis atau membaca berkas; history -c/-d mengubah riwayat.
+  if ((name === "tree" && args.some((w) => /^-[A-Za-z]*o/.test(w.text) && !w.text.startsWith("--"))) || (name === "history" && args.some((w) => /^-[awnrcd]/.test(w.text)))) {
+    acc.add("medium", "writes-file");
+    scanPaths(args, "write", ctx, acc);
+    return;
+  }
+  // date -f berkas dan date -r berkas membaca berkas (isinya muncul di pesan galat).
+  if (name === "date" && args.length > 0) {
+    const files: Word[] = [];
+    args.forEach((w, i) => {
+      const attached = /^-[fr](.+)$/.exec(w.text) ?? /^--(?:file|reference)=(.+)$/.exec(w.text);
+      if (attached) files.push({ text: attached[1]!, dynamic: w.dynamic });
+      else if (w.text === "-f" || w.text === "-r" || w.text === "--file" || w.text === "--reference") {
+        const next = args[i + 1];
+        if (next) files.push(next);
+      }
+    });
+    scanPaths(files, "read", ctx, acc);
+  }
+  // Get-Content tanpa jalur menerima nama berkas dari PIPA (Get-ChildItem -Recurse | Get-Content): berkas yang dibaca tidak terlihat.
+  if (ctx.shell === "powershell" && f.piped && ["get-content", "gc", "type", "cat"].includes(name) && positional(args).length === 0 && !args.some((w) => psFlag(w, "path") || psFlag(w, "literalpath"))) {
+    acc.add("medium", "dynamic-argument");
+  }
+  // Get-Content env:X, Get-ChildItem env: membaca variabel lingkungan.
+  if (args.some((w) => /^(-[A-Za-z]+:)?env:/i.test(w.text))) acc.add("medium", "secret-env");
   if (PATTERN_FIRST.has(name)) {
     if (args.some((w) => (/^-[A-Za-z]{1,4}$/.test(w.text) && /[rR]/.test(w.text)) || w.text === "--recursive" || w.text.startsWith("--dereference-recursive"))) acc.add("medium", "recursive-search");
-    if (args.some((w) => w.text.startsWith("--pre") || w.text === "--hidden" || w.text === "-uu" || w.text === "-uuu" || w.text === "--no-ignore")) acc.add("medium", "recursive-search");
+    // grep -d recurse (sama dengan -r), rg/ag -u (tanpa menghormati .gitignore: membaca berkas yang disembunyikan).
+    const recurseDirs = args.some((w, i) => /^--dir[a-z]*=recurse$/.test(w.text) || /^-d=?recurse$/.test(w.text) || (w.text === "-d" && args[i + 1]?.text === "recurse"));
+    const unrestricted = (name === "rg" || name === "ag") && args.some((w) => (/^-[A-Za-z]*u[A-Za-z]*$/.test(w.text) && !w.text.startsWith("--")) || w.text === "--unrestricted");
+    if (recurseDirs || unrestricted) acc.add("medium", "recursive-search");
+    if (args.some((w) => w.text.startsWith("--pre") || w.text === "--hidden" || w.text === "--no-ignore")) acc.add("medium", "recursive-search");
   }
   if (CD.has(name)) {
-    const target = positional(args)[0];
+    // `cd` tanpa argumen pindah ke HOME; `Set-Location -Path:..` memberi jalur lewat nilai opsi.
+    const valued = args.map((w) => /^-[A-Za-z]+:(.+)$/.exec(w.text)).find((m) => m !== null);
+    const target = positional(args)[0] ?? (valued ? ({ text: valued[1]!, dynamic: false } as Word) : undefined);
+    if (!target) {
+      acc.add("medium", "unresolved-path");
+      ctx.cwdUnknown = true;
+    }
     if (target) {
       const v = judgePath(target.text, ctx);
       if (v.secret) acc.add("high", "secret-file");
@@ -903,8 +1015,13 @@ function gitStage(args: readonly Word[], ctx: Ctx, acc: Acc, f: StageFlags): voi
   const broad = rest.some((w) => w.text === "." || w.text === ":/" || w.text === "*" || w.text === ":/.");
   scanPathsGit(sub, rest, ctx, acc);
   // Opsi yang menjalankan program yang disebutkan di argumennya (git grep -O, ls-remote --upload-pack, ...).
-  const runsProgram = flagTexts.some((t) => t.startsWith("--upload-pack") || t.startsWith("--receive-pack") || t.startsWith("--exec") || t.startsWith("--open-files-in-pager") || (sub === "grep" && /^-[A-Za-z]*O/.test(t)));
+  // Git menerima singkatan unik opsi panjang: --open=sh sama dengan --open-files-in-pager=sh.
+  const abbrev = (t: string, full: string) => t.startsWith("--") && t.length >= 3 && full.startsWith(t.split("=")[0]!);
+  const PROGRAM_OPTIONS = ["--upload-pack", "--receive-pack", "--exec", "--open-files-in-pager"];
+  const runsProgram = flagTexts.some((t) => PROGRAM_OPTIONS.some((full) => t.startsWith(full) || abbrev(t, full)) || (sub === "grep" && /^-[A-Za-z]*O/.test(t)));
   if (runsProgram) acc.add("high", "runs-program-option");
+  // --no-index membaca folder biasa di luar repositori (termasuk berkas yang di-ignore).
+  if (flagTexts.some((t) => abbrev(t, "--no-index") && t.length >= 6)) acc.add("medium", "outside-project");
 
   if (!sub) {
     acc.add("medium", "unknown-command");
@@ -956,6 +1073,11 @@ function scanPathsGit(sub: string, rest: readonly Word[], ctx: Ctx, acc: Acc): v
       if (w.text === "-m" || w.text === "--message") skip.add(i + 1);
     });
   }
+  // git log -L<awal>,<akhir>:<berkas> membaca berkas itu.
+  for (const w of rest) {
+    const range = /^-L.*:([^:]+)$/.exec(w.text);
+    if (range) scanPaths([{ text: range[1]!, dynamic: w.dynamic }], "read", ctx, acc, { rev: true });
+  }
   // --output=berkas menulis berkas walau subperintahnya hanya membaca.
   const mutating = ["rm", "mv", "checkout", "restore", "clean", "apply", "add"].includes(sub) || rest.some((w) => w.text.startsWith("--output"));
   scanPaths(
@@ -967,40 +1089,94 @@ function scanPathsGit(sub: string, rest: readonly Word[], ctx: Ctx, acc: Acc): v
   );
 }
 
-function infraStage(name: string, args: readonly Word[], acc: Acc): void {
+// Sumber pemasangan folder (docker -v SUMBER:TUJUAN, --mount source=SUMBER): folder di luar proyek, akar, atau rumah laptop.
+function dockerMountSources(args: readonly Word[]): string[] {
+  const out: string[] = [];
+  const take = (value: string) => {
+    const named = /(?:^|,)(?:source|src)=([^,]+)/.exec(value);
+    if (named) out.push(named[1]!);
+    else if (/^[A-Za-z]:[\\/]/.test(value)) out.push(value.includes(":", 2) ? value.slice(0, value.indexOf(":", 2)) : value); // C:/:/host
+    else out.push(value.split(":")[0]!);
+  };
+  args.forEach((w, i) => {
+    const t = w.text;
+    if (t === "-v" || t === "--volume" || t === "--mount") {
+      const next = args[i + 1];
+      if (next) take(next.text);
+    } else if (/^(--volume|--mount)=/.test(t)) take(t.slice(t.indexOf("=") + 1));
+    else if (/^-v./.test(t) && !t.startsWith("--")) take(t.slice(2));
+  });
+  return out.filter((x) => x.length > 0);
+}
+
+const DOCKER_PRIVILEGED = /^(--privileged|--cap-add|--device|--pid|--ipc|--userns|--uts|--security-opt)(=|$)/;
+
+function infraStage(name: string, args: readonly Word[], ctx: Ctx, acc: Acc): void {
   const words = positional(args).map((w) => lower(w));
   const sub = words[0] ?? "";
   const second = words[1] ?? "";
   if (name === "docker") {
+    const hostPid = args.some((w, i) => /^--(pid|ipc|userns|uts)$/.test(w.text) && args[i + 1]?.text === "host");
+    const mountsOutside = dockerMountSources(args).some((source) => {
+      const v = judgePath(source, ctx);
+      return source === "/" || source === "~" || v.outside || v.secret || HOME_VARS.test(source);
+    });
     if (sub === "push") acc.add("high", "publish");
     else if (["rm", "rmi", "prune", "kill", "stop", "down"].includes(sub) || (["system", "volume", "network", "container", "image"].includes(sub) && ["rm", "prune", "rmi"].includes(second)) || (sub === "compose" && args.some((w) => w.text === "-v"))) acc.add("high", "infra-change");
-    else if (args.some((w) => /(^|=)(\/|~|[A-Za-z]:\\?):\S/.test(w.text))) acc.add("high", "infra-change"); // memasang folder akar atau rumah laptop ke kontainer
-    else acc.add("medium", "runs-project-code");
+    else if (mountsOutside || hostPid || args.some((w) => DOCKER_PRIVILEGED.test(w.text) && !/^--(pid|ipc|userns|uts)$/.test(w.text))) acc.add("high", "infra-change"); // folder akar/rumah laptop, atau kontainer berhak istimewa
+    else if (sub === "build" || (sub === "buildx" && second === "build")) acc.add("medium", "runs-project-code");
+    else acc.add("medium", "unknown-command");
   } else if (name === "kubectl") {
     acc.add(["get", "describe", "logs", "version", "config", "explain", "top"].includes(sub) ? "medium" : "high", ["get", "describe", "logs", "version", "config", "explain", "top"].includes(sub) ? "network" : "infra-change");
   } else if (name === "terraform") {
-    acc.add(["apply", "destroy", "import", "state", "taint", "untaint", "force-unlock"].includes(sub) ? "high" : "medium", ["apply", "destroy", "import", "state", "taint", "untaint", "force-unlock"].includes(sub) ? "infra-change" : "runs-project-code");
+    acc.add(["apply", "destroy", "import", "state", "taint", "untaint", "force-unlock"].includes(sub) ? "high" : "medium", ["apply", "destroy", "import", "state", "taint", "untaint", "force-unlock"].includes(sub) ? "infra-change" : "unknown-command");
   } else {
     acc.add(["install", "upgrade", "uninstall", "rollback", "delete"].includes(sub) ? "high" : "medium", ["install", "upgrade", "uninstall", "rollback", "delete"].includes(sub) ? "infra-change" : "network");
   }
 }
 
+// Subperintah yang menjalankan kode proyek dengan cara yang umum dan dikenali. Selain ini TIDAK dinilai runs-project-code,
+// karena aturan otomatis mengizinkan kode itu (policy hanya menerima level sedang bila alasannya runs-project-code saja).
+const JS_TOOLS = set("npm", "pnpm", "yarn", "bun");
+const JS_RUN_SUBS = set("test", "t", "tst", "run", "run-script", "lint", "build");
+const OTHER_RUN_SUBS: Record<string, ReadonlySet<string>> = { cargo: set("test", "build", "check"), go: set("test", "build", "vet"), dotnet: set("test", "build") };
+// Opsi npm/pnpm/yarn yang mengambil nilai terpisah: nilainya bukan subperintah (pnpm --filter x test).
+const JS_VALUE_FLAGS = set("--filter", "-F", "--workspace", "-w", "--cwd", "--prefix", "-C", "--dir", "--filter-prod");
+// Subperintah registri yang mengubah paket orang lain atau akun: seperti publish.
+const REGISTRY_WRITE = set("publish", "unpublish", "deprecate", "owner", "access", "dist-tag", "token", "login", "adduser", "logout", "tag", "star", "unstar", "team", "org", "profile", "hook");
+
 function pkgStage(name: string, args: readonly Word[], ctx: Ctx, acc: Acc): void {
-  const pos = positional(args).map((w) => lower(w));
+  // Subperintah = positional pertama setelah nilai opsi bernilai dibuang.
+  const pos: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i]!;
+    if (JS_TOOLS.has(name) && JS_VALUE_FLAGS.has(w.text)) i += 1;
+    else if (!isFlag(w)) pos.push(w.text.toLowerCase());
+  }
   const sub = pos[0] ?? "";
   const infoOnly = args.length > 0 && args.every((w) => ["-v", "-V", "--version", "-h", "--help", "version", "help"].includes(w.text));
   if (infoOnly || args.length === 0) {
-    acc.add(infoOnly ? "low" : "medium", infoOnly ? "read-only" : "runs-project-code");
+    acc.add(infoOnly ? "low" : "medium", infoOnly ? "read-only" : "unknown-command");
     return;
   }
-  if (pos.includes("publish") || (name === "gem" && sub === "push") || (name === "twine" && sub === "upload")) acc.add("high", "publish");
-  else if (FETCH_AND_RUN.has(name) || sub === "dlx" || sub === "exec" || sub === "x") {
+  if (pos.includes("publish") || (name === "gem" && sub === "push") || (name === "twine" && sub === "upload") || (JS_TOOLS.has(name) && REGISTRY_WRITE.has(sub)) || (name === "yarn" && sub === "npm" && REGISTRY_WRITE.has(pos[1] ?? ""))) acc.add("high", "publish");
+  else if (FETCH_AND_RUN.has(name) || sub === "dlx" || sub === "exec" || sub === "x" || (name === "yarn" && sub === "plugin" && pos[1] === "import") || (name === "go" && sub === "run" && args.some((w) => /@/.test(w.text)))) {
     acc.add("medium", "fetch-and-run");
     acc.download = true;
     // npx rimraf ~, npm exec -- rm -rf ~: perintah yang dijalankan paket dinilai juga.
     assessTail(args, ctx, acc, 0, { piped: false, viaXargs: false, viaFind: false });
   } else if (INSTALL_SUBS.has(sub)) acc.add("medium", "install-dependency");
-  else acc.add("medium", "runs-project-code");
+  else if ((JS_TOOLS.has(name) && JS_RUN_SUBS.has(sub)) || OTHER_RUN_SUBS[name]?.has(sub)) acc.add("medium", "runs-project-code");
+  else acc.add("medium", "unknown-command"); // npm explore, npm pkg set, yarn plugin, go run ., uv run, ...
+  scanPaths(args, "read", ctx, acc);
+}
+
+// Pelari tes dan pemeriksa yang umum. Perintah build lain (gradle, mvn, gcc, java, tsx, vite, ...) menjalankan kode atau plugin
+// yang lebih bebas, jadi tidak dianggap runs-project-code.
+const RUN_TOOLS = set("make", "vitest", "jest", "mocha", "pytest", "eslint", "prettier", "tsc", "ruff", "mypy");
+
+function runnerStage(name: string, args: readonly Word[], ctx: Ctx, acc: Acc): void {
+  acc.add("medium", RUN_TOOLS.has(name) ? "runs-project-code" : "unknown-command");
   scanPaths(args, "read", ctx, acc);
 }
 
