@@ -422,6 +422,25 @@ describe("relay", () => {
     expect(calls[0]!.url).toBe("https://relay.lingkungan.test/machine");
   });
 
+  test("lingkungan menimpa relay lain: relay.json milik relay yang berbeda TIDAK dihapus oleh --purge-data", async () => {
+    const sb = sandbox();
+    withRelay(sb, "https://relay-asli.contoh.com");
+    const { fetchFake } = respond(200);
+    await uninstall(sb, { fetch: fetchFake, purgeData: true, env: { AGENTMON_RELAY_URL: "https://relay.lingkungan.test", AGENTMON_RELAY_TOKEN: TOKEN_RELAY } });
+    expect(existsSync(join(sb.home, "relay.json"))).toBe(true);
+  });
+
+  test("checkpoints.json (satu-satunya daftar repo) dipertahankan oleh --purge-data bila checkpoint belum dibersihkan", async () => {
+    const sb = sandbox();
+    writeFileSync(join(sb.home, "checkpoints.json"), JSON.stringify({ a: { root: join(sb.root, "repo") } }));
+    const r = await uninstall(sb, { purgeData: true });
+    expect(existsSync(join(sb.home, "checkpoints.json"))).toBe(true);
+    expect(r.text).toMatch(/--purge-checkpoints/);
+    const r2 = await uninstall(sb, { purgeData: true, purgeCheckpoints: true, git: async () => OK });
+    expect(r2.code).toBe(0);
+    expect(existsSync(join(sb.home, "checkpoints.json"))).toBe(false);
+  });
+
   test("401 (token sudah tidak dikenal): dianggap sudah dicabut, bukan galat", async () => {
     const sb = sandbox();
     withRelay(sb);

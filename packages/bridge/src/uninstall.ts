@@ -179,6 +179,7 @@ export async function runUninstall(options: UninstallOptions): Promise<number> {
   } else record("Daemon", "nothing", "tidak sedang berjalan");
 
   // ---- 3. Relay ----
+  let relayKeepNote = false;
   let relayDone = true; // true = aman menghapus relay.json (sudah dicabut, atau memang tidak terdaftar)
   if (options.skipRelay) {
     relayDone = false;
@@ -193,6 +194,13 @@ export async function runUninstall(options: UninstallOptions): Promise<number> {
       record("Relay", "failed", `pengaturan relay rusak, tidak bisa dicabut otomatis: ${error instanceof Error ? error.message : "galat"}`);
     }
     if (relay) {
+      // relay.json hanya aman dihapus bila memang itu yang dicabut; bila lingkungan menimpa (URL/token beda), berkas itu milik relay lain.
+      try {
+        const file = JSON.parse(readFileSync(join(home, "relay.json"), "utf8")) as { relayUrl?: unknown; token?: unknown };
+        if (file.relayUrl !== relay.relayUrl || file.token !== relay.token) relayKeepNote = true;
+      } catch {
+        /* tidak ada berkas: tidak ada yang perlu dijaga */
+      }
       const host = (() => {
         try {
           return new URL(relay.relayUrl).host;
@@ -278,7 +286,13 @@ export async function runUninstall(options: UninstallOptions): Promise<number> {
     record("Checkpoint", "skipped", `${repoRoots.total} checkpoint di ${repoRoots.unique.length} repo masih ada. Hapus dengan: uninstall --purge-checkpoints`);
   } else record("Checkpoint", "nothing", "tidak ada yang tercatat");
 
-  const removable = [...DATA_FILES, ...(relayDone ? ["relay.json"] : [])].filter((name) => existsSync(join(home, name)));
+  if (relayKeepNote) relayDone = false;
+  const daemonStuck = results.some((r) => r.step === "Daemon" && r.status === "manual");
+  // checkpoints.json adalah satu-satunya daftar repo: dipertahankan selama checkpoint belum dibersihkan. token dipertahankan selama daemon belum berhenti.
+  const checkpointsPending = repoRoots.total > 0 && !(options.purgeCheckpoints && !results.some((r) => r.step === "Checkpoint" && r.status === "failed"));
+  const removable = [...DATA_FILES, ...(relayDone ? ["relay.json"] : [])]
+    .filter((name) => !(name === "checkpoints.json" && checkpointsPending) && !(name === "token" && daemonStuck))
+    .filter((name) => existsSync(join(home, name)));
   const policyFile = join(home, "policy.json");
   const backups = settingsFile ? listSettingsBackups(settingsFile) : [];
   if (options.purgeData) {

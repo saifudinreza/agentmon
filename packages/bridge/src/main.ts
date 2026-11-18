@@ -168,7 +168,10 @@ async function main() {
       }
     }
 
+    let stopping = false;
     const shutdown = () => {
+      if (stopping) return; // /stop lalu Ctrl+C (atau dua kali /stop) tidak menjalankannya dua kali
+      stopping = true;
       // Memberi relay kesempatan singkat (2 detik) menerima sisa antrean sebelum berhenti.
       void (relay ? relay.flush(2000) : Promise.resolve())
         .then(() => relay?.close())
