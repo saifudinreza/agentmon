@@ -123,6 +123,8 @@ export const eventPayloads = {
     status: AutoApprovalStatusSchema,
     policy: PolicyResultSchema, // aturan mana yang memutuskan
     risk: RiskSchema.optional(),
+    // Apa yang diputuskan (perintah atau jalur berkas, satu baris dan dipotong), supaya jejak audit di timeline bisa dibaca.
+    summary: z.string().max(300).optional(),
   }),
   // Pesan dari agent, misalnya "Claude butuh perhatianmu".
   "agent.notification": z.object({

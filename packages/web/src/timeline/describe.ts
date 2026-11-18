@@ -62,6 +62,13 @@ const RESOLVED_TITLE = {
 
 const RESOLVED_TONE = { approved: "ok", partially_approved: "ok", denied: "bad", timed_out: "warn", cancelled: "neutral" } as const satisfies Record<string, Tone>;
 
+/** Baris keterangan keputusan otomatis: aturan penyebab, lalu apa yang diputuskan. */
+function autoDetail(payload: { policy: { ruleId: string | null }; summary?: string | undefined }): string {
+  const rule = payload.policy.ruleId ? cleanLine(payload.policy.ruleId, 80) : "";
+  const what = payload.summary ? cleanLine(payload.summary, 160) : "";
+  return rule && what ? `${rule}: ${what}` : rule || what;
+}
+
 export function describeEvent(envelope: Envelope): EventView {
   const parsed = EventSchema.safeParse(envelope);
   // Jenis yang belum dikenal, atau isinya tidak sesuai kontrak: tampilkan secara umum.
@@ -101,7 +108,7 @@ export function describeEvent(envelope: Envelope): EventView {
       return {
         titleKey: event.payload.status === "auto_approved" ? "event.approval.auto_approved" : "event.approval.auto_denied",
         titleParams: { tool: cleanLine(event.payload.toolName, 60) },
-        ...(event.payload.policy.ruleId ? { detail: cleanLine(event.payload.policy.ruleId, 80) } : {}),
+        ...(autoDetail(event.payload) ? { detail: autoDetail(event.payload) } : {}),
         tone: event.payload.status === "auto_approved" ? "ok" : "bad",
       };
     case "agent.notification":

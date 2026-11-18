@@ -12,6 +12,7 @@ import { createLogger } from "./logger";
 import { createRelayClient, type RelayClient } from "./relay-client";
 import { resolveRelayConfig, type ResolvedRelayConfig } from "./relay-config";
 import { createPolicyRuntime } from "./policy/runtime";
+import { createFileSessionFlags } from "./policy/session-flags";
 import { createTimeline } from "./timeline";
 
 function portFromEnv(): number {
@@ -68,6 +69,8 @@ async function main() {
     // Aturan otomatis (policy) milik pengguna: ~/.agentmon/policy.json. Tanpa berkas itu tidak ada aksi yang diputuskan otomatis.
     const policyLogger = createLogger(paths(agentmonHome()).log);
     const policy = createPolicyRuntime({ home: agentmonHome(), logger: policyLogger });
+    // "Sesi ini sudah mengubah proyek": disimpan di disk supaya tahan restart daemon dan sesi yang dilanjutkan; rusak = semua sesi dianggap sudah mengubah.
+    const sessionFlags = createFileSessionFlags({ file: join(agentmonHome(), "session-flags.json"), logger: policyLogger });
     const daemon = await startDaemon({
       port: portFromEnv(),
       policyStatus: () => policy.status(),
@@ -88,6 +91,7 @@ async function main() {
       }),
       onHook: createClaudeCodeHandler({
         policy,
+        sessionFlags,
         // Checkpoint git sebelum alat pengubah berkas. Matikan dengan AGENTMON_CHECKPOINT=0.
         ...(checkpoints ? { checkpoint: (cwd: string, sessionId: string) => (checkpoints as CheckpointService).create(cwd, { sessionId }) } : {}),
         // Perintah baru dari pengguna ke agent berarti agent mulai bekerja walau belum ada event alat.

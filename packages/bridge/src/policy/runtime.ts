@@ -14,6 +14,7 @@
 import type { Risk } from "@agentmon/shared";
 import { loadPolicy, plainText, repoPolicyPath, userPolicyPath, type PolicyLoad } from "./config";
 import { evaluatePolicy, type PolicyDecision } from "./evaluate";
+import { findProjectRoot } from "./project-root";
 
 /** Keputusan yang diserahkan ke penangan hook. */
 export type AutoPolicyDecision = {
@@ -51,11 +52,16 @@ export type PolicyRuntimeOptions = {
 
 const MAX_SEEN_PROBLEMS = 100;
 
-/** Alasan yang dibaca agent saat aksinya ditolak otomatis: menyebut aturan penyebabnya dan catatan pengguna, tanpa isi dari berkas lain. */
+/**
+ * Alasan yang dibaca agent saat aksinya ditolak otomatis. Catatan (`note`) hanya dibawa dari aturan PENGGUNA: berkas aturan di dalam proyek
+ * tidak dipercaya, dan catatannya akan dibaca agent sebagai bagian dari instruksi, jadi repo jahat bisa menyelipkan kalimat ke agent.
+ */
 export function denyReason(ruleId: string | null, note: string | undefined): string {
+  const fromProject = ruleId?.startsWith("repo:") === true;
   const who = ruleId ? `aturan "${plainText(ruleId, 80)}"` : "aturan otomatis";
-  const extra = note?.trim() ? ` Catatan: ${plainText(note, 300)}` : "";
-  return `Ditolak otomatis oleh ${who} di AgentMon (policy milik pengguna).${extra} Jangan coba menyiasati dengan perintah lain yang setara; tanyakan ke pengguna bila aksi ini memang perlu.`;
+  const owner = fromProject ? "aturan dari berkas proyek" : "policy milik pengguna";
+  const extra = !fromProject && note?.trim() ? ` Catatan: ${plainText(note, 300)}` : "";
+  return `Ditolak otomatis oleh ${who} di AgentMon (${owner}).${extra} Jangan coba menyiasati dengan perintah lain yang setara; tanyakan ke pengguna bila aksi ini memang perlu.`;
 }
 
 export function createPolicyRuntime(options: PolicyRuntimeOptions): PolicyRuntime {
@@ -64,8 +70,8 @@ export function createPolicyRuntime(options: PolicyRuntimeOptions): PolicyRuntim
   const evaluate = options.evaluate ?? evaluatePolicy;
   const seen = new Set<string>();
 
-  const loadFor = (cwd: string | undefined): PolicyLoad => {
-    const loaded = load({ userPath: userPolicyPath(options.home), ...(cwd ? { repoPath: repoPolicyPath(cwd) } : {}) });
+  const loadFor = (root: string | undefined): PolicyLoad => {
+    const loaded = load({ userPath: userPolicyPath(options.home), ...(root ? { repoPath: repoPolicyPath(root), repoRoot: root } : {}) });
     for (const problem of loaded.problems) {
       if (seen.has(problem)) continue;
       if (seen.size >= MAX_SEEN_PROBLEMS) seen.clear();
@@ -78,8 +84,10 @@ export function createPolicyRuntime(options: PolicyRuntimeOptions): PolicyRuntim
   return {
     decide(input, state) {
       try {
-        const loaded = loadFor(input.cwd);
-        const result: PolicyDecision = evaluate({ toolName: input.toolName, toolInput: input.toolInput, ...(input.cwd !== undefined ? { cwd: input.cwd } : {}) }, loaded, { scriptsChanged: state.scriptsChanged });
+        // Aturan jalur dan berkas aturan proyek dihitung dari AKAR proyek (folder repo), bukan dari folder kerja yang bisa berada di subfolder.
+        const root = input.cwd ? findProjectRoot(input.cwd) : undefined;
+        const loaded = loadFor(root);
+        const result: PolicyDecision = evaluate({ toolName: input.toolName, toolInput: input.toolInput, ...(input.cwd !== undefined ? { cwd: input.cwd } : {}), ...(root !== undefined ? { projectRoot: root } : {}) }, loaded, { scriptsChanged: state.scriptsChanged });
         const decision: AutoPolicyDecision = { action: result.action, ruleId: result.ruleId, matched: result.matched, risk: result.risk, why: result.why };
         if (result.action === "deny") {
           const rule = loaded.rules.find((r) => r.id === result.ruleId);

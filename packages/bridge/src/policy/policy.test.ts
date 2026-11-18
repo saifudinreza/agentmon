@@ -161,11 +161,17 @@ describe("aturan 4: skrip/build berubah di sesi ini menangguhkan aturan izinkan 
     expect(run(bash("npm test"), rules, { scriptsChanged: true })).toMatchObject({ action: "ask", why: "scripts-changed" });
   });
 
-  test("hanya perintah yang menjalankan kode proyek yang ditangguhkan: perintah baca-saja yang dikenali tetap otomatis", () => {
-    const rules = [allow("tes", "npm test"), allow("baca", "git status", "ls *")];
-    expect(run(bash("git status"), rules, { scriptsChanged: true }).action).toBe("allow");
-    expect(run(bash("ls src"), rules, { scriptsChanged: true }).action).toBe("allow");
-    expect(run(bash("npm test"), rules, { scriptsChanged: true })).toMatchObject({ action: "ask", why: "scripts-changed" });
+  test("hanya perintah yang benar-benar inert (ls, cat, pwd) tetap otomatis; git status dan git diff TIDAK (menjalankan program dari konfigurasi repo)", () => {
+    const rules = [allow("tes", "npm test"), allow("baca", "git status", "git diff", "ls *", "cat *", "pwd")];
+    for (const command of ["ls src", "cat src/a.ts", "pwd"]) expect(run(bash(command), rules, { scriptsChanged: true }).action, command).toBe("allow");
+    for (const command of ["git status", "git diff", "npm test"]) expect(run(bash(command), rules, { scriptsChanged: true }), command).toMatchObject({ action: "ask", why: "scripts-changed" });
+    for (const command of ["git status", "git diff"]) expect(run(bash(command), rules, { scriptsChanged: false }).action, command).toBe("allow");
+  });
+
+  test("rantai yang memuat satu bagian tidak inert ikut ditangguhkan", () => {
+    const rules = [allow("baca", "ls *", "git status")];
+    expect(run(bash("ls src && git status"), rules, { scriptsChanged: true })).toMatchObject({ action: "ask", why: "scripts-changed" });
+    expect(run(bash("git status && ls src"), rules, { scriptsChanged: true })).toMatchObject({ action: "ask", why: "scripts-changed" });
   });
 
   test("penangguhan tidak melonggarkan apa pun: tolak dan tanya tetap berlaku", () => {
