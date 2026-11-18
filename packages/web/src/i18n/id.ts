@@ -357,7 +357,7 @@ export const id = {
   "guide.step.notify.locked.pair": "Pasangkan laptop dulu.",
   "guide.step.notify.locked.blocked": "Tidak tersedia di perangkat ini (lihat penjelasan di atas).",
   "guide.step.test.title": "Uji notifikasi",
-  "guide.step.test.body": "Kirim satu notifikasi uji untuk memastikan semuanya sampai ke HP ini. Kunci layar HP setelah mengetuk tombol agar yang diuji sama dengan keadaan sehari-hari.",
+  "guide.step.test.body": "Kirim satu notifikasi uji untuk memastikan semuanya sampai ke HP ini. Setelah muncul tulisan Terkirim, kunci layar HP agar yang diuji sama dengan keadaan sehari-hari.",
   "guide.step.test.locked": "Aktifkan notifikasi dulu.",
   "guide.step.test.send": "Kirim notifikasi uji",
   "guide.step.test.sending": "Mengirim…",

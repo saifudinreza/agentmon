@@ -43,6 +43,13 @@ describe("detectEnvironment", () => {
     expect([env.os, env.browser]).toEqual([os, browser]);
   });
 
+  test("UA app layar utama iOS (tanpa Safari/ dan Version/) tetap dikenali sebagai Safari, jadi tidak diberi catatan 'pasang lewat Safari'", () => {
+    const ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148";
+    const env = detect(ua, { standalone: true });
+    expect(env.browser).toBe("safari");
+    expect(buildGuide(env, paired).notes).toEqual([]);
+  });
+
   test("versi iOS dibaca, dan iPad bertampilan desktop tetap dikenali sebagai iOS", () => {
     expect(detect(UA.iphoneSafari).iosVersion).toEqual({ major: 17, minor: 4 });
     expect(detect(UA.ios15).iosVersion).toEqual({ major: 15, minor: 7 });
@@ -216,7 +223,7 @@ describe("layar panduan", () => {
       fireEvent.click(send);
       fireEvent.click(send);
     });
-    await waitFor(() => expect(screen.getByText(/Terkirim/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/^Terkirim. Notifikasi/)).toBeTruthy());
     expect(relay.api.sendTestPush).toHaveBeenCalledTimes(1);
   });
 

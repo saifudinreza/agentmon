@@ -351,7 +351,7 @@ export const en: Record<MessageKey, string> = {
   "guide.step.notify.locked.pair": "Pair a laptop first.",
   "guide.step.notify.locked.blocked": "Not available on this device (see the explanation above).",
   "guide.step.test.title": "Test notifications",
-  "guide.step.test.body": "Send one test notification to confirm everything reaches this phone. Lock the phone's screen after tapping the button so the test matches daily use.",
+  "guide.step.test.body": "Send one test notification to confirm everything reaches this phone. Once it says Sent, lock the phone's screen so the test matches daily use.",
   "guide.step.test.locked": "Turn on notifications first.",
   "guide.step.test.send": "Send test notification",
   "guide.step.test.sending": "Sending…",

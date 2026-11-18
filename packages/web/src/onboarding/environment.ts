@@ -35,6 +35,9 @@ function detectBrowser(ua: string, os: Os): Browser {
   if (/FxiOS|Firefox/.test(ua)) return "firefox";
   if (/CriOS|Chrome\//.test(ua)) return "chrome";
   if (/Safari\//.test(ua) && (os === "ios" || /Version\//.test(ua))) return "safari";
+  // App layar utama iOS: userAgent-nya tanpa "Safari/" dan "Version/", tetapi tetap WebKit milik Safari. Browser lain di iOS
+  // (Chrome, Firefox, Edge, Opera) sudah dikenali di atas lewat tandanya sendiri.
+  if (os === "ios") return "safari";
   return "other";
 }
 
