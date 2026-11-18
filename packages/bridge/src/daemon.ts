@@ -9,7 +9,7 @@ import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createApprovalEngine, type ApprovalEngine } from "./approvals";
-import { createDaemonControl, type DaemonControl } from "./control";
+import { createDaemonControl, type DaemonControl, type RelayStatus } from "./control";
 import { createTimeline, type Timeline } from "./timeline";
 import { agentmonHome, loadOrCreateMachineId, loadOrCreateToken, paths } from "./home";
 import { createLogger } from "./logger";
@@ -48,6 +48,8 @@ export type DaemonOptions = {
   holdEnabled?: boolean;
   /** Adakah yang bisa menjawab izin (mis. HP lewat relay)? Bila salah, aksi tidak ditahan. Bawaan: ada. */
   canAnswer?: () => boolean;
+  /** Keadaan relay untuk perintah `status`. Bawaan: tidak dilaporkan. */
+  relayStatus?: () => RelayStatus;
   // Lama menunggu keputusan sebelum izin dianggap habis waktu (milidetik). Bawaan 540 detik.
   approvalTimeoutMs?: number;
   // Halaman web lokal (alat pengembangan) di /dev. Bawaan mati.
@@ -117,7 +119,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
     logger,
     ...(options.approvalTimeoutMs !== undefined ? { defaultTimeoutMs: options.approvalTimeoutMs } : {}),
   });
-  const control = createDaemonControl({ holdEnabled: options.holdEnabled ?? false, approvals, ...(options.canAnswer ? { canAnswer: options.canAnswer } : {}) });
+  const control = createDaemonControl({ holdEnabled: options.holdEnabled ?? false, approvals, ...(options.canAnswer ? { canAnswer: options.canAnswer } : {}), ...(options.relayStatus ? { relayStatus: options.relayStatus } : {}) });
 
   const timeline = options.timeline ?? createTimeline();
 

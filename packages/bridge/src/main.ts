@@ -42,6 +42,7 @@ async function main() {
     // Klien relay (menyambung ke relay agar HP bisa melihat dan menjawab) dibuat SETELAH daemon
     // menyala, karena butuh approval engine-nya. Sampai itu siap, event hanya tidak diteruskan.
     let relay: RelayClient | undefined;
+    let relayFailed = false;
     // Checkpoint dan rollback. Aktivitas sesi dipakai rollback untuk menolak saat agent masih berjalan.
     const activity = createSessionActivity();
     let checkpoints: CheckpointService | undefined;
@@ -74,6 +75,12 @@ async function main() {
       holdEnabled,
       // Dengan relay terpasang, aksi hanya ditahan bila ada HP yang bisa menjawab; tanpa relay, jawaban lewat CLI atau halaman lokal.
       canAnswer: () => (relayConfig ? (relay?.canReachPhone() ?? false) : true),
+      // Dilaporkan oleh perintah `status`: tersambung atau tidaknya relay dan ada HP online atau tidak.
+      relayStatus: () => ({
+        configured: Boolean(relayConfig) && !relayFailed,
+        state: !relayConfig || relayFailed ? "off" : relay ? relay.stats().state : "connecting",
+        phoneReachable: relay?.canReachPhone() ?? false,
+      }),
       onHook: createClaudeCodeHandler({
         // Checkpoint git sebelum alat pengubah berkas. Matikan dengan AGENTMON_CHECKPOINT=0.
         ...(checkpoints ? { checkpoint: (cwd: string, sessionId: string) => (checkpoints as CheckpointService).create(cwd, { sessionId }) } : {}),
@@ -118,6 +125,7 @@ async function main() {
       } catch (error) {
         // Alamat relay yang salah hanya mematikan relay. Daemon tetap jalan, karena relay tidak
         // boleh menjadi alasan agent berhenti bekerja.
+        relayFailed = true;
         console.error(`Relay TIDAK dipakai: ${error instanceof Error ? error.message : String(error)}`);
       }
     } else {

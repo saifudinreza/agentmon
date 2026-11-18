@@ -381,6 +381,7 @@ export async function runSetup(options: SetupOptions): Promise<number> {
   if (open) out(`Daemon: berjalan di 127.0.0.1:${port}`);
   else {
     out(`Daemon: belum berjalan. Nyalakan dengan: pnpm --filter @agentmon/bridge daemon`);
+    out("  Agar daemon menyala sendiri setiap kali Anda masuk ke laptop: pnpm --filter @agentmon/bridge cli autostart install");
     out("  Agar izin bisa dijawab dari HP, jalankan dengan AGENTMON_HOLD=1. Sesi Claude Code yang SUDAH terbuka perlu dimulai ulang agar memuat hook.");
   }
 
