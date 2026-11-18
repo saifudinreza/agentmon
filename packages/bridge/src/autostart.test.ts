@@ -5,7 +5,7 @@
 //   - perintah CLI `autostart` dan laporan `status`.
 // Pemasangan SUNGGUHAN di macOS dan Linux tidak bisa dijalankan di CI Windows; yang teruji di sini adalah berkas dan perintahnya.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
@@ -672,7 +672,8 @@ describe("review #84: tanda kutip tipografis dan path relatif", () => {
     const value = win.state.value!;
     const path = /"(.+)"$/.exec(value)![1]!;
     expect(isAbsolute(path)).toBe(true);
-    expect(path).toBe(join(sb.root, "data relatif", "autostart", WINDOWS_VBS_NAME));
+    // Di macOS /var adalah tautan ke /private/var: folder kerja sesudah chdir sudah berupa jalur aslinya, jadi bandingkan jalur aslinya.
+    expect(path).toBe(join(realpathSync(sb.root), "data relatif", "autostart", WINDOWS_VBS_NAME));
     expect(existsSync(path)).toBe(true);
   });
 
