@@ -32,6 +32,8 @@ async function cli(argv: string[], port: number | string) {
     env: { AGENTMON_HOME: home, AGENTMON_PORT: String(port) },
     out: (t) => out.push(t),
     err: (t) => err.push(t),
+    // Jangan menyentuh pengaturan autostart sistem yang sebenarnya (PowerShell, registri, launchctl).
+    autostartStatus: async () => ({ supported: true, enabled: false, mechanism: "uji" }),
   });
   return { code, out: out.join("\n"), err: err.join("\n") };
 }

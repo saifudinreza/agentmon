@@ -26,7 +26,8 @@ import { readFileSync } from "node:fs";
 import { DEFAULT_PORT } from "./daemon";
 import { agentmonHome, paths } from "./home";
 import type { DaemonStatus } from "./control";
-import { runListDevices, runPair, runRevokeDevice, type PairOptions } from "./pairing";
+import { countPairedDevices, runListDevices, runPair, runRevokeDevice, type PairOptions } from "./pairing";
+import { autostartStatus, installAutostart, removeAutostart, reportAutostart, type AutostartStatus } from "./autostart";
 import { runPolicy } from "./policy/cli";
 import { runRegister } from "./register";
 import { runSetup } from "./setup";
@@ -41,6 +42,8 @@ export type CliDeps = {
   pair?: Partial<Pick<PairOptions, "fetch" | "sleep" | "now" | "pollMs" | "renderQr">>;
   // Hanya diisi test, untuk perintah `register` (nama komputer palsu).
   hostname?: () => string;
+  // Hanya diisi test, supaya `status` tidak menyentuh pengaturan autostart sistem yang sebenarnya.
+  autostartStatus?: () => Promise<AutostartStatus>;
 };
 
 type Reply = { status: number; body: unknown };
@@ -95,6 +98,8 @@ const USAGE = [
   "  revoke <nomor>            cabut sebuah HP yang hilang (butuh laptop yang sudah terdaftar di relay)",
   "  setup [--dry-run] [--no-pair] [--claude-dir <folder>]",
   "                            pasang hook ke Claude Code (aman dijalankan berulang), lalu tampilkan QR pairing",
+  "  autostart install [--hold] | remove | status",
+  "                            nyalakan daemon otomatis saat masuk ke laptop (tanpa hak admin) dan nyalakan lagi bila mati",
   "  policy test|preset        uji aturan otomatis tanpa menjalankan perintah (lihat docs/policy.md)",
   "  pair                      pasangkan HP lewat QR (butuh relay terdaftar dan AGENTMON_APP_URL)",
 ].join("\n");
@@ -102,7 +107,7 @@ const USAGE = [
 /** Menjalankan satu perintah. Mengembalikan kode keluar (0 = berhasil). */
 export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   const [command, ...rest] = argv;
-  if (!command || !["status", "pause", "resume", "approve", "deny", "ui", "pair", "devices", "revoke", "register", "policy", "setup"].includes(command)) {
+  if (!command || !["status", "pause", "resume", "approve", "deny", "ui", "pair", "devices", "revoke", "register", "policy", "setup", "autostart"].includes(command)) {
     deps.err(USAGE);
     return command ? 2 : 0;
   }
@@ -110,6 +115,21 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
 
   // `policy` hanya menguji dan mencetak aturan; tidak menyentuh daemon.
   if (command === "policy") return runPolicy(rest, deps, home);
+
+  // `autostart` mengatur penyalaan otomatis daemon saat masuk ke laptop; tidak butuh daemon yang sedang berjalan.
+  if (command === "autostart") {
+    const [action, ...flags] = rest;
+    const hold = flags.includes("--hold");
+    const unknown = flags.filter((f) => f !== "--hold");
+    if (!["install", "remove", "status"].includes(action ?? "") || unknown.length > 0 || (hold && action !== "install")) {
+      deps.err("Pemakaian: autostart install [--hold] | autostart remove | autostart status");
+      return 2;
+    }
+    const base = { env: deps.env, out: deps.out, err: deps.err, dataDir: home };
+    if (action === "install") return installAutostart({ ...base, hold });
+    if (action === "remove") return removeAutostart(base);
+    return reportAutostart(base);
+  }
 
   // `setup` memasang hook ke pengaturan Claude Code dan menawarkan pairing; tidak butuh daemon yang sedang berjalan.
   if (command === "setup") {
@@ -268,6 +288,28 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     return 1;
   }
 
+  // Rincian tambahan `status`: relay, HP terpasang, dan autostart.
+  const printStatusDetails = async (status: DaemonStatus, daemonPort: number) => {
+    deps.out(`Daemon: berjalan di 127.0.0.1:${daemonPort}`);
+    const relay = status.relay;
+    if (!relay || relay.state === "off") deps.out("Relay: tidak dipakai (daftarkan laptop ini dengan `register`)");
+    else if (relay.state === "ready") deps.out(`Relay: tersambung${relay.phoneReachable ? ", ada HP yang online" : ", tetapi tidak ada HP yang online"}`);
+    else if (relay.state === "connecting") deps.out("Relay: menyambung...");
+    else deps.out("Relay: terputus, mencoba lagi");
+    let relayConfig: { relayUrl: string; token: string } | undefined;
+    try {
+      relayConfig = resolveRelayConfig(deps.env, home);
+    } catch {
+      relayConfig = undefined;
+    }
+    if (relayConfig) {
+      const count = await countPairedDevices({ relayUrl: relayConfig.relayUrl, machineToken: relayConfig.token, ...(deps.pair?.fetch ? { fetch: deps.pair.fetch } : {}) });
+      deps.out(count === undefined ? "Perangkat: tidak diketahui (relay tidak terjangkau)" : `Perangkat: ${count} HP terpasang`);
+    } else deps.out("Perangkat: tidak diketahui (laptop belum terdaftar ke relay)");
+    const auto = await (deps.autostartStatus ?? (() => autostartStatus({ env: deps.env, out: deps.out, err: deps.err, dataDir: home })))();
+    deps.out(auto.supported ? (auto.enabled ? `Mulai otomatis: aktif (${auto.mechanism}${auto.detail ? `; ${auto.detail}` : ""})` : "Mulai otomatis: belum dipasang (pasang dengan: autostart install)") : `Mulai otomatis: ${auto.mechanism}`);
+  };
+
   const notRunning = () => {
     deps.err(`Daemon tidak berjalan di 127.0.0.1:${port}. Jalankan dulu dengan: pnpm --filter @agentmon/bridge daemon`);
     return 1;
@@ -291,6 +333,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     }
     const status = reply.body as DaemonStatus & { released?: number };
     deps.out(status.message);
+    if (command === "status") await printStatusDetails(status, port);
     if (command === "pause" && status.released) deps.out(`${status.released} permintaan yang menunggu dilepas ke terminal.`);
     for (const p of status.pending) {
       const change = p.change ? `  perubahan: ${p.change}` : "";

@@ -60,6 +60,8 @@ Token juga bisa dibaca dari variabel lingkungan: `"Authorization": "Bearer $AGEN
 
 Jawaban daemon selalu objek JSON. `{}` berarti tanpa keputusan, sehingga alur izin normal berjalan.
 
+Daemon bisa dinyalakan otomatis saat masuk ke laptop dengan `autostart install` (lihat `docs/autostart.md`); perintah `status` melaporkan daemon, relay, jumlah HP, dan autostart.
+
 Konfigurasi di atas dihasilkan oleh `buildClaudeHookSettings` (`packages/bridge/src/hook-config.ts`), bukan ditulis tangan, supaya persis sama dengan yang nanti dipasang oleh perintah setup. Fungsi itu mendaftarkan enam event (`PreToolUse`, `PermissionRequest`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd`), memakai `127.0.0.1`, dan tidak pernah memuat `onFailure`. Batas tunggu hook dibedakan: 600 detik hanya untuk `PreToolUse` dan `PermissionRequest` (menunggu keputusan dari HP), 10 detik untuk empat event pengamatan, supaya daemon yang membeku tidak menahan agent lama pada event yang tidak menunggu siapa pun. `UserPromptSubmit` sengaja tidak didaftarkan karena isinya adalah teks perintah pengguna dan tidak dipakai kontrak pesan. `SessionStart` juga tidak didaftarkan: event itu hanya mendukung hook `command`, bukan `http`, sehingga event `session.started` tidak datang dari hook ini.
 
 ## Adapter Claude Code (pemetaan ke kontrak)

@@ -170,6 +170,19 @@ function printable(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "?");
 }
 
+/** Jumlah HP yang terpasang dengan laptop ini, atau undefined bila relay tidak terjangkau atau menolak. Tidak pernah melempar galat. */
+export async function countPairedDevices(options: { relayUrl: string; machineToken: string; fetch?: typeof fetch }): Promise<number | undefined> {
+  const http = options.fetch ?? fetch;
+  try {
+    const response = await http(`${options.relayUrl.replace(/\/+$/, "")}/pair/devices`, { headers: { authorization: `Bearer ${options.machineToken}` }, signal: AbortSignal.timeout(8_000) });
+    if (!response.ok) return undefined;
+    const parsed = PairedDevicesResponseSchema.safeParse(await response.json().catch(() => undefined));
+    return parsed.success ? parsed.data.devices.length : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Mencetak HP yang terpasang dengan laptop ini. Mengembalikan kode keluar. */
 export async function runListDevices(options: DevicesCommandOptions): Promise<number> {
   const http = options.fetch ?? fetch;

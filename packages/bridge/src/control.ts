@@ -32,11 +32,20 @@ export type PendingSummary = {
 
 // Keadaan yang ditampilkan perintah `status`. Sengaja tidak memuat isi input alat
 // (bisa berisi kode atau rahasia), hanya nama alatnya.
+/** Keadaan sambungan ke relay, untuk perintah `status`. Tidak memuat alamat atau token. */
+export type RelayStatus = {
+  configured: boolean;
+  state: "off" | "connecting" | "ready" | "disconnected" | "closed";
+  /** Ada HP yang sedang online dan bisa dihubungi. */
+  phoneReachable: boolean;
+};
+
 export type DaemonStatus = {
   paused: boolean;
   holdEnabled: boolean;
   pending: PendingSummary[];
   message: string;
+  relay?: RelayStatus;
 };
 
 export type DaemonControl = {
@@ -73,6 +82,8 @@ export function createDaemonControl(options: {
   approvals: ApprovalEngine;
   /** Adakah yang bisa menjawab? Bila salah, aksi tidak ditahan. Bawaan: selalu ada (jawaban lewat CLI atau halaman lokal). */
   canAnswer?: () => boolean;
+  /** Keadaan relay untuk `status`. Bawaan: tidak dilaporkan. */
+  relayStatus?: () => RelayStatus;
 }): DaemonControl {
   const { holdEnabled, approvals } = options;
   const canAnswer = options.canAnswer ?? (() => true);
@@ -121,7 +132,7 @@ export function createDaemonControl(options: {
           ...(a.diff && a.diff.sensitive.length > 0 ? { sensitive: a.diff.sensitive.map((r) => r.code) } : {}),
         }),
       );
-      return { paused, holdEnabled, pending, message: describe(pending.map((p) => p.toolName)) };
+      return { paused, holdEnabled, pending, message: describe(pending.map((p) => p.toolName)), ...(options.relayStatus ? { relay: options.relayStatus() } : {}) };
     },
   };
 }
