@@ -54,7 +54,7 @@ Daftarkan hal yang sama untuk event lain yang dibutuhkan. Jangan memakai `onFail
 
 Tulis alamatnya sebagai `127.0.0.1`, **bukan** `localhost`. Daemon hanya mendengarkan di IPv4, sedangkan di sebagian komputer `localhost` diarahkan ke `::1` (IPv6) lebih dulu. Koneksinya akan ditolak, dan hook gagal diam-diam (aman, tetapi tidak berfungsi). Daemon menerima `Host: localhost`, tetapi itu tidak menjamin koneksinya sampai.
 
-Token juga bisa dibaca dari variabel lingkungan: `"Authorization": "Bearer $AGENTMON_TOKEN"` bersama `"allowedEnvVars": ["AGENTMON_TOKEN"]`. Variabel itu harus ada di lingkungan proses Claude Code, jadi pemasang otomatis (issue setup) lebih baik menuliskan tokennya langsung di pengaturan tingkat pengguna.
+Token juga bisa dibaca dari variabel lingkungan: `"Authorization": "Bearer $AGENTMON_TOKEN"` bersama `"allowedEnvVars": ["AGENTMON_TOKEN"]`. Variabel itu harus ada di lingkungan proses Claude Code, jadi pemasang otomatis (`setup`, lihat `docs/setup.md`) menuliskan tokennya langsung di pengaturan tingkat pengguna.
 
 **Konfigurasi ini memuat token.** Siapa pun yang bisa membaca berkas pengaturannya bisa memanggil daemon. Karena itu pemasang (issue setup) harus: mempertahankan izin berkas pengaturan yang sudah ada dan tidak membuatnya lebih longgar (di macOS dan Linux, berkas baru dibuat `0600`), tidak pernah menuliskan isi konfigurasi atau token ke log, dan tidak menaruhnya di dalam repo proyek. Pembuat konfigurasi sendiri tidak memasukkan token ke pesan error.
 
