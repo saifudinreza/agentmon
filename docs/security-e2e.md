@@ -1,6 +1,6 @@
 # Desain enkripsi ujung-ke-ujung (E2E) dan threat model
 
-**Status: DRAF 2, belum ditinjau oleh peninjau manusia.** Rancangan tertulis untuk issue #032 (GitHub #75). Belum ada kode. Draf 1 sudah ditinjau satu putaran oleh peninjau kriptografi otomatis (Opus), yang menemukan tiga celah Kritis dan tujuh Penting; semuanya sudah dimasukkan di draf ini (lihat "Riwayat revisi" di bagian akhir). Rancangan kriptografi **tetap wajib ditinjau orang yang berpengalaman di bidang ini** sebelum issue #033 mulai. Rujukan: PRD §13 dan tujuan G5.
+**Status: DRAF 2. Garis besarnya disetujui pemilik produk pada 22 November 2026 dan implementasi #033 dimulai; peninjau kriptografi manusia menyusul dan BELUM ada (risikonya diterima: bila peninjau menemukan cacat, kode ikut diubah).** Rancangan tertulis untuk issue #032 (GitHub #75). Belum ada kode. Draf 1 sudah ditinjau satu putaran oleh peninjau kriptografi otomatis (Opus), yang menemukan tiga celah Kritis dan tujuh Penting; semuanya sudah dimasukkan di draf ini (lihat "Riwayat revisi" di bagian akhir). Rancangan kriptografi **tetap wajib ditinjau orang yang berpengalaman di bidang ini** sebelum issue #033 mulai. Rujukan: PRD §13 dan tujuan G5.
 
 ## 1. Tujuan dan batasnya
 
