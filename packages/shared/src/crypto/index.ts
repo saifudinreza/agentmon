@@ -1,0 +1,41 @@
+// Pustaka kripto bersama daemon, relay (hanya untuk tes), dan PWA (issue #033; desain di docs/security-e2e.md).
+export { loadSodium, type Sodium } from "./sodium";
+export { bytesEqual, canon, concat, CryptoError, fromB64, toB64, utf8, type Field } from "./encoding";
+export {
+  aeadOpen,
+  aeadSeal,
+  eventAad,
+  EVENT_LABEL,
+  generateDataKey,
+  generateKxKeyPair,
+  generateSignKeyPair,
+  openEvent,
+  PAD_BLOCK,
+  PAYLOAD_VERSION,
+  sealEvent,
+  SealedPayloadSchema,
+  type EventEnvelope,
+  type KeyPair,
+  type OpenEventInput,
+  type SealedPayload,
+  type SealEventInput,
+} from "./event";
+export {
+  generatePairingSecret,
+  laptopSessionKeys,
+  makePairProof,
+  pairingFingerprint,
+  pairingProofKey,
+  phoneSessionKeys,
+  signPairResponse,
+  unwrapDataKey,
+  verifyPairProof,
+  verifyPairResponse,
+  wrapDataKey,
+  type PairRequest,
+  type PairResponse,
+  type SessionKeys,
+  type WrapContext,
+  type WrappedKey,
+} from "./pairing";
+export { approvalHash, openCommand, sealCommand, signDecision, verifyDecision, type CommandContext, type DecisionFields, type SealedCommand } from "./command";
