@@ -20,10 +20,14 @@ import { and, asc, eq, gt, inArray, isNull, min, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { hashToken } from "../directory";
 import type { Database } from "./connect";
-import { devices, machines, pairingCodes, pairings, pushSubscriptions } from "./schema";
+import type { E2eMessage, E2eMessageKind, E2ePairingMaterial } from "@agentmon/shared";
+import { deviceE2e, devices, e2eMessages, machines, pairingCodes, pairings, pushSubscriptions } from "./schema";
 
 export const DEFAULT_CODE_TTL_MS = 5 * 60 * 1000; // kode berlaku 5 menit
 export const DEFAULT_MAX_ACTIVE_CODES = 5; // kode yang belum terpakai per laptop
+/** Pesan laptop ke HP yang boleh menumpuk per HP (kotak surat). Lebih dari ini ditolak, supaya laptop yang salah tidak memenuhi database. */
+export const MAX_E2E_MESSAGES_PER_DEVICE = 200;
+export const MAX_E2E_MESSAGES_PER_READ = 100;
 
 export type CreateCodeResult =
   | { ok: true; code: string; expiresAt: Date }
@@ -35,6 +39,8 @@ export type RedeemInput = {
   name: string;
   /** Token HP yang SUDAH terdaftar (HP yang memasangkan laptop kedua). Tanpa ini dibuat perangkat baru. */
   existingDeviceToken?: string;
+  /** Bahan pairing E2E dari HP (kunci publik dan bukti). Hanya disimpan; relay tidak memercayainya. */
+  e2e?: E2ePairingMaterial;
 };
 
 export type RedeemResult =
@@ -114,6 +120,13 @@ export function createPairingService(db: Database, options: PairingOptions = {})
         }
         // Memasangkan dua kali tidak menggandakan dan tidak error.
         await tx.insert(pairings).values({ machineId: used.machineId, deviceId, createdAt: current }).onConflictDoNothing();
+        if (input.e2e) {
+          // Satu baris per (laptop, HP). Memasangkan ulang menimpa bahan lama (kunci HP bisa berganti setelah HP dipasang ulang).
+          await tx
+            .insert(deviceE2e)
+            .values({ machineId: used.machineId, deviceId, kxPublicKey: input.e2e.kx, signPublicKey: input.e2e.sign, proof: input.e2e.proof, createdAt: current })
+            .onConflictDoUpdate({ target: [deviceE2e.machineId, deviceE2e.deviceId], set: { kxPublicKey: input.e2e.kx, signPublicKey: input.e2e.sign, proof: input.e2e.proof, createdAt: current } });
+        }
 
         return {
           ok: true,
@@ -184,14 +197,62 @@ export function createPairingService(db: Database, options: PairingOptions = {})
     },
 
     /** HP yang terpasang dengan sebuah laptop (yang belum dicabut), dari yang paling lama. */
-    async listDevices(machineId: string): Promise<Array<{ id: string; name: string; pairedAt: string }>> {
+    async listDevices(machineId: string): Promise<Array<{ id: string; name: string; pairedAt: string; e2e?: E2ePairingMaterial }>> {
       const rows = await db
-        .select({ id: devices.id, name: devices.name, pairedAt: pairings.createdAt })
+        .select({ id: devices.id, name: devices.name, pairedAt: pairings.createdAt, kx: deviceE2e.kxPublicKey, sign: deviceE2e.signPublicKey, proof: deviceE2e.proof })
         .from(pairings)
         .innerJoin(devices, eq(devices.id, pairings.deviceId))
+        .leftJoin(deviceE2e, and(eq(deviceE2e.machineId, pairings.machineId), eq(deviceE2e.deviceId, pairings.deviceId)))
         .where(and(eq(pairings.machineId, machineId), isNull(devices.revokedAt)))
         .orderBy(asc(pairings.createdAt), asc(devices.id));
-      return rows.map((row) => ({ id: row.id, name: row.name, pairedAt: row.pairedAt.toISOString() }));
+      return rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        pairedAt: row.pairedAt.toISOString(),
+        ...(row.kx !== null && row.sign !== null && row.proof !== null ? { e2e: { kx: row.kx, sign: row.sign, proof: row.proof } } : {}),
+      }));
+    },
+
+    /**
+     * Laptop menitipkan pesan untuk satu HP-nya (tantangan, jawaban pairing, kunci baru). `false` bila HP itu tidak dipasangkan dengan
+     * laptop ini, sudah dicabut, atau kotak suratnya penuh. Isinya tidak dibaca di sini.
+     */
+    async postE2eMessage(machineId: string, deviceId: string, kind: E2eMessageKind, body: string): Promise<boolean> {
+      return db.transaction(async (tx) => {
+        const [paired] = await tx
+          .select({ id: pairings.deviceId })
+          .from(pairings)
+          .innerJoin(devices, eq(devices.id, pairings.deviceId))
+          .where(and(eq(pairings.machineId, machineId), eq(pairings.deviceId, deviceId), isNull(devices.revokedAt)))
+          .limit(1)
+          .for("update");
+        if (!paired) return false;
+        const [counted] = await tx.select({ n: sql<number>`count(*)::int` }).from(e2eMessages).where(and(eq(e2eMessages.machineId, machineId), eq(e2eMessages.deviceId, deviceId)));
+        if ((counted?.n ?? 0) >= MAX_E2E_MESSAGES_PER_DEVICE) return false;
+        await tx.insert(e2eMessages).values({ machineId, deviceId, kind, body });
+        return true;
+      });
+    },
+
+    /** Pesan untuk HP ini dari satu laptop, yang lebih baru dari `afterId`. Kosong bila HP tidak dipasangkan dengan laptop itu. */
+    async listE2eMessages(deviceId: string, machineId: string, afterId: number): Promise<E2eMessage[]> {
+      const rows = await db
+        .select({ id: e2eMessages.id, kind: e2eMessages.kind, body: e2eMessages.body })
+        .from(e2eMessages)
+        .innerJoin(pairings, and(eq(pairings.machineId, e2eMessages.machineId), eq(pairings.deviceId, e2eMessages.deviceId)))
+        .where(and(eq(e2eMessages.deviceId, deviceId), eq(e2eMessages.machineId, machineId), sql`${e2eMessages.id} > ${afterId}`))
+        .orderBy(asc(e2eMessages.id))
+        .limit(MAX_E2E_MESSAGES_PER_READ);
+      const out: E2eMessage[] = [];
+      for (const row of rows) {
+        try {
+          const body: unknown = JSON.parse(row.body);
+          if (typeof body === "object" && body !== null && !Array.isArray(body)) out.push({ id: row.id, kind: row.kind as E2eMessageKind, body: body as Record<string, unknown> });
+        } catch {
+          // baris rusak dilewati
+        }
+      }
+      return out;
     },
   };
 }

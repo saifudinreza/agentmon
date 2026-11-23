@@ -15,6 +15,13 @@
       "when": 1794732421808,
       "tag": "0001_short_carnage",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795452340590,
+      "tag": "0002_sweet_molecule_man",
+      "breakpoints": true
     }
   ]
 }

@@ -17,7 +17,7 @@
 //   - Event unik per laptop: kunci utamanya (laptop, nomor event). Event yang sama tidak tersimpan dua kali.
 //   - Menghapus laptop menghapus semua turunannya (pasangan, sesi, event) lewat kunci asing.
 import { sql } from "drizzle-orm";
-import { boolean, check, foreignKey, index, integer, pgTable, primaryKey, text, timestamp, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { bigserial, boolean, check, foreignKey, index, integer, pgTable, primaryKey, text, timestamp, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 // Kolom waktu berzona (timestamptz): tidak bergantung pada zona waktu server.
 const time = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
@@ -69,6 +69,47 @@ export const pairings = pgTable(
     createdAt: createdAt(),
   },
   (t) => [primaryKey({ columns: [t.machineId, t.deviceId] }), index("pairings_device_idx").on(t.deviceId)],
+);
+
+// ---- Bahan pairing E2E dari HP ----------------------------------------------------------
+// Kunci publik HP dan bukti rahasia QR (issue #033). Relay hanya MENYIMPAN dan meneruskan ke laptop; ia tidak memercayainya
+// (laptop memverifikasi bukti dengan rahasia yang hanya ia dan HP ketahui).
+export const deviceE2e = pgTable(
+  "device_e2e",
+  {
+    machineId: text("machine_id")
+      .notNull()
+      .references(() => machines.id, { onDelete: "cascade" }),
+    deviceId: text("device_id")
+      .notNull()
+      .references(() => devices.id, { onDelete: "cascade" }),
+    kxPublicKey: text("kx_public_key").notNull(),
+    signPublicKey: text("sign_public_key").notNull(),
+    proof: text("proof").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.machineId, t.deviceId] })],
+);
+
+// ---- Kotak surat laptop ke HP -----------------------------------------------------------
+// Tantangan sidik jari, jawaban pairing, dan kunci data baru (rotasi). Semuanya bertanda tangan laptop dan terikat ke HP penerimanya;
+// relay hanya menyimpan dan menyerahkan, sehingga relay yang menahan atau mengganti pesan hanya bisa menimbulkan gangguan.
+export const e2eMessages = pgTable(
+  "e2e_messages",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    machineId: text("machine_id")
+      .notNull()
+      .references(() => machines.id, { onDelete: "cascade" }),
+    deviceId: text("device_id")
+      .notNull()
+      .references(() => devices.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    // Teks JSON apa adanya (relay tidak mengkueri isinya).
+    body: text("body").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [check("e2e_messages_kind_known", sql`${t.kind} in ('challenge', 'response', 'keys')`), index("e2e_messages_device_idx").on(t.machineId, t.deviceId, t.id)],
 );
 
 // ---- Kode pairing sekali pakai ---------------------------------------------------------

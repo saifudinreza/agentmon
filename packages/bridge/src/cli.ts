@@ -28,6 +28,7 @@ import { DEFAULT_PORT } from "./daemon";
 import { agentmonHome, paths } from "./home";
 import type { DaemonStatus } from "./control";
 import { countPairedDevices, runListDevices, runPair, runRevokeDevice, type PairOptions } from "./pairing";
+import { defaultE2ePairOptions } from "./pairing-e2e";
 import { autostartStatus, installAutostart, removeAutostart, reportAutostart, type AutostartOptions, type AutostartStatus } from "./autostart";
 import { runPolicy } from "./policy/cli";
 import { runRegister } from "./register";
@@ -304,6 +305,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       appUrl: deps.env.AGENTMON_APP_URL,
       out: deps.out,
       err: deps.err,
+      e2e: defaultE2ePairOptions(home),
       ...deps.pair,
     });
   }

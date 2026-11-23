@@ -10,11 +10,11 @@ import { createTestDatabase, query, resetDatabase } from "./testing";
 
 const HASH = "a".repeat(64);
 const HASH2 = "b".repeat(64);
-const TABLES = ["devices", "events", "machines", "pairing_codes", "pairings", "push_subscriptions", "sessions"];
+const TABLES = ["device_e2e", "devices", "e2e_messages", "events", "machines", "pairing_codes", "pairings", "push_subscriptions", "sessions"];
 const EVENT_ID = "11111111-1111-4111-8111-111111111111";
 
 describe("migrasi", () => {
-  test("berjalan dari database kosong dan membuat ketujuh tabel PRD", async () => {
+  test("berjalan dari database kosong dan membuat semua tabel (tujuh dari PRD, dua untuk pairing E2E)", async () => {
     const handle = await openPglite();
     try {
       const tableNames = async () =>

@@ -23,6 +23,8 @@ import {
   sanitizeForTerminal,
   type PairedDevice,
 } from "@agentmon/shared";
+import { generatePairingSecret } from "@agentmon/shared/crypto";
+import { confirmE2eDevice, prepareE2eSession, type E2ePairOptions, type E2eSession } from "./pairing-e2e";
 import { renderQrForTerminal } from "./qr";
 
 export type PairOptions = {
@@ -40,6 +42,11 @@ export type PairOptions = {
   pollMs?: number;
   /** Pencetak QR untuk terminal. Bawaannya memakai blok setengah tinggi supaya QR ringkas. */
   renderQr?: (text: string) => Promise<string>;
+  /**
+   * Pairing terenkripsi ujung-ke-ujung (issue #033). Bila diisi, QR memuat rahasia dan kunci publik laptop, dan HP yang mengirim bahan E2E
+   * dikonfirmasi lewat sidik jari di terminal ini. Tanpa ini: pairing lama tanpa enkripsi ujung-ke-ujung.
+   */
+  e2e?: E2ePairOptions;
 };
 
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -71,9 +78,14 @@ export async function runPair(options: PairOptions): Promise<number> {
 
   // Satu fungsi untuk semua panggilan: gagal jaringan dan jawaban aneh dijadikan satu bentuk.
   type Reply = { status: number; body: unknown };
-  const call = async (method: "GET" | "POST", path: string): Promise<Reply | undefined> => {
+  const call = async (method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<Reply | undefined> => {
     try {
-      const res = await http(`${base}${path}`, { method, headers: auth, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+      const res = await http(`${base}${path}`, {
+        method,
+        headers: body === undefined ? auth : { ...auth, "content-type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
       return { status: res.status, body: await res.json().catch(() => ({})) };
     } catch {
       return undefined;
@@ -126,8 +138,17 @@ export async function runPair(options: PairOptions): Promise<number> {
   }
   const expiresAt = Date.parse(code.data.expiresAt);
 
-  // 3. Tampilkan.
-  const url = buildPairingUrl(options.appUrl, { code: code.data.code, relayUrl: options.relayUrl });
+  // 3. Tampilkan. Pairing E2E menambahkan rahasia dan kunci publik laptop ke fragmen (tidak pernah dikirim ke server mana pun).
+  let session: E2eSession | undefined;
+  if (options.e2e) {
+    try {
+      session = await prepareE2eSession(options.e2e, generatePairingSecret);
+    } catch (error) {
+      err(`Kunci enkripsi tidak bisa disiapkan: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+  }
+  const url = buildPairingUrl(options.appUrl, { code: code.data.code, relayUrl: options.relayUrl, ...(session ? { secret: session.qr.secret, laptopKey: session.qr.laptopKey } : {}) });
   out(await render(url));
   out("Pindai QR di atas dengan kamera HP. Bila QR tidak terbaca, buka alamat ini di HP:");
   out(url);
@@ -143,10 +164,26 @@ export async function runPair(options: PairOptions): Promise<number> {
     if (!parsed.success) continue;
     const fresh: PairedDevice[] = parsed.data.devices.filter((device) => !known.has(device.id));
     if (fresh.length > 0) {
-      // Nama datang dari HP (tidak tepercaya). Karakter kontrol diganti supaya tidak bisa
-      // menghapus layar atau menyamarkan tulisan lain di terminal.
-      for (const device of fresh) out(`Perangkat baru terpasang: ${sanitizeForTerminal(device.name)}`);
-      return 0;
+      let code0 = 0;
+      for (const device of fresh) {
+        if (session && options.e2e && device.e2e) {
+          const outcome = await confirmE2eDevice(options.e2e, session, code.data.code, device, {
+            post: async (kind, deviceId, body) => (await call("POST", "/pair/e2e/messages", { deviceId, kind, body }))?.status === 201,
+            revoke: async (deviceId) => void (await call("DELETE", `/pair/devices/${encodeURIComponent(deviceId)}`)),
+            out,
+            err,
+          });
+          if (outcome !== "confirmed") code0 = 1;
+          continue;
+        }
+        // Nama datang dari HP (tidak tepercaya). Karakter kontrol diganti supaya tidak bisa
+        // menghapus layar atau menyamarkan tulisan lain di terminal.
+        out(`Perangkat baru terpasang: ${sanitizeForTerminal(device.name)}`);
+        if (session) {
+          out("  PERINGATAN: HP ini memakai aplikasi versi lama tanpa enkripsi ujung-ke-ujung. Begitu ada HP terenkripsi, event tidak lagi dikirim polos, jadi HP ini tidak akan menerima apa-apa. Perbarui aplikasinya lalu pasangkan ulang.");
+        }
+      }
+      return code0;
     }
   }
   err("Kode kedaluwarsa sebelum ada HP yang memindainya. Jalankan perintah pair lagi untuk membuat kode baru.");

@@ -2,6 +2,8 @@ import { describe, expect, test } from "vitest";
 import { buildPairingUrl, PairRedeemRequestSchema, PairRedeemResponseSchema, parsePairingUrl, sanitizeForTerminal } from "./pairing";
 
 const CODE = "abcDEF0123456789_-abcDEF0123456789";
+const SECRET = "A".repeat(43);
+const LAPTOP_KEY = "B".repeat(43);
 const APP = "https://app.contoh.com";
 const RELAY = "https://relay.contoh.com";
 
@@ -12,19 +14,26 @@ describe("buildPairingUrl dan parsePairingUrl", () => {
   });
 
   test("SEMUA data ada di fragmen: tidak ada di jalur atau query yang dikirim ke server", () => {
-    const url = new URL(buildPairingUrl(APP, { code: CODE, relayUrl: RELAY, secret: "rahasia-e2e" }));
+    const url = new URL(buildPairingUrl(APP, { code: CODE, relayUrl: RELAY, secret: SECRET, laptopKey: LAPTOP_KEY }));
     expect(url.pathname).toBe("/pair");
     expect(url.search).toBe("");
     expect(url.hash).toContain(`c=${CODE}`);
     // Bagian yang benar-benar dikirim browser ke server hosting:
     const sentToServer = `${url.origin}${url.pathname}${url.search}`;
     expect(sentToServer).not.toContain(CODE);
-    expect(sentToServer).not.toContain("rahasia-e2e");
+    expect(sentToServer).not.toContain(SECRET);
+    expect(sentToServer).not.toContain(LAPTOP_KEY);
   });
 
-  test("rahasia E2E (tahap 4) bisa ditambahkan tanpa mengubah bentuk lain", () => {
-    const url = buildPairingUrl(APP, { code: CODE, relayUrl: RELAY, secret: "k_rahasia-123" });
-    expect(parsePairingUrl(url)).toEqual({ code: CODE, relayUrl: RELAY, secret: "k_rahasia-123" });
+  test("rahasia E2E (s) dan kunci publik laptop (k) bisa ditambahkan tanpa mengubah bentuk lain", () => {
+    const url = buildPairingUrl(APP, { code: CODE, relayUrl: RELAY, secret: SECRET, laptopKey: LAPTOP_KEY });
+    expect(parsePairingUrl(url)).toEqual({ code: CODE, relayUrl: RELAY, secret: SECRET, laptopKey: LAPTOP_KEY });
+  });
+
+  test("rahasia atau kunci yang bentuknya salah dibuang (pairing lama), QR tetap terbaca", () => {
+    const url = new URL(buildPairingUrl(APP, { code: CODE, relayUrl: RELAY }));
+    url.hash += "&s=pendek&k=" + "x".repeat(60);
+    expect(parsePairingUrl(url.toString())).toEqual({ code: CODE, relayUrl: RELAY });
   });
 
   test("alamat PWA yang berada di sub-jalur dan berakhiran garis miring tetap benar", () => {

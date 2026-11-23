@@ -117,6 +117,15 @@ Perintah `pair` butuh pengaturan relay (alamat dan token laptop) dan `AGENTMON_A
 - `PAIRING_ALLOWED_ORIGINS` (dipisah koma) menentukan asal PWA yang boleh memanggil `/pair/redeem` dari browser.
 - **Satu HP, beberapa laptop:** HP yang sudah punya kredensial mengirimnya di header `Authorization` saat menukar kode laptop kedua. Ia dipasangkan tanpa dibuatkan perangkat baru.
 
+**Pairing terenkripsi ujung-ke-ujung (issue #033, bagian B; desain di `security-e2e.md`, pustaka di `crypto.md`).** Bila `pair` dijalankan dengan kunci E2E laptop (bawaan), QR memuat dua parameter tambahan: `s` (rahasia 32 byte yang hanya ada di QR dan di memori proses `pair`) dan `k` (kunci publik Ed25519 laptop). HP yang mendukungnya menukar kode dengan tambahan `e2e: {kx, sign, proof}` (dua kunci publik dan bukti `crypto_auth` atas permintaannya); relay hanya MENYIMPANNYA (tabel `device_e2e`) dan meneruskannya ke laptop lewat `GET /pair/devices`, tanpa memercayainya. Laptop memverifikasi bukti dengan rahasia dari catatannya sendiri, memilih tantangan acak, meminta pengguna membandingkan sidik jari 6 digit, lalu menitipkan pesan bertanda tangan untuk HP lewat kotak surat:
+
+| Endpoint | Siapa | Fungsi |
+|---|---|---|
+| `POST /pair/e2e/messages` | laptop | menitipkan `{deviceId, kind, body}` (kind: `challenge`, `response`, `keys`) untuk HP yang dipasangkan dengannya; `404` untuk HP yang bukan miliknya, tidak ada, atau dicabut; `413` bila lebih dari 16 KiB; maksimum 200 pesan per HP |
+| `GET /api/e2e/messages?machineId=&after=` | HP | membaca pesan untuk HP ini dari laptop itu yang lebih baru dari `after` (maksimum 100) |
+
+Relay tidak membaca isi pesan; keasliannya dijaga tanda tangan laptop yang diperiksa HP dengan kunci dari QR. Semua terhapus bersama laptop atau HP-nya.
+
 **Alamat di dalam QR:** `https://<pwa>/pair#c=<kode>&r=<alamat-relay>`. Semuanya di **fragmen** (setelah `#`) yang tidak pernah dikirim browser ke server mana pun. Rahasia enkripsi ujung-ke-ujung (tahap 4) nanti ditambahkan sebagai parameter `k` di fragmen yang sama, sehingga relay tetap tidak bisa membacanya. Kode `buildPairingUrl` dan `parsePairingUrl` ada di `packages/shared/src/pairing.ts` dan dipakai bersama oleh laptop dan PWA.
 
 ## Klien relay di daemon
