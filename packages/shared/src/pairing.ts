@@ -22,6 +22,7 @@
 // tetap tidak bisa membaca isi event. Parameter yang belum dikenal diabaikan, jadi alamat versi
 // baru tetap terbaca oleh PWA versi lama dan sebaliknya.
 import { z } from "zod";
+import { E2ePairingMaterialSchema } from "./e2e-wire";
 
 // Kode sekali pakai: acak, panjang, dan hanya berisi karakter aman untuk alamat web.
 export const PAIRING_CODE_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
@@ -56,6 +57,8 @@ export const PairRedeemRequestSchema = z.object({
     .min(1)
     .max(64)
     .refine((name) => !CONTROL_CHARACTERS.test(name), "Nama tidak boleh memuat karakter kontrol"),
+  // Bahan pairing E2E (kunci publik HP dan bukti rahasia QR). Tanpa ini: pairing lama tanpa enkripsi ujung-ke-ujung.
+  e2e: E2ePairingMaterialSchema.optional(),
 });
 export type PairRedeemRequest = z.infer<typeof PairRedeemRequestSchema>;
 
@@ -74,6 +77,13 @@ export const PairedDeviceSchema = z.object({
   id: z.string().min(1),
   name: z.string(),
   pairedAt: z.string().datetime(),
+  /** Hanya untuk laptop: bahan pairing E2E yang dikirim HP (tidak tepercaya; laptop memverifikasinya sendiri). */
+  e2e: E2ePairingMaterialSchema.optional(),
+  /**
+   * Hanya untuk laptop: SHA-256 (heks) dari kode pairing yang dipakai HP ini untuk terpasang (atau terpasang ulang) ke laptop ini. Laptop
+   * hanya memproses HP dari kode miliknya sendiri; HP dari kode lain (mis. `pair` paralel) tidak disentuh. Relay lama tidak mengirimnya.
+   */
+  codeHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 });
 export type PairedDevice = z.infer<typeof PairedDeviceSchema>;
 
@@ -91,9 +101,16 @@ export type PairingLink = {
   code: string;
   /** Alamat dasar relay, misalnya https://relay.contoh.com (tanpa /ws). */
   relayUrl: string;
-  /** Rahasia E2E (tahap 4). Hanya ada di fragmen, tidak pernah dikirim ke server. */
+  /** Rahasia E2E 32 byte (base64 aman-URL), parameter `s`. Hanya ada di fragmen, tidak pernah dikirim ke server. */
   secret?: string;
+  /** Kunci publik Ed25519 laptop (base64 aman-URL), parameter `k`. HP memverifikasi tanda tangan laptop dengan ini, bukan dengan yang dari relay. */
+  laptopKey?: string;
+  /** Nomor laptop di relay, parameter `m`. HP membutuhkannya untuk membuat bukti (nomor itu ikut di dalam bukti) sebelum menukar kode. */
+  machineId?: string;
 };
+
+// Rahasia dan kunci publik 32 byte dalam base64 aman-URL tanpa padding = 43 karakter.
+const KEY_PARAM = /^[A-Za-z0-9_-]{43}$/;
 
 function isHttpUrl(text: string): boolean {
   try {
@@ -114,7 +131,9 @@ export function buildPairingUrl(appUrl: string, link: PairingLink): string {
   url.pathname = `${url.pathname.replace(/\/+$/, "")}/pair`;
   url.search = "";
   const fragment = new URLSearchParams({ c: link.code, r: link.relayUrl });
-  if (link.secret !== undefined) fragment.set("k", link.secret);
+  if (link.machineId !== undefined) fragment.set("m", link.machineId);
+  if (link.laptopKey !== undefined) fragment.set("k", link.laptopKey);
+  if (link.secret !== undefined) fragment.set("s", link.secret);
   url.hash = fragment.toString();
   return url.toString();
 }
@@ -136,8 +155,30 @@ export function parsePairingUrl(text: string): PairingLink | undefined {
   const fragment = new URLSearchParams(url.hash.replace(/^#/, ""));
   const code = fragment.get("c");
   const relayUrl = fragment.get("r");
-  const secret = fragment.get("k");
+  const laptopKey = fragment.get("k");
+  const secret = fragment.get("s");
+  const machineId = fragment.get("m");
   if (code === null || relayUrl === null) return undefined;
   if (!PAIRING_CODE_PATTERN.test(code) || !isHttpUrl(relayUrl)) return undefined;
-  return { code, relayUrl, ...(secret !== null && secret !== "" ? { secret } : {}) };
+  // Rahasia dan kunci yang bentuknya salah dibuang (dianggap pairing lama), bukan membuat seluruh QR ditolak.
+  return {
+    code,
+    relayUrl,
+    ...(laptopKey !== null && KEY_PARAM.test(laptopKey) ? { laptopKey } : {}),
+    ...(secret !== null && KEY_PARAM.test(secret) ? { secret } : {}),
+    ...(machineId !== null && machineId.length > 0 && machineId.length <= 200 ? { machineId } : {}),
+  };
+}
+
+// Karakter yang tidak boleh ada di nama perangkat: kendali (termasuk ESC yang membuka urutan ANSI), format (lebar nol, arah teks
+// bidi, penanda), pemisah baris dan paragraf, dan karakter privat. Nama datang dari HP dan dicetak di terminal laptop; nama yang
+// tampak sama tetapi berbeda byte (akhiran lebar nol) dipakai untuk menyamarkan permintaan palsu.
+const FORBIDDEN_IN_NAME = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cs}\p{Cn}]/u;
+
+/** Nama perangkat yang sah (NFC, tanpa spasi di ujung, 1 sampai 64 karakter, tanpa karakter terlarang), atau undefined. */
+export function normalizeDeviceName(name: string): string | undefined {
+  const normalized = name.normalize("NFC").trim();
+  if (normalized.length < 1 || [...normalized].length > 64) return undefined;
+  if (FORBIDDEN_IN_NAME.test(normalized)) return undefined;
+  return normalized;
 }

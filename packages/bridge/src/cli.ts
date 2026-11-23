@@ -28,6 +28,7 @@ import { DEFAULT_PORT } from "./daemon";
 import { agentmonHome, paths } from "./home";
 import type { DaemonStatus } from "./control";
 import { countPairedDevices, runListDevices, runPair, runRevokeDevice, type PairOptions } from "./pairing";
+import { defaultE2ePairOptions } from "./pairing-e2e";
 import { autostartStatus, installAutostart, removeAutostart, reportAutostart, type AutostartOptions, type AutostartStatus } from "./autostart";
 import { runPolicy } from "./policy/cli";
 import { runRegister } from "./register";
@@ -42,7 +43,7 @@ export type CliDeps = {
   out: (text: string) => void;
   err: (text: string) => void;
   // Hanya diisi test, untuk perintah `pair` (jaringan, jam, dan pencetak QR palsu).
-  pair?: Partial<Pick<PairOptions, "fetch" | "sleep" | "now" | "pollMs" | "renderQr">>;
+  pair?: Partial<Pick<PairOptions, "fetch" | "sleep" | "now" | "pollMs" | "renderQr" | "e2e">>;
   // Hanya diisi test, untuk perintah `register` (nama komputer palsu).
   hostname?: () => string;
   // Hanya diisi test, supaya `status` tidak menyentuh pengaturan autostart sistem yang sebenarnya.
@@ -304,6 +305,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       appUrl: deps.env.AGENTMON_APP_URL,
       out: deps.out,
       err: deps.err,
+      e2e: defaultE2ePairOptions(home),
       ...deps.pair,
     });
   }
@@ -318,6 +320,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       out: deps.out,
       err: deps.err,
       ...(deps.pair?.fetch ? { fetch: deps.pair.fetch } : {}),
+      e2eHome: home,
     };
     if (command === "devices") return runListDevices(common);
     const deviceId = rest[0];

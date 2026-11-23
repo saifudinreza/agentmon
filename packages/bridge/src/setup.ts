@@ -22,6 +22,7 @@ import { buildClaudeHookSettings, HOOK_EVENTS, type ClaudeHookSettings } from ".
 import { isValidToken, loadOrCreateHookToken, paths } from "./home";
 import { request as httpRequest } from "node:http";
 import { runPair, type PairOptions } from "./pairing";
+import { defaultE2ePairOptions } from "./pairing-e2e";
 import { resolveRelayConfig } from "./relay-config";
 
 // ---- Penggabungan ---------------------------------------------------------------------------------------------------------
@@ -504,5 +505,5 @@ export async function runSetup(options: SetupOptions): Promise<number> {
     return 0;
   }
   out("Pairing: pindai QR berikut dengan HP Anda.");
-  return (options.pair ?? runPair)({ relayUrl: relay.relayUrl, machineToken: relay.token, appUrl, out, err, ...options.pairOverrides });
+  return (options.pair ?? runPair)({ relayUrl: relay.relayUrl, machineToken: relay.token, appUrl, out, err, e2e: defaultE2ePairOptions(options.home), ...options.pairOverrides });
 }

@@ -13,6 +13,7 @@ export const PROJECT_NAME = "AgentMon";
 export * from "./approval"; // status dan keputusan approval
 export * from "./commands"; // perintah keputusan dari HP dan balasannya
 export * from "./device-api"; // jawaban API baca riwayat untuk HP
+export * from "./e2e-wire"; // bentuk data pairing E2E (kunci publik, tantangan, jawaban, kotak surat)
 export * from "./diff"; // bentuk perubahan sebuah berkas (diff, hunk)
 export * from "./events"; // amplop dan jenis event
 export * from "./pairing"; // bentuk data dan alamat QR untuk pairing

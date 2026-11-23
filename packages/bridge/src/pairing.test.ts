@@ -1,4 +1,7 @@
+import { mkdtempSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parsePairingUrl } from "@agentmon/shared";
 import { afterEach, describe, expect, test } from "vitest";
 import { runCli } from "./cli";
@@ -249,6 +252,7 @@ describe("perintah CLI `pair`", () => {
   });
 
   test("tidak butuh daemon lokal (tidak ada berkas token), dan meneruskan lingkungan ke runPair", async () => {
+    const home = join(mkdtempSync(join(tmpdir(), "agentmon pair ")), "data"); // folder data sementara (berkas kunci E2E dibuat di sini)
     const t = setup({
       onDevicesPoll: (n) => {
         if (n === 2) t.fake.devices.push({ id: "d1", name: "HP", pairedAt: "2026-11-11T00:00:01Z" });
@@ -257,13 +261,13 @@ describe("perintah CLI `pair`", () => {
     const base = await startFakeRelay(t.fake);
     const out: string[] = [];
     const code = await runCli(["pair"], {
-      env: { AGENTMON_HOME: "/folder/yang/tidak/ada", AGENTMON_RELAY_URL: base, AGENTMON_RELAY_TOKEN: TOKEN, AGENTMON_APP_URL: "https://app.contoh.com" },
+      env: { AGENTMON_HOME: home, AGENTMON_RELAY_URL: base, AGENTMON_RELAY_TOKEN: TOKEN, AGENTMON_APP_URL: "https://app.contoh.com" },
       out: (text) => out.push(text),
       err: () => undefined,
-      pair: { now: () => t.clock.ms, sleep: async (ms) => void (t.clock.ms += ms), renderQr: async () => "[QR]" },
+      pair: { now: () => t.clock.ms, sleep: async (ms) => void (t.clock.ms += ms), renderQr: async () => "[QR]", e2e: { home, machineId: "m1", machineName: "Laptop", confirm: async () => true } },
     });
     expect(code).toBe(0);
-    expect(out).toContain("Perangkat baru terpasang: HP");
+    expect(out).toContain("Perangkat baru terpasang (TANPA enkripsi ujung-ke-ujung): HP");
     expect(t.fake.seen[0]?.auth).toBe(`Bearer ${TOKEN}`);
   });
 

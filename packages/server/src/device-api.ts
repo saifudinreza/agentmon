@@ -25,7 +25,7 @@
 //     terdaftar.
 //   - Laju dibatasi per HP, dan ukuran halaman dibatasi (maksimal 500 event).
 //   - CORS hanya untuk asal PWA yang diizinkan.
-import { ApprovalsResponseSchema, DevicesResponseSchema, EventsResponseSchema, PushConfigResponseSchema, PushPreferencesSchema, PushPreferencesUpdateSchema, type DeviceMachine, type PendingApproval, type SessionSummary } from "@agentmon/shared";
+import { ApprovalsResponseSchema, DevicesResponseSchema, E2eMessagesResponseSchema, EventsResponseSchema, PushConfigResponseSchema, PushPreferencesSchema, PushPreferencesUpdateSchema, type DeviceMachine, type PendingApproval, type SessionSummary } from "@agentmon/shared";
 import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
@@ -43,7 +43,7 @@ export type DeviceApiOptions = {
   store: Pick<Store, "listSessions" | "listEvents" | "listRecentByType">;
   isMachineOnline: (machineId: string) => boolean;
   /** Daftar dan pencabut perangkat. Tanpa ini, /api/devices tidak dipasang. */
-  devices?: Pick<PairingService, "listPeerDevices" | "revokeDevice">;
+  devices?: Pick<PairingService, "listPeerDevices" | "revokeDevice" | "listE2eMessages">;
   /** Dipanggil setelah sebuah perangkat dicabut, untuk memutus koneksinya seketika. */
   onDeviceRevoked?: (deviceId: string) => void;
   /**
@@ -161,6 +161,16 @@ export function mountDeviceApi(app: Hono, options: DeviceApiOptions): void {
       return c.json(DevicesResponseSchema.parse({ devices: list.map((d) => ({ ...d, current: d.id === auth.deviceId })) }));
     });
     // Mencabut perangkat (termasuk dirinya sendiri). Berlaku seketika: koneksinya diputus dan tokennya ditolak.
+    // Pesan E2E dari laptop untuk HP ini (tantangan sidik jari, jawaban pairing, kunci baru). Relay hanya menyerahkan apa yang laptop
+    // titipkan; HP memverifikasi tanda tangan laptop sebelum memercayai apa pun di dalamnya.
+    app.get("/api/e2e/messages", async (c) => {
+      const auth = await authenticate(c);
+      if (auth instanceof Response) return auth;
+      const machineId = c.req.query("machineId") ?? "";
+      const after = Number(c.req.query("after") ?? "0");
+      if (machineId.length === 0 || machineId.length > MAX_ID_LENGTH || !Number.isSafeInteger(after) || after < 0) return c.json({ error: "bad-request" }, 400);
+      return c.json(E2eMessagesResponseSchema.parse({ messages: await peers.listE2eMessages(auth.deviceId, machineId, after) }));
+    });
     app.delete("/api/devices/:deviceId", async (c) => {
       const auth = await authenticate(c);
       if (auth instanceof Response) return auth;

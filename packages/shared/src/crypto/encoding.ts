@@ -91,15 +91,4 @@ export function bytesEqual(sodium: Sodium, a: Uint8Array, b: Uint8Array): boolea
   return a.length === b.length && sodium.memcmp(a, b);
 }
 
-// Karakter yang tidak boleh ada di nama perangkat: kendali (termasuk ESC yang membuka urutan ANSI), format (lebar nol, arah teks
-// bidi, penanda), pemisah baris dan paragraf, dan karakter privat. Nama datang dari HP dan dicetak di terminal laptop; nama yang
-// tampak sama tetapi berbeda byte (akhiran lebar nol) dipakai untuk menyamarkan permintaan palsu.
-const FORBIDDEN_IN_NAME = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cs}\p{Cn}]/u;
-
-/** Nama perangkat yang sah (NFC, tanpa spasi di ujung, 1 sampai 64 karakter, tanpa karakter terlarang), atau undefined. */
-export function normalizeDeviceName(name: string): string | undefined {
-  const normalized = name.normalize("NFC").trim();
-  if (normalized.length < 1 || [...normalized].length > 64) return undefined;
-  if (FORBIDDEN_IN_NAME.test(normalized)) return undefined;
-  return normalized;
-}
+export { normalizeDeviceName } from "../pairing";

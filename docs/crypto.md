@@ -25,6 +25,12 @@ Implementasi primitif dari desain di [security-e2e.md](security-e2e.md), di `pac
 
 Catatan: uji "nonce dipakai ulang ditolak" di issue lama keliru konsep (AEAD tidak mendeteksi nonce ganda); yang diuji adalah nonce acak baru tiap enkripsi.
 
+## Bagian B: laptop dan relay (pairing)
+- `bridge/src/e2e-store.ts`: berkas `e2e.json` (0600, atomik) memuat identitas tanda tangan, pasangan kunci pertukaran, kunci data per `kid`, dan HP yang dipercaya. Berkas rusak melempar galat dan TIDAK diganti diam-diam. E2E menyala bila ada satu HP yang dipercaya dan belum dicabut.
+- `bridge/src/pairing-e2e.ts`: verifikasi bukti rahasia QR, tantangan acak bertanda tangan, konfirmasi sidik jari oleh manusia (bukan terminal berarti TIDAK), membungkus kunci data, jawaban bertanda tangan. Gagal di tengah tidak menyisakan kepercayaan.
+- Relay: tabel `device_e2e` dan `e2e_messages`, `POST /pair/e2e/messages`, `GET /api/e2e/messages` (lihat `relay.md`).
+- Belum: PWA (bagian C), enkripsi event dan perintah di daemon (bagian D), rotasi saat pencabutan (bagian E). Sampai D, event tetap polos walau ada HP terenkripsi.
+
 ## Perubahan dari tinjauan PR #96
 - **Sidik jari** kini memuat tantangan acak 16 byte dari laptop (`generatePairChallenge`, `signPairChallenge`/`verifyPairChallenge`), dan nama perangkat harus baku (`normalizeDeviceName`). Ini menutup penggilingan sidik jari.
 - `deviceId` ikut ditandatangani di jawaban pairing.

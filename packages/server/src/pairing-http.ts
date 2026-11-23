@@ -21,7 +21,7 @@
 //   - Isi permintaan dibatasi 4 KiB.
 //   - CORS hanya untuk asal (origin) yang diizinkan, karena PWA biasanya dihosting di alamat
 //     berbeda dari relay. Tanpa daftar, tidak ada asal lain yang diizinkan.
-import { PairRedeemRequestSchema, type PairCodeResponse, type PairedDevicesResponse, type PairRedeemResponse } from "@agentmon/shared";
+import { normalizeDeviceName, PairRedeemRequestSchema, PostE2eMessageSchema, type PairCodeResponse, type PairedDevicesResponse, type PairRedeemResponse } from "@agentmon/shared";
 import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
@@ -70,6 +70,8 @@ export const DEFAULT_PAIRING_LIMITS: PairingLimits = {
 };
 
 const MAX_BODY_BYTES = 4096;
+// Pesan E2E laptop ke HP (tantangan, jawaban pairing, kunci): kecil, tetapi cukup longgar untuk kunci terbungkus.
+const MAX_E2E_MESSAGE_BYTES = 16 * 1024;
 
 function bearer(c: Context): string | undefined {
   const header = c.req.header("authorization");
@@ -89,6 +91,9 @@ export function mountPairingRoutes(app: Hono, options: PairingRoutesOptions): vo
     refillPerSecond: limits.codeRefillPerSecondPerMachine,
     ...clock,
   });
+
+  // Pesan E2E ke HP: beberapa per pairing, jadi lebih longgar dari permintaan kode, tetapi tetap dibatasi.
+  const e2eMessages = createKeyedRateLimiter({ capacity: 30, refillPerSecond: 1, ...clock });
 
   const clientKey = (c: Context): string => clientAddress(c, options.trustProxy);
 
@@ -119,12 +124,34 @@ export function mountPairingRoutes(app: Hono, options: PairingRoutesOptions): vo
     return c.json(body);
   });
 
+  // Laptop menitipkan pesan untuk SATU HP-nya (tantangan sidik jari, jawaban pairing, kunci baru). Relay tidak membaca isinya: yang menjaga
+  // keaslian adalah tanda tangan laptop yang diperiksa HP. HP yang bukan milik laptop ini, atau sudah dicabut, dijawab 404 yang sama.
+  app.post(
+    "/pair/e2e/messages",
+    bodyLimit({ maxSize: MAX_E2E_MESSAGE_BYTES, onError: (c) => c.json({ error: "too-large" }, 413) }),
+    async (c) => {
+      const machineId = await machineOf(c);
+      if (!machineId) return c.json({ error: "unauthorized" }, 401);
+      if (!e2eMessages.take(machineId)) return c.json({ error: "rate-limited" }, 429);
+      const parsed = PostE2eMessageSchema.safeParse(await c.req.json().catch(() => undefined));
+      if (!parsed.success) return c.json({ error: "bad-request" }, 400);
+      if (!(await pairing.postE2eMessage(machineId, parsed.data.deviceId, parsed.data.kind, JSON.stringify(parsed.data.body)))) return c.json({ error: "not-found" }, 404);
+      return c.json({ ok: true }, 201);
+    },
+  );
+
   // Laptop mencabut sebuah HP (HP hilang). Hanya HP yang dipasangkan dengan laptop ini; selain itu 404 yang sama.
   app.delete("/pair/devices/:deviceId", async (c) => {
     const machineId = await machineOf(c);
     if (!machineId) return c.json({ error: "unauthorized" }, 401);
     if (!perMachine.take(machineId)) return c.json({ error: "rate-limited" }, 429);
     const deviceId = c.req.param("deviceId");
+    // `?scope=pairing`: hanya melepas pasangan HP ini dengan laptop pemanggil (menolak pairing). Tanpa itu, HP dicabut di SEMUA laptop.
+    if (c.req.query("scope") === "pairing") {
+      if (deviceId.length > 200 || !(await pairing.unpairDevice(machineId, deviceId))) return c.json({ error: "not-found" }, 404);
+      options.onDeviceRevoked?.(deviceId); // sambungannya diputus; bila HP masih punya laptop lain, ia tersambung lagi sendiri
+      return c.json({ ok: true });
+    }
     if (deviceId.length > 200 || !(await pairing.revokeDevice({ machineId }, deviceId))) return c.json({ error: "not-found" }, 404);
     options.onDeviceRevoked?.(deviceId);
     return c.json({ ok: true });
@@ -162,11 +189,16 @@ export function mountPairingRoutes(app: Hono, options: PairingRoutesOptions): vo
       const parsed = PairRedeemRequestSchema.safeParse(await c.req.json().catch(() => undefined));
       if (!parsed.success) return c.json({ error: "bad-request" }, 400);
 
+      // Bukti E2E dihitung atas nama yang sudah baku; nama lain (lebar-nol, NFD, kendali) tidak akan pernah lolos di laptop, jadi ditolak sekarang
+      // SEBELUM kode dihabiskan.
+      if (parsed.data.e2e !== undefined && normalizeDeviceName(parsed.data.name) !== parsed.data.name) return c.json({ error: "bad-request" }, 400);
+
       const existingDeviceToken = bearer(c);
       const result = await pairing.redeem({
         code: parsed.data.code,
         name: parsed.data.name,
         ...(existingDeviceToken !== undefined ? { existingDeviceToken } : {}),
+        ...(parsed.data.e2e !== undefined ? { e2e: parsed.data.e2e } : {}),
       });
       if (!result.ok) {
         return result.reason === "invalid-device" ? c.json({ error: "unauthorized" }, 401) : c.json({ error: "invalid-code" }, 400);
