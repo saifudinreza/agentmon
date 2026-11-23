@@ -29,7 +29,7 @@ Catatan: uji "nonce dipakai ulang ditolak" di issue lama keliru konsep (AEAD tid
 - `bridge/src/e2e-store.ts`: berkas `e2e.json` (0600, atomik) memuat identitas tanda tangan, pasangan kunci pertukaran, kunci data per `kid`, dan HP yang dipercaya. Berkas rusak melempar galat dan TIDAK diganti diam-diam. E2E menyala bila ada satu HP yang dipercaya dan belum dicabut.
 - `bridge/src/pairing-e2e.ts`: verifikasi bukti rahasia QR, tantangan acak bertanda tangan, konfirmasi sidik jari oleh manusia (bukan terminal berarti TIDAK), membungkus kunci data, jawaban bertanda tangan. Gagal di tengah tidak menyisakan kepercayaan.
 - Relay: tabel `device_e2e` dan `e2e_messages`, `POST /pair/e2e/messages`, `GET /api/e2e/messages` (lihat `relay.md`).
-- Belum: PWA (bagian C), enkripsi event dan perintah di daemon (bagian D), rotasi saat pencabutan (bagian E). Sampai D, event tetap polos walau ada HP terenkripsi.
+- Belum: rotasi saat pencabutan (bagian E).
 
 ## Bagian C: PWA (HP)
 - `web/src/e2e/keyring.ts`: brankas di IndexedDB, isinya dibungkus AES-GCM dengan kunci WebCrypto yang TIDAK DAPAT DIEKSPOR (mencegah kunci disalin dari dump penyimpanan; tidak mencegah skrip di halaman yang sama, karena itu CSP ketat tetap bagian dari desain). Blob rusak melempar `KeyringError` dan tidak ditimpa; gagal menyimpan membatalkan perubahan di memori.
@@ -39,7 +39,13 @@ Catatan: uji "nonce dipakai ulang ditolak" di issue lama keliru konsep (AEAD tid
 - Ukuran: libsodium (lazy, ±430 kB / ±150 kB gzip) tidak ada di JS awal; tes build memeriksanya, dan tes ukuran build kini memakai NODE_ENV=production (sebelumnya React versi pengembangan ikut terukur).
 - QR memuat `m` (nomor laptop) selain `s` dan `k`; tautan yang memuat salah satunya wajib lewat jalur E2E dan ditolak bila tidak lengkap (tidak pernah turun diam-diam ke pairing polos).
 - **Catatan:** tombol "salin tautan pairing" di panduan iOS (tab Safari) menyalin tautan LENGKAP termasuk rahasia `s`; tautan itu berlaku 5 menit dan hanya berguna bersama kunci publik laptop di tautan yang sama. Hapus dari clipboard setelah ditempel.
-- Belum: laptop belum mengenkripsi event dan membuka perintah (bagian D), rotasi saat pencabutan (bagian E). Sampai D, laptop yang dipasangkan E2E tidak mengirim event terenkripsi, jadi HP E2E belum menerima event; **jangan memasangkan HP produksi secara E2E sebelum D selesai.**
+## Daemon dan relay (bagian D)
+- `bridge/src/e2e-daemon.ts` ("petugas segel", dibuat di `main.ts`, dipakai `relay-client`): begitu ada satu HP terpercaya di `e2e.json` (dibaca ulang saat berkas berubah, tanpa memulai ulang daemon), event disegel (dienkripsi dan ditandatangani laptop) sebelum meninggalkan daemon. Gagal menyegel = event DIBUANG, tidak pernah dikirim polos. Berkas kunci rusak pada laptop yang sudah aktif = tetap dianggap aktif (gagal tertutup).
+- Event izin membawa `approvalId` dan `expiresAt` di amplop (diautentikasi, bukan rahasia) supaya relay bisa menghitung antrean dan mengirim notifikasi tanpa membuka isi; notifikasi tidak memuat tingkat risiko (keputusan produk). Kolom `events.approval_id` dan `expires_at` (migrasi `0003`).
+- Perintah dari HP: begitu E2E aktif, perintah polos DITOLAK. Perintah sah harus terbuka dengan kunci pasangan HP itu, bertanda tangan kunci HP yang tercatat di berkas LAPTOP, dari HP yang belum dicabut, dengan `commandId` yang belum pernah dipakai (disimpan di `e2e-commands.json`, tahan restart). Keputusan juga harus: izinnya dikenal laptop, belum kedaluwarsa menurut JAM LAPTOP, `sessionId`, `eventId`, dan `H` (hash seluruh payload) sama dengan yang laptop kirim, dan izin terpotong hanya boleh ditolak.
+- Balasan ke HP disegel dan ditandatangani laptop; HP yang tidak dikenal atau dicabut tidak dibalas. Kegagalan autentikasi sengaja tanpa balasan; izin tak dikenal/`invalid` dijawab tersegel supaya HP tidak menunggu sia-sia.
+- Diuji dengan kripto dan HP sungguhan (`e2e-daemon.test.ts`, `relay-client-e2e.test.ts`) dan uji mutasi (8 pemeriksaan di atas masing-masing ditangkap tes).
+- Belum: rotasi kunci saat pencabutan (bagian E): HP yang dicabut tetap bisa membaca event baru yang ia lihat lewat relay sampai kunci diputar.
 
 ## Perubahan dari tinjauan PR #96
 - **Sidik jari** kini memuat tantangan acak 16 byte dari laptop (`generatePairChallenge`, `signPairChallenge`/`verifyPairChallenge`), dan nama perangkat harus baku (`normalizeDeviceName`). Ini menutup penggilingan sidik jari.
