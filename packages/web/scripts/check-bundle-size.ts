@@ -60,6 +60,18 @@ export const DIFF_VIEWER_MARKER = 'data-diff-viewer';
  * Mengembalikan daftar masalah (kosong = baik).
  */
 export function checkDiffViewerIsLazy(distDir: string, initialFiles: string[]): string[] {
+  return checkMarkerIsLazy(distDir, initialFiles, DIFF_VIEWER_MARKER, "Penampil diff");
+}
+
+/** Penanda yang hanya ada di libsodium (nama fungsi kripto yang dipakai pustaka E2E). Harus dimuat belakangan: pengguna tanpa pairing E2E tidak mengunduhnya. */
+export const CRYPTO_MARKER = "crypto_secretstream_xchacha20poly1305_init_push"; // ada di libsodium, TIDAK dipakai kode AgentMon (nama yang dipakai kode kita ikut di JS awal)
+
+/** Seperti `checkDiffViewerIsLazy`, untuk libsodium (issue #033, docs/security-e2e.md bagian 7). */
+export function checkCryptoIsLazy(distDir: string, initialFiles: string[]): string[] {
+  return checkMarkerIsLazy(distDir, initialFiles, CRYPTO_MARKER, "Pustaka kripto (libsodium)");
+}
+
+function checkMarkerIsLazy(distDir: string, initialFiles: string[], marker: string, label: string): string[] {
   const assets = join(distDir, "assets");
   const initial = new Set(initialFiles.map((src) => join(distDir, src.replace(/^\/+/, "").split("?")[0] ?? "")));
   const problems: string[] = [];
@@ -68,14 +80,14 @@ export function checkDiffViewerIsLazy(distDir: string, initialFiles: string[]): 
     for (const entry of existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) scan(path);
-      else if (/\.m?js$/.test(entry.name) && readFileSync(path, "utf8").includes(DIFF_VIEWER_MARKER)) {
-        if (initial.has(path)) problems.push(`Penampil diff ikut di JS awal (${entry.name}); seharusnya dimuat belakangan.`);
+      else if (/\.m?js$/.test(entry.name) && readFileSync(path, "utf8").includes(marker)) {
+        if (initial.has(path)) problems.push(`${label} ikut di JS awal (${entry.name}); seharusnya dimuat belakangan.`);
         else foundLazy = true;
       }
     }
   };
   scan(assets);
-  if (!foundLazy && problems.length === 0) problems.push("Penampil diff tidak ditemukan di berkas JS mana pun; periksa penanda dan pemisahan kode.");
+  if (!foundLazy && problems.length === 0) problems.push(`${label} tidak ditemukan di berkas JS mana pun; periksa penanda dan pemisahan kode.`);
   return problems;
 }
 
@@ -94,7 +106,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     const dist = join(dirname(fileURLToPath(import.meta.url)), "..", "dist");
     const report = measureInitialJs(dist);
     console.log(formatReport(report));
-    const problems = checkDiffViewerIsLazy(dist, report.files.map((f) => f.file));
+    const initialFiles = report.files.map((f) => f.file);
+    const problems = [...checkDiffViewerIsLazy(dist, initialFiles), ...checkCryptoIsLazy(dist, initialFiles)];
     for (const problem of problems) console.error(`GAGAL: ${problem}`);
     if (problems.length === 0) console.log("OK: penampil diff dimuat belakangan (tidak ada di JS awal).");
     process.exitCode = report.ok && problems.length === 0 ? 0 : 1;

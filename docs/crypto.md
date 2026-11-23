@@ -31,6 +31,16 @@ Catatan: uji "nonce dipakai ulang ditolak" di issue lama keliru konsep (AEAD tid
 - Relay: tabel `device_e2e` dan `e2e_messages`, `POST /pair/e2e/messages`, `GET /api/e2e/messages` (lihat `relay.md`).
 - Belum: PWA (bagian C), enkripsi event dan perintah di daemon (bagian D), rotasi saat pencabutan (bagian E). Sampai D, event tetap polos walau ada HP terenkripsi.
 
+## Bagian C: PWA (HP)
+- `web/src/e2e/keyring.ts`: brankas di IndexedDB, isinya dibungkus AES-GCM dengan kunci WebCrypto yang TIDAK DAPAT DIEKSPOR (mencegah kunci disalin dari dump penyimpanan; tidak mencegah skrip di halaman yang sama, karena itu CSP ketat tetap bagian dari desain). Blob rusak melempar `KeyringError` dan tidak ditimpa; gagal menyimpan membatalkan perubahan di memori.
+- `web/src/e2e/pair.ts`: pairing dari sisi HP (bukti rahasia QR, tantangan diverifikasi dengan kunci laptop dari QR, sidik jari ditampilkan, jawaban diverifikasi: tanda tangan, nomor HP, kode, kunci HP). Jawaban hanya diterima SETELAH tantangan terverifikasi (pengguna selalu sempat melihat sidik jari). Gagal di mana pun: laptop itu dibuang dari pairing HP, tidak ada yang tersisa.
+- `web/src/e2e/gate.ts`: SEMUA yang masuk (event langsung, riwayat, antrean izin, balasan) dan keluar (keputusan, permintaan) lewat gerbang. Laptop E2E: event polos DITOLAK, tanda tangan diverifikasi sebelum dekripsi, `kid` lama ditolak untuk event langsung, amplop izin (`approvalId`, `expiresAt`) harus sama dengan isinya. Keputusan membawa `sessionId`, `eventId`, dan `H` atas seluruh payload yang dilihat HP dan disegel + ditandatangani; izin yang tidak pernah dilihat tidak bisa diputuskan. Antrean izin laptop E2E dihitung DI HP dari event terbuka (`GET /api/approvals?events=1`).
+- `web/src/e2e/runtime.ts`: libsodium dimuat belakangan; brankas dibuka saat aplikasi dibuka dan runtime dihidupkan HANYA bila ada isinya (sebelum layar digambar). Brankas rusak menampilkan layar penjelasan (`VaultBroken`), tidak dikosongkan.
+- Ukuran: libsodium (lazy, ±430 kB / ±150 kB gzip) tidak ada di JS awal; tes build memeriksanya, dan tes ukuran build kini memakai NODE_ENV=production (sebelumnya React versi pengembangan ikut terukur).
+- QR memuat `m` (nomor laptop) selain `s` dan `k`; tautan yang memuat salah satunya wajib lewat jalur E2E dan ditolak bila tidak lengkap (tidak pernah turun diam-diam ke pairing polos).
+- **Catatan:** tombol "salin tautan pairing" di panduan iOS (tab Safari) menyalin tautan LENGKAP termasuk rahasia `s`; tautan itu berlaku 5 menit dan hanya berguna bersama kunci publik laptop di tautan yang sama. Hapus dari clipboard setelah ditempel.
+- Belum: laptop belum mengenkripsi event dan membuka perintah (bagian D), rotasi saat pencabutan (bagian E). Sampai D, laptop yang dipasangkan E2E tidak mengirim event terenkripsi, jadi HP E2E belum menerima event; **jangan memasangkan HP produksi secara E2E sebelum D selesai.**
+
 ## Perubahan dari tinjauan PR #96
 - **Sidik jari** kini memuat tantangan acak 16 byte dari laptop (`generatePairChallenge`, `signPairChallenge`/`verifyPairChallenge`), dan nama perangkat harus baku (`normalizeDeviceName`). Ini menutup penggilingan sidik jari.
 - `deviceId` ikut ditandatangani di jawaban pairing.

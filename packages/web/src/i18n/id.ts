@@ -370,6 +370,22 @@ export const id = {
   "guide.step.test.error.other": "Notifikasi uji gagal dikirim. Coba lagi.",
   "guide.finished": "Semua siap. AgentMon akan memberi tahu Anda saat agent butuh keputusan.",
   "guide.back": "Kembali",
+  "pair.e2e.redeeming": "Mengirim permintaan pairing terenkripsi ke relay…",
+  "pair.e2e.waiting.title": "Menunggu laptop",
+  "pair.e2e.waiting.body": "Lihat terminal di laptop Anda. Laptop akan menampilkan angka sidik jari dan menanyakan apakah Anda ingin memasangkan perangkat ini.",
+  "pair.e2e.confirm.title": "Cocokkan angka ini dengan laptop",
+  "pair.e2e.confirm.body": "Angka di bawah harus SAMA PERSIS dengan angka sidik jari di terminal laptop Anda. Jawab ya di laptop hanya bila sama.",
+  "pair.e2e.fingerprint.label": "Sidik jari pairing",
+  "pair.e2e.confirm.warning": "Bila angkanya berbeda, JANGAN dilanjutkan: jawab tidak di laptop dan tutup halaman ini. Itu tanda ada pihak lain yang ikut memakai QR Anda.",
+  "pair.error.e2eLink": "Tautan pairing terenkripsi ini tidak lengkap atau rusak, jadi tidak dipakai. Buat QR baru di laptop (perintah pair).",
+  "pair.error.e2eName": "Nama perangkat tidak boleh kosong, lebih dari 64 karakter, atau berisi karakter kontrol atau karakter tak terlihat.",
+  "pair.error.e2eRelayOld": "Relay ini belum mendukung pairing terenkripsi ujung-ke-ujung. Pemilik relay perlu memperbaruinya.",
+  "pair.error.e2eRejected": "Laptop tidak memasangkan perangkat ini (dijawab tidak, atau pemeriksaan gagal). Tidak ada yang tersimpan.",
+  "pair.error.e2eInvalid": "Jawaban dari relay tidak sah (laptop atau nomor tidak cocok dengan QR). Pairing dibatalkan; tidak ada yang tersimpan.",
+  "pair.error.e2eTimeout": "Laptop tidak menjawab tepat waktu. Jalankan perintah pair lagi di laptop, lalu pindai QR baru.",
+  "pair.error.e2eUnavailable": "Penyimpanan kunci di HP ini tidak tersedia atau rusak (mis. mode privat), jadi pairing terenkripsi tidak bisa dilakukan. Buka AgentMon di jendela biasa.",
+  "e2e.vault.title": "Kunci enkripsi tidak bisa dibuka",
+  "e2e.vault.body": "Penyimpanan kunci AgentMon di HP ini rusak atau tidak bisa dibaca. Tidak ada yang dihapus. Muat ulang halaman; bila tetap sama, hapus data situs ini lalu pasangkan ulang laptop Anda.",
 } as const;
 
 export type MessageKey = keyof typeof id;

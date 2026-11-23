@@ -99,6 +99,24 @@ export function savePairing(storage: WritableStorage | undefined, input: SaveInp
   }
 }
 
+/**
+ * Membuang SATU laptop dari pairing sebuah relay (mis. pairing E2E yang gagal), tanpa menyentuh laptop lain di relay yang sama. Bila tidak ada
+ * laptop yang tersisa, token relay ikut dibuang (token tanpa laptop tidak berguna).
+ */
+export function removeMachine(storage: WritableStorage | undefined, relayUrl: string, machineId: string): void {
+  if (!storage) return;
+  try {
+    const all = loadPairings(storage);
+    const existing = findPairing(all, relayUrl);
+    if (!existing) return;
+    const machines = existing.machines.filter((m) => m.id !== machineId);
+    const next = machines.length === 0 ? all.filter((p) => p !== existing) : all.map((p) => (p === existing ? { ...existing, machines } : p));
+    storage.setItem(PAIRINGS_STORAGE_KEY, JSON.stringify({ v: 1, pairings: next }));
+  } catch {
+    // diabaikan
+  }
+}
+
 /** Membuang token relay tertentu (misalnya perangkat ini sudah dicabut) beserta daftar laptopnya. */
 export function removePairing(storage: WritableStorage | undefined, relayUrl: string): void {
   if (!storage) return;

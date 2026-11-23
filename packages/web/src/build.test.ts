@@ -8,7 +8,7 @@ import { join } from "node:path";
 import vm from "node:vm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { build } from "vite";
-import { measureInitialJs } from "../scripts/check-bundle-size";
+import { checkCryptoIsLazy, measureInitialJs } from "../scripts/check-bundle-size";
 import { manifest } from "./pwa/manifest";
 
 const root = join(__dirname, "..");
@@ -18,10 +18,19 @@ let out: string;
 let outReadable: string;
 
 beforeAll(async () => {
-  out = mkdtempSync(join(tmpdir(), "agentmon-build-"));
-  await build({ root, configFile: join(root, "vite.config.ts"), logLevel: "silent", build: { outDir: out, emptyOutDir: true } });
-  outReadable = mkdtempSync(join(tmpdir(), "agentmon-build-readable-"));
-  await build({ root, configFile: join(root, "vite.config.ts"), logLevel: "silent", build: { outDir: outReadable, emptyOutDir: true, minify: false } });
+  // Vitest menyetel NODE_ENV=test, yang membuat React ikut dibundel dalam versi PENGEMBANGAN (jauh lebih besar). Build produksi sungguhan
+  // memakai NODE_ENV=production, jadi build di tes ini dipaksa sama supaya ukuran yang diukur adalah ukuran yang benar-benar dikirim.
+  const previousEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  try {
+    out = mkdtempSync(join(tmpdir(), "agentmon-build-"));
+    await build({ root, configFile: join(root, "vite.config.ts"), logLevel: "silent", build: { outDir: out, emptyOutDir: true } });
+    outReadable = mkdtempSync(join(tmpdir(), "agentmon-build-readable-"));
+    await build({ root, configFile: join(root, "vite.config.ts"), logLevel: "silent", build: { outDir: outReadable, emptyOutDir: true, minify: false } });
+  } finally {
+    if (previousEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousEnv;
+  }
 }, 180_000);
 afterAll(() => {
   rmSync(out, { recursive: true, force: true });
@@ -116,6 +125,11 @@ describe("hasil build", () => {
     const report = measureInitialJs(out);
     expect(report.ok, `JS awal ${report.totalGzipBytes} byte`).toBe(true);
     expect(report.totalGzipBytes).toBeGreaterThan(10_000); // memang ada React di dalamnya, bukan build kosong
+  });
+
+  test("libsodium dimuat belakangan: TIDAK ada di JS awal, tetapi ada di salah satu berkas lain hasil build (issue #033)", () => {
+    const report = measureInitialJs(out);
+    expect(checkCryptoIsLazy(out, report.files.map((f) => f.file))).toEqual([]);
   });
 
   test("CSS ikut diproses Tailwind: kelas yang dipakai komponen ada dan tema gelap terdefinisi", () => {

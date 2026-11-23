@@ -6,6 +6,7 @@
 // (relay-store.ts) untuk tiap relay. Sambungan dibuka saat komponen ini dipasang dan ditutup saat
 // dilepas. Bila pairing berubah (pairing baru berhasil), daftar dibaca ulang dan sambungan dibuat ulang.
 import { createContext, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { getE2e } from "../e2e/runtime";
 import { PAIRINGS_CHANGED_EVENT, loadPairings, type StoredPairing } from "../pairing/storage";
 import { createRelayApi } from "./api";
 import { createRelayStore, type RelayState, type RelayStore } from "./relay-store";
@@ -14,8 +15,16 @@ export type RelayEntry = { pairing: StoredPairing; store: RelayStore };
 
 export type RelayStoreFactory = (pairing: StoredPairing) => RelayStore;
 
-const defaultFactory: RelayStoreFactory = (pairing) =>
-  createRelayStore({ relayUrl: pairing.relayUrl, token: pairing.deviceToken, api: createRelayApi({ relayUrl: pairing.relayUrl, token: pairing.deviceToken }) });
+// Gerbang E2E dipasang bila ada laptop E2E di brankas (runtime dihidupkan sebelum layar digambar, lihat main.tsx). Tanpa itu, tidak ada kode kripto yang dimuat.
+const defaultFactory: RelayStoreFactory = (pairing) => {
+  const e2e = getE2e();
+  return createRelayStore({
+    relayUrl: pairing.relayUrl,
+    token: pairing.deviceToken,
+    api: createRelayApi({ relayUrl: pairing.relayUrl, token: pairing.deviceToken }),
+    ...(e2e ? { e2e: e2e.gate } : {}),
+  });
+};
 
 const RelayContext = createContext<RelayEntry[] | undefined>(undefined);
 

@@ -21,6 +21,7 @@ import { z } from "zod";
 import { ApprovalDecisionSchema, FinalApprovalStatusSchema } from "./approval";
 import { FileDiffSchema } from "./diff";
 import { DiffSummarySchema } from "./summary";
+import { EnvelopeSchema } from "./events";
 import { RiskSchema } from "./risk";
 
 const isoDate = z.iso.datetime({ offset: true });
@@ -66,4 +67,9 @@ export const PendingApprovalSchema = z.object({
 });
 export type PendingApproval = z.infer<typeof PendingApprovalSchema>;
 
-export const ApprovalsResponseSchema = z.object({ approvals: z.array(PendingApprovalSchema) });
+export const ApprovalsResponseSchema = z.object({
+  approvals: z.array(PendingApprovalSchema),
+  // Hanya bila diminta (`?events=1`): event izin mentah (polos atau terenkripsi) dari riwayat terbaru. HP dengan E2E menghitung antrean
+  // sendiri dari event ini setelah memverifikasi dan mendekripsinya, karena relay tidak bisa membaca isi event terenkripsi.
+  events: z.array(EnvelopeSchema).optional(),
+});

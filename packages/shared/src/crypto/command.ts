@@ -1,71 +1,64 @@
 // =====================================================================================
-// FILE INI: perintah HP ke laptop (keputusan, rollback, pencabutan) = AMPLOP TERTUTUP + TANDA TANGAN (docs/security-e2e.md 4.5).
+// FILE INI: perintah HP ke laptop dan balasan laptop = AMPLOP TERTUTUP + TANDA TANGAN (docs/security-e2e.md 4.5).
 // =====================================================================================
 //
-// Dua lapis: (1) AEAD dengan kunci pasangan HP ke laptop (kerahasiaan, terikat ke mesin dan perangkat), (2) tanda tangan Ed25519
-// HP atas isi keputusan, termasuk `H` = hash SELURUH payload izin yang HP lihat (bukan hanya toolInput), supaya relay tidak bisa
-// menyodorkan diff atau risiko palsu dengan perintah yang sama. Urutan pemeriksaan di laptop (docs 4.5) dan penyimpanan anti-replay
-// ada di issue #034; di sini hanya primitifnya.
+// Dua lapis, untuk SETIAP perintah (keputusan, rollback, pencabutan, ...) dan balasannya:
+//   1. AEAD dengan kunci pasangan arah itu (kerahasiaan, terikat ke mesin dan perangkat lewat AAD).
+//   2. Tanda tangan Ed25519 pengirim atas SELURUH plaintext (terikat ke mesin dan perangkat), jadi tiap kolom di dalamnya, termasuk
+//      `H` = hash SELURUH payload izin yang dilihat HP (bukan hanya toolInput), nomor event, dan nomor perintah, ikut ditandatangani
+//      tanpa perlu pengodean kolom per jenis perintah. Relay tidak bisa menyodorkan diff atau risiko palsu dengan perintah yang sama.
+//
+// Urutan di penerima (docs 4.5): buka AEAD, parse, ambil kunci publik pengirim dari catatan SENDIRI (bukan dari relay), verifikasi tanda
+// tangan, baru periksa isinya (nomor izin, `H`, kedaluwarsa, anti-replay). Pemeriksaan isi dan penyimpanan anti-replay ada di
+// pemanggil (daemon dan PWA); di sini hanya primitifnya.
 import { aeadOpen, aeadSeal } from "./event";
-import { canon, CryptoError, fromB64, toB64, type Field } from "./encoding";
+import { canon, CryptoError, fromB64, toB64 } from "./encoding";
 import type { Sodium } from "./sodium";
 
-export const DECISION_LABEL = "agentmon/decision/v1";
 export const COMMAND_LABEL = "agentmon/cmd/v1";
+export const REPLY_LABEL = "agentmon/reply/v1";
 
 /** H = hash 32 byte atas SELURUH plaintext payload `approval.requested` persis seperti yang laptop kirim. */
 export function approvalHash(s: Sodium, plaintext: Uint8Array): Uint8Array {
   return s.crypto_generichash(32, plaintext, null);
 }
 
-export type DecisionFields = {
-  machineId: string;
-  deviceId: string;
-  sessionId: string;
-  approvalId: string;
-  /** Nomor event `approval.requested` yang diputuskan. */
-  eventId: string;
-  h: Uint8Array;
-  decision: "approve" | "deny";
-  /** Keputusan per bagian (hunk), bentuk kanonis ditentukan #034. Kosong = seluruhnya. */
-  hunks?: string;
-  comment?: string;
-  /** Nomor acak perintah ini; laptop menolak yang sudah pernah dipakai. */
-  commandId: string;
+/** Perintah dari HP, atau balasan dari laptop. Arah menentukan label (dan kunci yang dipakai pemanggil). */
+export type Direction = "command" | "reply";
+export type BoxContext = { direction: Direction; machineId: string; deviceId: string };
+/** Bentuk yang dikirim lewat relay. Semua byte dalam base64 aman-URL. */
+export type SignedBox = { n: string; c: string; s: string };
+
+const labelOf = (direction: Direction): string => {
+  if (direction === "command") return COMMAND_LABEL;
+  if (direction === "reply") return REPLY_LABEL;
+  throw new CryptoError();
 };
+const aadOf = (context: BoxContext): Uint8Array => canon(labelOf(context.direction), [context.machineId, context.deviceId]);
+const signatureInput = (context: BoxContext, plaintext: Uint8Array): Uint8Array => canon(`${labelOf(context.direction)}/sig`, [context.machineId, context.deviceId, plaintext]);
 
-function decisionInput(d: DecisionFields): Uint8Array {
-  // Nilai `decision` diperiksa saat dijalankan: "APPROVE" atau teks lain tidak boleh ikut ditandatangani.
-  if (d.h.length !== 32 || (d.decision !== "approve" && d.decision !== "deny")) throw new CryptoError();
-  const fields: Field[] = [d.machineId, d.deviceId, d.sessionId, d.approvalId, d.eventId, d.h, d.decision, d.hunks, d.comment, d.commandId];
-  return canon(DECISION_LABEL, fields);
+/** Menutup lalu menandatangani. `key` = kunci pasangan arah itu; `signPrivateKey` = kunci tanda tangan PENGIRIM. */
+export function sealSigned(s: Sodium, key: Uint8Array, signPrivateKey: Uint8Array, context: BoxContext, plaintext: Uint8Array): SignedBox {
+  const { n, c } = aeadSeal(s, key, aadOf(context), plaintext);
+  const signature = s.crypto_sign_detached(signatureInput(context, plaintext), signPrivateKey);
+  return { n: toB64(s, n), c: toB64(s, c), s: toB64(s, signature) };
 }
 
-export function signDecision(s: Sodium, fields: DecisionFields, phoneSignPrivateKey: Uint8Array): Uint8Array {
-  return s.crypto_sign_detached(decisionInput(fields), phoneSignPrivateKey);
-}
-
-/** Laptop memverifikasi dengan kunci HP dari BERKASNYA sendiri. Tidak pernah melempar. */
-export function verifyDecision(s: Sodium, signature: Uint8Array, fields: DecisionFields, phoneSignPublicKey: Uint8Array): boolean {
+/**
+ * Membuka dan memverifikasi. `signPublicKey` HARUS berasal dari catatan penerima sendiri (HP dari berkas laptop, laptop dari pairing),
+ * bukan dari relay. Semua kegagalan (bentuk, kunci, AAD, data diubah, tanda tangan) menjadi `CryptoError` yang sama.
+ */
+export function openSigned(s: Sodium, key: Uint8Array, signPublicKey: Uint8Array, context: BoxContext, box: unknown): Uint8Array {
+  if (typeof box !== "object" || box === null) throw new CryptoError();
+  const { n, c, s: signature } = box as Record<string, unknown>;
+  if (typeof n !== "string" || typeof c !== "string" || typeof signature !== "string") throw new CryptoError();
+  const plaintext = aeadOpen(s, key, aadOf(context), fromB64(s, n), fromB64(s, c));
+  let valid: boolean;
   try {
-    return s.crypto_sign_verify_detached(signature, decisionInput(fields), phoneSignPublicKey);
+    valid = s.crypto_sign_verify_detached(fromB64(s, signature), signatureInput(context, plaintext), signPublicKey);
   } catch {
-    return false;
+    valid = false;
   }
-}
-
-export type CommandContext = { machineId: string; deviceId: string };
-export type SealedCommand = { n: string; c: string };
-
-const commandAad = (context: CommandContext): Uint8Array => canon(COMMAND_LABEL, [context.machineId, context.deviceId]);
-
-/** HP menutup perintah dengan kunci `tx` pasangannya (HP ke laptop). */
-export function sealCommand(s: Sodium, phoneToLaptopKey: Uint8Array, context: CommandContext, plaintext: Uint8Array): SealedCommand {
-  const { n, c } = aeadSeal(s, phoneToLaptopKey, commandAad(context), plaintext);
-  return { n: toB64(s, n), c: toB64(s, c) };
-}
-
-/** Laptop membuka dengan kunci `rx` untuk HP itu. Gagal = `CryptoError`, tidak ada keputusan. */
-export function openCommand(s: Sodium, phoneToLaptopKey: Uint8Array, context: CommandContext, sealed: SealedCommand): Uint8Array {
-  return aeadOpen(s, phoneToLaptopKey, commandAad(context), fromB64(s, sealed.n), fromB64(s, sealed.c));
+  if (!valid) throw new CryptoError();
+  return plaintext;
 }

@@ -26,22 +26,46 @@ import { navigate } from "../router";
 import { clearPendingLink, peekPendingLink } from "./pending";
 import { PasteLinkForm } from "./PasteLinkForm";
 import { currentPlatform, defaultDeviceName } from "./platform";
-import { redeemPairing, type RedeemOutcome } from "./redeem";
+import { ensureE2e } from "../e2e/runtime";
+import { isE2eLink, pairE2e, type E2ePairOutcome, type E2ePairPhase } from "../e2e/pair";
+import { redeemPairing } from "./redeem";
 import { PAIRINGS_CHANGED_EVENT } from "./storage";
+
+type Failure = Exclude<E2ePairOutcome, { status: "success" }>;
 
 type Phase =
   | { name: "confirm" }
   | { name: "working" }
+  | { name: "e2e"; step: E2ePairPhase }
   | { name: "success"; machineName: string }
-  | { name: "error"; outcome: Exclude<RedeemOutcome, { status: "success" }> };
+  | { name: "error"; outcome: Failure };
 
-const ERROR_KEY: Record<Exclude<RedeemOutcome, { status: "success" }>["status"], MessageKey> = {
+const ERROR_KEY: Record<Failure["status"], MessageKey> = {
+  "e2e-link": "pair.error.e2eLink",
+  "e2e-name": "pair.error.e2eName",
+  "e2e-relay-old": "pair.error.e2eRelayOld",
+  "e2e-rejected": "pair.error.e2eRejected",
+  "e2e-invalid": "pair.error.e2eInvalid",
+  "e2e-timeout": "pair.error.e2eTimeout",
+  "e2e-unavailable": "pair.error.e2eUnavailable",
   "invalid-code": "pair.error.invalid",
   "rate-limited": "pair.error.rate",
   "insecure-relay": "pair.error.insecure",
   unreachable: "pair.error.unreachable",
   "not-saved": "pair.error.notSaved",
   failed: "pair.error.failed",
+};
+
+export type RunE2e = (link: PairingLink, name: string, onStep: (step: E2ePairPhase) => void, storage: Storage | undefined) => Promise<E2ePairOutcome | { status: "e2e-unavailable" }>;
+
+const defaultRunE2e: RunE2e = async (link, name, onStep, storage) => {
+  let runtime;
+  try {
+    runtime = await ensureE2e();
+  } catch {
+    return { status: "e2e-unavailable" }; // penyimpanan kunci tidak tersedia atau rusak
+  }
+  return pairE2e(link, name, { s: runtime.s, keyring: runtime.keyring, storage }, onStep);
 };
 
 function safeLocalStorage(): Storage | undefined {
@@ -52,7 +76,7 @@ function safeLocalStorage(): Storage | undefined {
   }
 }
 
-export function PairScreen({ focusHeading = false }: { focusHeading?: boolean }) {
+export function PairScreen({ focusHeading = false, runE2e = defaultRunE2e }: { focusHeading?: boolean; /** Hanya untuk tes: pengganti alur pairing E2E (libsodium tidak jalan di jsdom). */ runE2e?: RunE2e }) {
   const { t } = useI18n();
   const platform = useMemo(currentPlatform, []);
 
@@ -106,7 +130,11 @@ export function PairScreen({ focusHeading = false }: { focusHeading?: boolean })
     announce.current = true;
     setPhase({ name: "working" });
     try {
-      const outcome = await redeemPairing(link, nameCheck.data ?? name, { storage: safeLocalStorage() });
+      // Tautan dari laptop yang mendukung E2E (memuat rahasia, kunci laptop, atau nomor laptop) WAJIB lewat jalur E2E: tidak pernah turun
+      // diam-diam ke pairing polos, karena itu persis yang dicari penyerang yang memotret QR.
+      const outcome: E2ePairOutcome = isE2eLink(link)
+        ? await runE2e(link, nameCheck.data ?? name, (step) => setPhase({ name: "e2e", step }), safeLocalStorage())
+        : await redeemPairing(link, nameCheck.data ?? name, { storage: safeLocalStorage() });
       if (outcome.status === "success") {
         // Minta browser menjaga data ini dari pembersihan otomatis. Boleh ditolak; hanya membantu.
         void navigator.storage?.persist?.().catch(() => undefined);
@@ -241,6 +269,33 @@ export function PairScreen({ focusHeading = false }: { focusHeading?: boolean })
           {t("pair.ios.browserOnly")}
         </button>
         <p className="mt-1 text-xs text-muted">{t("pair.ios.browserOnlyWarning")}</p>
+      </Card>
+    );
+  }
+
+  // ---- Pairing E2E berjalan: menunggu laptop, lalu mencocokkan sidik jari ----
+  if (phase.name === "e2e") {
+    const step = phase.step;
+    return (
+      <Card>
+        <Heading key="e2e" focus={announce.current} className="text-xl font-semibold">
+          {step.step === "confirm" ? t("pair.e2e.confirm.title") : t("pair.e2e.waiting.title")}
+        </Heading>
+        {step.step === "confirm" ? (
+          <>
+            <p role="status" className="mt-2 text-muted">
+              {t("pair.e2e.confirm.body")}
+            </p>
+            <p aria-label={t("pair.e2e.fingerprint.label")} className="mt-4 text-5xl font-semibold tracking-widest tabular-nums">
+              {`${step.fingerprint.slice(0, 3)} ${step.fingerprint.slice(3)}`}
+            </p>
+            <p className="mt-3 rounded-lg bg-warn-bg px-3 py-2 text-sm text-warn-fg">{t("pair.e2e.confirm.warning")}</p>
+          </>
+        ) : (
+          <p role="status" className="mt-2 text-muted">
+            {step.step === "redeeming" ? t("pair.e2e.redeeming") : t("pair.e2e.waiting.body")}
+          </p>
+        )}
       </Card>
     );
   }
