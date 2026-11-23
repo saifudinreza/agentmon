@@ -24,7 +24,9 @@ import {
   type PairedDevice,
 } from "@agentmon/shared";
 import { generatePairingSecret } from "@agentmon/shared/crypto";
-import { confirmE2eDevice, prepareE2eSession, type E2ePairOptions, type E2eSession } from "./pairing-e2e";
+import { createHash } from "node:crypto";
+import { markDeviceRevoked } from "./e2e-store";
+import { confirmE2eDevice, confirmLegacyDevice, prepareE2eSession, type DeviceIo, type E2ePairOptions, type E2eSession } from "./pairing-e2e";
 import { renderQrForTerminal } from "./qr";
 
 export type PairOptions = {
@@ -110,12 +112,24 @@ export async function runPair(options: PairOptions): Promise<number> {
   if (!before) return unreachable();
   if (before.status !== 200) return rejected(before.status);
   const known = new Set<string>();
+  const handled = new Set<string>();
   const parsedBefore = PairedDevicesResponseSchema.safeParse(before.body);
   if (!parsedBefore.success) {
     err("Jawaban relay tidak dikenali. Mungkin versi relay tidak cocok.");
     return 1;
   }
   for (const device of parsedBefore.data.devices) known.add(device.id);
+
+  // Kunci enkripsi disiapkan SEBELUM meminta kode: berkas kunci yang rusak tidak boleh menghabiskan jatah kode.
+  let session: E2eSession | undefined;
+  if (options.e2e) {
+    try {
+      session = await prepareE2eSession(options.e2e, generatePairingSecret);
+    } catch (error) {
+      err(`Kunci enkripsi tidak bisa disiapkan: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+  }
 
   // 2. Minta kode.
   const created = await call("POST", "/pair/code");
@@ -137,18 +151,10 @@ export async function runPair(options: PairOptions): Promise<number> {
     return 1;
   }
   const expiresAt = Date.parse(code.data.expiresAt);
+  const codeHash = createHash("sha256").update(code.data.code).digest("hex");
 
   // 3. Tampilkan. Pairing E2E menambahkan rahasia dan kunci publik laptop ke fragmen (tidak pernah dikirim ke server mana pun).
-  let session: E2eSession | undefined;
-  if (options.e2e) {
-    try {
-      session = await prepareE2eSession(options.e2e, generatePairingSecret);
-    } catch (error) {
-      err(`Kunci enkripsi tidak bisa disiapkan: ${error instanceof Error ? error.message : String(error)}`);
-      return 1;
-    }
-  }
-  const url = buildPairingUrl(options.appUrl, { code: code.data.code, relayUrl: options.relayUrl, ...(session ? { secret: session.qr.secret, laptopKey: session.qr.laptopKey } : {}) });
+  const url = buildPairingUrl(options.appUrl, { code: code.data.code, relayUrl: options.relayUrl, ...(session ? { secret: session.qr.secret, laptopKey: session.qr.laptopKey, machineId: session.qr.machineId } : {}) });
   out(await render(url));
   out("Pindai QR di atas dengan kamera HP. Bila QR tidak terbaca, buka alamat ini di HP:");
   out(url);
@@ -162,26 +168,36 @@ export async function runPair(options: PairOptions): Promise<number> {
     if (reply?.status !== 200) continue;
     const parsed = PairedDevicesResponseSchema.safeParse(reply.body);
     if (!parsed.success) continue;
-    const fresh: PairedDevice[] = parsed.data.devices.filter((device) => !known.has(device.id));
-    if (fresh.length > 0) {
+    // HP milik KODE INI: relay menyebut hash kode yang dipakai tiap HP. HP dari kode lain (`pair` paralel, kode lama yang masih berlaku) TIDAK
+    // disentuh. Relay lama tidak mengirim hash itu: pakai cara lama (HP yang belum ada di daftar awal).
+    const relayKnowsCodes = parsed.data.devices.some((device) => device.codeHash !== undefined);
+    const mine: PairedDevice[] = parsed.data.devices.filter((device) => !handled.has(device.id) && (relayKnowsCodes ? device.codeHash === codeHash : !known.has(device.id)));
+    if (mine.length > 0) {
       let code0 = 0;
-      for (const device of fresh) {
-        if (session && options.e2e && device.e2e) {
-          const outcome = await confirmE2eDevice(options.e2e, session, code.data.code, device, {
-            post: async (kind, deviceId, body) => (await call("POST", "/pair/e2e/messages", { deviceId, kind, body }))?.status === 201,
-            revoke: async (deviceId) => void (await call("DELETE", `/pair/devices/${encodeURIComponent(deviceId)}`)),
-            out,
-            err,
-          });
-          if (outcome !== "confirmed") code0 = 1;
-          continue;
+      for (const device of mine) {
+        handled.add(device.id);
+        const io: DeviceIo = {
+          post: async (kind, deviceId, body) => (await call("POST", "/pair/e2e/messages", { deviceId, kind, body }))?.status === 201,
+          // Hanya pasangan dengan laptop ini; 3 kali coba, dan hasilnya dilaporkan apa adanya.
+          unpair: async (deviceId) => {
+            for (let attempt = 0; attempt < 3; attempt++) {
+              if ((await call("DELETE", `/pair/devices/${encodeURIComponent(deviceId)}?scope=pairing`))?.status === 200) return true;
+              await sleep(pollMs);
+            }
+            return false;
+          },
+          out,
+          err,
+        };
+        let outcome: "confirmed" | "rejected" | "failed";
+        if (session && options.e2e && device.e2e) outcome = await confirmE2eDevice(options.e2e, session, code.data.code, device, io);
+        else if (session && options.e2e) outcome = await confirmLegacyDevice(options.e2e, device, io);
+        else {
+          // Pairing lama (tanpa kunci E2E di laptop ini). Nama datang dari HP (tidak tepercaya): karakter kontrol diganti.
+          out(`Perangkat baru terpasang: ${sanitizeForTerminal(device.name)}`);
+          outcome = "confirmed";
         }
-        // Nama datang dari HP (tidak tepercaya). Karakter kontrol diganti supaya tidak bisa
-        // menghapus layar atau menyamarkan tulisan lain di terminal.
-        out(`Perangkat baru terpasang: ${sanitizeForTerminal(device.name)}`);
-        if (session) {
-          out("  PERINGATAN: HP ini memakai aplikasi versi lama tanpa enkripsi ujung-ke-ujung. Begitu ada HP terenkripsi, event tidak lagi dikirim polos, jadi HP ini tidak akan menerima apa-apa. Perbarui aplikasinya lalu pasangkan ulang.");
-        }
+        if (outcome !== "confirmed") code0 = 1;
       }
       return code0;
     }
@@ -195,6 +211,8 @@ export async function runPair(options: PairOptions): Promise<number> {
 export type DevicesCommandOptions = {
   relayUrl: string;
   machineToken: string;
+  /** Folder data laptop: pencabutan juga menandai HP itu dicabut di berkas kunci E2E (tidak lagi dipercaya). */
+  e2eHome?: string;
   out: (text: string) => void;
   err: (text: string) => void;
   fetch?: typeof fetch;
@@ -275,6 +293,14 @@ export async function runRevokeDevice(options: DevicesCommandOptions & { deviceI
   if (!response.ok) {
     options.err(`Relay gagal mencabut (kode ${response.status}). HP mungkin BELUM dicabut; coba lagi.`);
     return 1;
+  }
+  if (options.e2eHome) {
+    try {
+      await markDeviceRevoked(options.e2eHome, options.deviceId);
+    } catch (error) {
+      options.err(`HP dicabut di relay, tetapi berkas kunci E2E tidak bisa diperbarui: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
   }
   options.out("HP dicabut. Koneksinya diputus dan tidak bisa tersambung lagi.");
   return 0;

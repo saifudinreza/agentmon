@@ -1,5 +1,5 @@
 {
-  "id": "7182be13-b192-4a04-9d51-b97809925c7b",
+  "id": "461b28f4-2259-4825-9cf1-d4127debb939",
   "prevId": "8edb139c-05ed-401e-8040-4a878e7aca37",
   "version": "7",
   "dialect": "postgresql",
@@ -16,6 +16,12 @@
         },
         "device_id": {
           "name": "device_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "device_name": {
+          "name": "device_name",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -560,6 +566,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "code_hash": {
+          "name": "code_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {

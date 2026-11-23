@@ -67,6 +67,9 @@ export const pairings = pgTable(
       .notNull()
       .references(() => devices.id, { onDelete: "cascade" }),
     createdAt: createdAt(),
+    // Hash kode yang terakhir dipakai untuk memasangkan (atau memasangkan ulang) HP ini ke laptop ini. Laptop memakainya untuk hanya
+    // memproses HP dari kode miliknya sendiri.
+    codeHash: text("code_hash"),
   },
   (t) => [primaryKey({ columns: [t.machineId, t.deviceId] }), index("pairings_device_idx").on(t.deviceId)],
 );
@@ -83,6 +86,9 @@ export const deviceE2e = pgTable(
     deviceId: text("device_id")
       .notNull()
       .references(() => devices.id, { onDelete: "cascade" }),
+    // Nama yang dipakai HP untuk membuat bukti, per laptop. Bukti dihitung atas nama ini; `devices.name` bisa lebih lama (HP yang sama
+    // memasangkan laptop kedua dengan nama baru).
+    deviceName: text("device_name").notNull(),
     kxPublicKey: text("kx_public_key").notNull(),
     signPublicKey: text("sign_public_key").notNull(),
     proof: text("proof").notNull(),

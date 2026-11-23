@@ -21,7 +21,7 @@
 //   - Isi permintaan dibatasi 4 KiB.
 //   - CORS hanya untuk asal (origin) yang diizinkan, karena PWA biasanya dihosting di alamat
 //     berbeda dari relay. Tanpa daftar, tidak ada asal lain yang diizinkan.
-import { PairRedeemRequestSchema, PostE2eMessageSchema, type PairCodeResponse, type PairedDevicesResponse, type PairRedeemResponse } from "@agentmon/shared";
+import { normalizeDeviceName, PairRedeemRequestSchema, PostE2eMessageSchema, type PairCodeResponse, type PairedDevicesResponse, type PairRedeemResponse } from "@agentmon/shared";
 import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
@@ -146,6 +146,12 @@ export function mountPairingRoutes(app: Hono, options: PairingRoutesOptions): vo
     if (!machineId) return c.json({ error: "unauthorized" }, 401);
     if (!perMachine.take(machineId)) return c.json({ error: "rate-limited" }, 429);
     const deviceId = c.req.param("deviceId");
+    // `?scope=pairing`: hanya melepas pasangan HP ini dengan laptop pemanggil (menolak pairing). Tanpa itu, HP dicabut di SEMUA laptop.
+    if (c.req.query("scope") === "pairing") {
+      if (deviceId.length > 200 || !(await pairing.unpairDevice(machineId, deviceId))) return c.json({ error: "not-found" }, 404);
+      options.onDeviceRevoked?.(deviceId); // sambungannya diputus; bila HP masih punya laptop lain, ia tersambung lagi sendiri
+      return c.json({ ok: true });
+    }
     if (deviceId.length > 200 || !(await pairing.revokeDevice({ machineId }, deviceId))) return c.json({ error: "not-found" }, 404);
     options.onDeviceRevoked?.(deviceId);
     return c.json({ ok: true });
@@ -182,6 +188,10 @@ export function mountPairingRoutes(app: Hono, options: PairingRoutesOptions): vo
 
       const parsed = PairRedeemRequestSchema.safeParse(await c.req.json().catch(() => undefined));
       if (!parsed.success) return c.json({ error: "bad-request" }, 400);
+
+      // Bukti E2E dihitung atas nama yang sudah baku; nama lain (lebar-nol, NFD, kendali) tidak akan pernah lolos di laptop, jadi ditolak sekarang
+      // SEBELUM kode dihabiskan.
+      if (parsed.data.e2e !== undefined && normalizeDeviceName(parsed.data.name) !== parsed.data.name) return c.json({ error: "bad-request" }, 400);
 
       const existingDeviceToken = bearer(c);
       const result = await pairing.redeem({

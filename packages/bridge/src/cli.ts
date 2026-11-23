@@ -43,7 +43,7 @@ export type CliDeps = {
   out: (text: string) => void;
   err: (text: string) => void;
   // Hanya diisi test, untuk perintah `pair` (jaringan, jam, dan pencetak QR palsu).
-  pair?: Partial<Pick<PairOptions, "fetch" | "sleep" | "now" | "pollMs" | "renderQr">>;
+  pair?: Partial<Pick<PairOptions, "fetch" | "sleep" | "now" | "pollMs" | "renderQr" | "e2e">>;
   // Hanya diisi test, untuk perintah `register` (nama komputer palsu).
   hostname?: () => string;
   // Hanya diisi test, supaya `status` tidak menyentuh pengaturan autostart sistem yang sebenarnya.
@@ -320,6 +320,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       out: deps.out,
       err: deps.err,
       ...(deps.pair?.fetch ? { fetch: deps.pair.fetch } : {}),
+      e2eHome: home,
     };
     if (command === "devices") return runListDevices(common);
     const deviceId = rest[0];

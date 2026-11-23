@@ -2,6 +2,7 @@
 // Relay hanya MENYIMPAN dan MENERUSKAN: bahan pairing dari HP (kunci publik dan bukti) ke laptop, dan pesan bertanda tangan dari laptop ke HP
 // (kotak surat). Yang dijaga: hanya pihak yang berhak yang bisa menitipkan dan membaca, tidak ada kebocoran antar-laptop atau antar-HP,
 // kotak surat berbatas, dan semuanya terhapus bersama pemiliknya.
+import { createHash } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { DatabaseHandle } from "./db/connect";
@@ -177,12 +178,13 @@ describe("kotak surat laptop ke HP", () => {
     expect((await json(base, "GET", "/api/e2e/messages?machineId=m1&after=abc", deviceToken)).status).toBe(400);
   });
 
-  test("kotak surat berbatas: lewat batas per HP, pesan baru ditolak (404 sama) dan yang lama utuh", async () => {
+  test("kotak surat berbatas: lewat batas per HP, yang LAMA dibuang dan pesan baru tetap diterima (pairing tidak pernah gagal karena penuh)", async () => {
     const base = await start();
     const { deviceId } = await paired(base);
-    for (let i = 0; i < MAX_E2E_MESSAGES_PER_DEVICE; i++) expect(await pairing.postE2eMessage("m1", deviceId, "keys", JSON.stringify({ i }))).toBe(true);
-    expect(await pairing.postE2eMessage("m1", deviceId, "keys", "{}")).toBe(false);
+    for (let i = 0; i < MAX_E2E_MESSAGES_PER_DEVICE + 5; i++) expect(await pairing.postE2eMessage("m1", deviceId, "keys", JSON.stringify({ i }))).toBe(true);
     expect(await count("e2e_messages")).toBe(MAX_E2E_MESSAGES_PER_DEVICE);
+    const rows = await query(handle.db, sql.raw("select body from e2e_messages order by id asc limit 1"));
+    expect(JSON.parse(String(rows[0]?.body))).toEqual({ i: 5 }); // lima yang tertua sudah dibuang
   });
 
   test("HP dicabut: pesan lamanya tetap tidak bisa dibaca lewat token barunya yang tidak ada; menghapus laptop menghapus bahan dan pesan", async () => {
@@ -193,6 +195,93 @@ describe("kotak surat laptop ke HP", () => {
     expect(await pairing.revokeDevice({ machineId: "m1" }, deviceId)).toBe(true);
     expect((await read(base, deviceToken)).status).toBe(401); // token HP yang dicabut ditolak
     expect(await pairing.forgetMachine("m1")).toBe(true);
+    expect(await count("device_e2e")).toBe(0);
+    expect(await count("e2e_messages")).toBe(0);
+  });
+});
+
+describe("orkestrasi pairing (temuan tinjauan PR #97)", () => {
+  const list = async (base: string, token: string) => ((await (await json(base, "GET", "/pair/devices", token)).json()) as { devices: Array<{ id: string; name: string; codeHash?: string; e2e?: { kx: string } }> }).devices;
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+
+  test("melepas pasangan HP di SATU laptop (?scope=pairing) TIDAK mencabutnya di laptop lain; di laptop itu pairing dan bahan E2E hilang", async () => {
+    const base = await start();
+    const first = await redeem(base, T.m1, MATERIAL);
+    await redeem(base, T.m2, { ...MATERIAL, kx: "Z".repeat(43) }, "iPhone Dono", first.body.deviceToken);
+    expect((await json(base, "DELETE", `/pair/devices/${first.body.deviceId}?scope=pairing`, T.m2)).status).toBe(200);
+    expect(await list(base, T.m2)).toEqual([]);
+    expect((await list(base, T.m1)).map((d) => d.id)).toEqual([first.body.deviceId]); // laptop pertama utuh
+    expect((await json(base, "GET", "/api/e2e/messages?machineId=m1", first.body.deviceToken!)).status).toBe(200); // token HP masih berlaku
+    expect(await count("device_e2e")).toBe(1);
+  });
+
+  test("melepas pasangan terakhir sebuah HP mencabut perangkatnya sekalian (token tidak berguna); tanpa scope tetap mencabut di semua laptop", async () => {
+    const base = await start();
+    const solo = await redeem(base, T.m1, MATERIAL);
+    expect((await json(base, "DELETE", `/pair/devices/${solo.body.deviceId}?scope=pairing`, T.m1)).status).toBe(200);
+    expect((await json(base, "GET", "/api/e2e/messages?machineId=m1", solo.body.deviceToken!)).status).toBe(401);
+    const shared = await redeem(base, T.m1, MATERIAL, "HP bersama");
+    await redeem(base, T.m2, MATERIAL, "HP bersama", shared.body.deviceToken);
+    expect((await json(base, "DELETE", `/pair/devices/${shared.body.deviceId}`, T.m2)).status).toBe(200); // pencabutan eksplisit
+    expect(await list(base, T.m1)).toEqual([]);
+    expect(await count("device_e2e")).toBe(0);
+    expect(await count("e2e_messages")).toBe(0);
+  });
+
+  test("?scope=pairing: HP yang bukan milik laptop ini, 404; tanpa token, 401; pasangan yang sama dua kali, 404", async () => {
+    const base = await start();
+    const a = await redeem(base, T.m1, MATERIAL);
+    expect((await json(base, "DELETE", `/pair/devices/${a.body.deviceId}?scope=pairing`, T.m2)).status).toBe(404);
+    expect((await json(base, "DELETE", `/pair/devices/${a.body.deviceId}?scope=pairing`, null)).status).toBe(401);
+    expect((await json(base, "DELETE", `/pair/devices/${a.body.deviceId}?scope=pairing`, T.m1)).status).toBe(200);
+    expect((await json(base, "DELETE", `/pair/devices/${a.body.deviceId}?scope=pairing`, T.m1)).status).toBe(404);
+  });
+
+  test("HP yang sama memasangkan laptop kedua dengan NAMA BARU: laptop melihat nama yang dipakai untuk buktinya", async () => {
+    const base = await start();
+    const first = await redeem(base, T.m1, MATERIAL, "iPhone Dono");
+    await redeem(base, T.m2, MATERIAL, "iPhone 16 Dono", first.body.deviceToken);
+    expect((await list(base, T.m2))[0]?.name).toBe("iPhone 16 Dono");
+    expect((await list(base, T.m1))[0]?.name).toBe("iPhone Dono");
+  });
+
+  test("nama yang tidak baku dengan bahan E2E ditolak (400) SEBELUM kode hangus; tanpa bahan E2E nama biasa tetap diterima", async () => {
+    const base = await start();
+    const code = await pairing.createCode("m1");
+    if (!code.ok) throw new Error("kode gagal");
+    for (const name of ["iPhone Dono\u200b", "Cafe\u0301"]) {
+      expect((await json(base, "POST", "/pair/redeem", null, { code: code.code, name, e2e: MATERIAL })).status, name).toBe(400);
+    }
+    expect((await json(base, "POST", "/pair/redeem", null, { code: code.code, name: "iPhone Dono\u200b" })).status).toBe(200); // pairing lama: tidak berubah
+  });
+
+  test("daftar HP memuat hash kode yang dipakai: HP dari kode lain terbedakan, dan memasangkan ulang menggantinya", async () => {
+    const base = await start();
+    const codeA = await pairing.createCode("m1");
+    const codeB = await pairing.createCode("m1");
+    if (!codeA.ok || !codeB.ok) throw new Error("kode gagal");
+    const a = (await (await json(base, "POST", "/pair/redeem", null, { code: codeA.code, name: "HP A", e2e: MATERIAL })).json()) as { deviceId: string; deviceToken: string };
+    expect((await list(base, T.m1))[0]?.codeHash).toBe(sha(codeA.code));
+    await json(base, "POST", "/pair/redeem", a.deviceToken, { code: codeB.code, name: "HP A", e2e: MATERIAL });
+    expect((await list(base, T.m1))[0]?.codeHash).toBe(sha(codeB.code));
+  });
+
+  test("memasangkan ulang membersihkan pesan lama; memasangkan ulang TANPA bahan E2E menghapus bahan lama", async () => {
+    const base = await start();
+    const a = await redeem(base, T.m1, MATERIAL);
+    await pairing.postE2eMessage("m1", a.body.deviceId, "challenge", JSON.stringify({ r: "x" }));
+    await redeem(base, T.m1, MATERIAL, "iPhone Dono", a.body.deviceToken);
+    expect(await count("e2e_messages")).toBe(0);
+    await redeem(base, T.m1, undefined, "iPhone Dono", a.body.deviceToken);
+    expect(await count("device_e2e")).toBe(0);
+    expect((await list(base, T.m1))[0]).not.toHaveProperty("e2e");
+  });
+
+  test("mencabut HP (global) membersihkan bahan E2E dan semua pesannya", async () => {
+    const base = await start();
+    const a = await redeem(base, T.m1, MATERIAL);
+    await pairing.postE2eMessage("m1", a.body.deviceId, "keys", "{}");
+    expect(await pairing.revokeDevice({ machineId: "m1" }, a.body.deviceId)).toBe(true);
     expect(await count("device_e2e")).toBe(0);
     expect(await count("e2e_messages")).toBe(0);
   });

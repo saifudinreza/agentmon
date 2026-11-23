@@ -8,7 +8,7 @@
 //
 // E2E menyala bila ada SATU saja HP yang dipercaya dan belum dicabut. Selama belum ada, perilaku lama berlaku (relay milik sendiri;
 // docs bagian 8). Berkas yang rusak TIDAK diganti diam-diam dengan yang baru (itu akan memutus semua HP tanpa kabar): galatnya jelas.
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { fromB64, generateDataKey, generateKxKeyPair, generateSignKeyPair, toB64, type Sodium } from "@agentmon/shared/crypto";
@@ -75,10 +75,105 @@ export function saveE2e(home: string, state: StoredE2e): void {
     } catch {
       /* tidak didukung */
     }
-    renameSync(temp, file);
+    // Di Windows rename bisa gagal sesaat (EPERM/EBUSY) bila antivirus atau pengindeks memegang berkas tujuan: dicoba ulang beberapa kali.
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        renameSync(temp, file);
+        return;
+      } catch (error) {
+        lastError = error;
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") break;
+        sleepSync(40 * (attempt + 1));
+      }
+    }
+    throw lastError;
   } finally {
     if (existsSync(temp)) unlinkSync(temp);
   }
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Menghapus berkas sementara kunci yang tertinggal (proses mati di antara tulis dan ganti). Dipanggil saat memuat. */
+function removeStaleTemps(home: string): void {
+  try {
+    for (const name of readdirSync(home)) {
+      if (name.startsWith(`${E2E_FILE}.`) && name.endsWith(".tmp")) {
+        const file = join(home, name);
+        if (Date.now() - statSync(file).mtimeMs > 60_000) unlinkSync(file);
+      }
+    }
+  } catch {
+    /* folder belum ada atau tidak bisa dibaca: tidak penting */
+  }
+}
+
+// ---- Kunci antarproses ----
+const LOCK_FILE = `${E2E_FILE}.lock`;
+const LOCK_STALE_MS = 30_000;
+const LOCK_WAIT_MS = 10_000;
+
+/**
+ * Menjalankan `fn` dengan kunci berkas: dua proses (`pair` bersamaan, daemon) tidak boleh saling menimpa pembaruan `e2e.json`. Kunci basi
+ * (proses mati) dilepas setelah 30 detik. Gagal mendapat kunci dalam 10 detik melempar galat yang jelas.
+ */
+export async function withE2eLock<T>(home: string, fn: () => Promise<T> | T): Promise<T> {
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const lock = join(home, LOCK_FILE);
+  const started = Date.now();
+  for (;;) {
+    try {
+      writeFileSync(lock, `${process.pid} ${Date.now()}\n`, { flag: "wx", mode: 0o600 });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) unlinkSync(lock);
+      } catch {
+        /* dilepas pemiliknya di antara dua pemeriksaan */
+      }
+      if (Date.now() - started > LOCK_WAIT_MS) throw new E2eStoreError("Berkas kunci E2E sedang dipakai proses lain. Coba lagi sebentar.");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    try {
+      unlinkSync(lock);
+    } catch {
+      /* sudah hilang */
+    }
+  }
+}
+
+/**
+ * Baca-ubah-tulis DI DALAM kunci: memuat ulang dari disk (bukan dari ingatan proses), menerapkan `mutate`, lalu menyimpan. Identitas dibuat
+ * di dalam kunci yang sama, jadi dua proses pertama tidak membuat dua identitas.
+ */
+export async function updateE2e(s: Sodium, home: string, mutate: (state: StoredE2e) => StoredE2e): Promise<StoredE2e> {
+  return withE2eLock(home, () => {
+    removeStaleTemps(home);
+    const next = mutate(loadOrCreateE2e(s, home));
+    saveE2e(home, next);
+    return next;
+  });
+}
+
+/** Menandai HP sebagai dicabut di berkas kunci (tidak lagi dipercaya). Tidak melakukan apa-apa bila tidak ada berkas atau HP-nya. */
+export async function markDeviceRevoked(home: string, deviceId: string, now: Date = new Date()): Promise<boolean> {
+  if (!existsSync(fileOf(home))) return false; // tidak ada berkas kunci: tidak membuat folder atau kunci apa pun
+  return withE2eLock(home, () => {
+    const state = loadE2e(home);
+    const device = state?.devices[deviceId];
+    if (!state || !device || device.revokedAt !== undefined) return false;
+    saveE2e(home, { ...state, devices: { ...state.devices, [deviceId]: { ...device, revokedAt: now.toISOString() } } });
+    return true;
+  });
 }
 
 /** Membuat identitas dan kunci data pertama bila belum ada, atau memuat yang ada. */

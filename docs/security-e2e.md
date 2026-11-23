@@ -66,7 +66,7 @@ Mengapa **kunci data bersama** dan bukan salinan per HP: riwayat disimpan relay 
 ### 4.2 Pairing yang tahan relay jahat dan QR yang bocor
 Penangkal serangan perantara adalah **rahasia `s` yang hanya ada di QR**. Penangkal QR yang bocor adalah **konfirmasi sidik jari oleh orang di depan laptop**.
 
-QR: `https://<pwa>/pair#c=<kode>&r=<relay>&k=<kunci publik Ed25519 laptop>&s=<rahasia 32 byte>`. Hanya kunci **Ed25519** laptop ada di QR; kunci lain dikirim bertanda tangan. `s` hanya berlaku untuk kode `c` itu dan dihapus laptop setelah bukti sah pertama atau saat `c` kedaluwarsa.
+QR: `https://<pwa>/pair#c=<kode>&r=<relay>&k=<kunci publik Ed25519 laptop>&s=<rahasia 32 byte>`. Hanya kunci **Ed25519** laptop ada di QR; kunci lain dikirim bertanda tangan. `s` hanya berlaku untuk kode `c` itu. QR juga memuat nomor laptop `m` (HP membutuhkannya untuk membuat bukti). Implementasi menyimpan `s` hanya di memori proses `pair` sampai proses itu selesai, tidak pernah di disk.
 
 ```
 HP (memindai QR)                           Relay                          Laptop
