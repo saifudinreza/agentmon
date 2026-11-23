@@ -176,6 +176,10 @@ export const events = pgTable(
     // NUL (\u0000) yang bisa saja ada di isi berkas atau perintah dari agent. Teks JSON menuliskannya
     // sebagai urutan "\u0000" biasa, jadi tersimpan dan terbaca persis sama.
     payload: text("payload").notNull(),
+    // Hanya event izin: nomor acak dan tenggat izin di AMPLOP (bukan rahasia), supaya relay bisa menghitung izin yang menunggu dan memberi
+    // notifikasi tanpa membuka isi yang terenkripsi.
+    approvalId: text("approval_id"),
+    expiresAt: time("expires_at"),
     // Waktu relay menerimanya (jam relay, dapat dipercaya). Dasar penghapusan otomatis.
     receivedAt: time("received_at").notNull().defaultNow(),
   },

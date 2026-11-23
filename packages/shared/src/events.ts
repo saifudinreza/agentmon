@@ -187,6 +187,11 @@ export const EnvelopeSchema = z.object({
   ...envelopeFields,
   type: nonEmpty,
   payload: z.unknown(),
+  // Hanya pada event izin. Nomor acak dan tenggat izin, TIDAK rahasia, dan diautentikasi (ikut AAD) pada event terenkripsi: relay memakainya
+  // untuk menghitung izin yang menunggu dan memberi notifikasi tanpa membuka isi event. HP memeriksa bahwa nilainya sama dengan isi
+  // (docs/security-e2e.md bagian 5).
+  approvalId: z.string().min(1).max(200).optional(),
+  expiresAt: isoDate.optional(),
 });
 export type Envelope = z.infer<typeof EnvelopeSchema>;
 

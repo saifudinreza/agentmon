@@ -30,6 +30,7 @@
 // KETERBATASAN: antrean hanya di memori. Bila daemon dimatikan atau macet saat relay tidak
 // terjangkau, event yang belum terkirim hilang. Menyimpannya ke disk bisa ditambahkan nanti.
 import { APPROVAL_DECISION_COMMAND, APPROVAL_RESULT_REPLY, ServerFrameSchema, type Envelope } from "@agentmon/shared";
+import type { DaemonE2e } from "./e2e-daemon";
 import type { Logger } from "./logger";
 
 export type RelayClientOptions = {
@@ -47,6 +48,11 @@ export type RelayClientOptions = {
    */
   onCommand?: (body: Record<string, unknown>, deviceId: string) => Promise<Record<string, unknown> | undefined>;
   logger?: Logger;
+  /**
+   * Enkripsi ujung-ke-ujung (issue #033). Begitu aktif (ada HP terpercaya), event disegel sebelum dikirim (gagal menyegel = event dibuang, tidak pernah
+   * dikirim polos), perintah polos ditolak, dan perintah yang sah dibuka dan diverifikasi dulu. Balasan ke HP juga disegel.
+   */
+  e2e?: DaemonE2e;
 
   /** Batas antrean. Yang terlama dibuang bila terlampaui. */
   maxQueuedEvents?: number;
@@ -325,6 +331,16 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     }
   };
 
+  // Balasan ke satu HP. Bila E2E aktif, disegel (dan HP yang tidak dikenal atau dicabut tidak dibalas); selain itu polos seperti dulu.
+  const sendReply = (deviceId: string, body: Record<string, unknown>) => {
+    if (options.e2e?.active()) {
+      const sealed = options.e2e.sealReply(deviceId, body);
+      if (sealed) sendNow({ kind: "reply", deviceId, body: sealed });
+      return;
+    }
+    sendNow({ kind: "reply", deviceId, body });
+  };
+
   const handleCommand = (deviceId: string, body: Record<string, unknown>) => {
     const { type, commandId, ...rest } = body;
     if (type !== APPROVAL_DECISION_COMMAND) {
@@ -333,7 +349,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         void options
           .onCommand(body, deviceId)
           .then((result) => {
-            if (result !== undefined) sendNow({ kind: "reply", deviceId, body: result });
+            if (result !== undefined) sendReply(deviceId, result);
             else logger?.info(`relay: perintah tidak dikenal type=${printable(String(type))}`);
           })
           .catch((error: unknown) => logger?.error(`relay: perintah ${printable(String(type))} gagal: ${error instanceof Error ? printable(error.message) : "galat tak dikenal"}`));
@@ -347,11 +363,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     const approvalId = typeof rest.approvalId === "string" ? rest.approvalId : "";
     const reply = (outcome: "applied" | "already_resolved" | "unknown" | "invalid", status?: string) => {
       if (replyTo === undefined || approvalId === "") return;
-      sendNow({
-        kind: "reply",
-        deviceId,
-        body: { type: APPROVAL_RESULT_REPLY, commandId: replyTo, approvalId, outcome, ...(status !== undefined ? { status } : {}) },
-      });
+      sendReply(deviceId, { type: APPROVAL_RESULT_REPLY, commandId: replyTo, approvalId, outcome, ...(status !== undefined ? { status } : {}) });
     };
     try {
       const result = options.decide(rest) as { ok?: boolean; reason?: string; status?: string; approval?: { status?: string } } | undefined;
@@ -421,9 +433,17 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         pump();
         return;
       }
-      case "command":
-        handleCommand(frame.deviceId, frame.body);
+      case "command": {
+        // E2E aktif: perintah polos ditolak; yang sah dibuka dan diverifikasi dulu (HP, tanda tangan, nomor perintah, izin, H). Penolakan karena
+        // izin tidak dikenal dan sejenisnya dijawab supaya HP tidak menunggu sia-sia; kegagalan autentikasi sengaja tanpa jawaban.
+        const verdict = options.e2e ? options.e2e.openCommand(frame.deviceId, frame.body) : ({ ok: true, command: frame.body } as const);
+        if (!verdict.ok) {
+          if (verdict.reply) sendReply(frame.deviceId, verdict.reply);
+          return;
+        }
+        handleCommand(frame.deviceId, verdict.command);
         return;
+      }
       case "error": {
         logger?.error(`relay menolak: ${frame.code}`);
         if (frame.code === "rate_limited") {
@@ -515,13 +535,25 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     send(event) {
       try {
         if (state === "closed" || byId.has(event.id)) return;
-        const text = JSON.stringify({ kind: "event", event });
+        // E2E aktif: event disegel (dienkripsi dan ditandatangani) sebelum meninggalkan daemon. Gagal menyegel = event DIBUANG, tidak pernah
+        // dikirim polos: lebih baik HP kehilangan satu event daripada relay membaca isinya.
+        let outgoing = event;
+        if (options.e2e?.active()) {
+          try {
+            outgoing = options.e2e.seal(event);
+          } catch (error) {
+            noteDrop(1, "gagal menyegel (E2E)");
+            logger?.error(`relay: event tidak dikirim, gagal disegel: ${error instanceof Error ? printable(error.message) : "galat tak dikenal"}`);
+            return;
+          }
+        }
+        const text = JSON.stringify({ kind: "event", event: outgoing });
         const bytes = Buffer.byteLength(text);
         if (bytes > maxEventBytes) {
           noteDrop(1, "terlalu besar untuk relay");
           return;
         }
-        enqueue({ event, text, bytes, sentAt: undefined });
+        enqueue({ event: outgoing, text, bytes, sentAt: undefined });
         enforceLimits();
         pump();
       } catch (error) {

@@ -357,27 +357,15 @@ describe("hasil review PR #61", () => {
     expect(t.notifier.activeSessions()).toBe(0);
   });
 
-  test("risiko tertinggi yang menunggu ikut dalam keputusan untuk penyaring (#037), tanpa isi permintaan", async () => {
+  test("level risiko TIDAK ikut di keputusan penyaring maupun di isi push, walau izin yang menunggu membawa risiko (keputusan produk E2E: relay tidak boleh tahu 'ada izin berbahaya')", async () => {
     const seen: NotifyDecision[] = [];
     const t = setup({ filter: (d) => (seen.push(d), true) });
-    t.waiting.push({ ...approval("a1"), risk: { level: "low", reasons: [{ code: "r", message: "r" }] } } as PendingApproval, { ...approval("a2"), risk: { level: "high", reasons: [{ code: "r", message: "r" }] } } as PendingApproval, { ...approval("a3"), risk: { level: "medium", reasons: [{ code: "r", message: "r" }] } } as PendingApproval);
+    t.waiting.push({ ...approval("a1"), risk: { level: "low", reasons: [{ code: "r", message: "r" }] } } as PendingApproval, { ...approval("a2"), risk: { level: "high", reasons: [{ code: "r", message: "r" }] } } as PendingApproval);
     t.notifier.onEvent({ type: "approval.requested", machineId: "m1", sessionId: "s1" });
     await settle();
-    expect(seen[0]).toEqual({ kind: "approval", machineId: "m1", sessionId: "s1", count: 3, risk: "high" });
-    expect(JSON.stringify(seen)).not.toContain("SANGAT-RAHASIA");
-  });
-
-  test("level risiko tertinggi ikut di isi push (hanya level), dan tidak ada bila tidak dinilai", async () => {
-    const t = setup();
-    t.waiting.push({ ...approval("a1"), risk: { level: "low", reasons: [] } } as PendingApproval, { ...approval("a2"), risk: { level: "high", reasons: [] } } as PendingApproval);
-    t.notifier.onEvent({ type: "approval.requested", machineId: "m1", sessionId: "s1" });
-    await settle();
-    expect(t.pushes[0]?.payload).toMatchObject({ kind: "approval", count: 2, risk: "high" });
-    const u = setup();
-    u.waiting.push(approval("b1"));
-    u.notifier.onEvent({ type: "approval.requested", machineId: "m1", sessionId: "s1" });
-    await settle();
-    expect("risk" in (u.pushes[0]?.payload ?? {})).toBe(false);
+    expect(seen[0]).toEqual({ kind: "approval", machineId: "m1", sessionId: "s1", count: 2 });
+    expect(t.pushes[0]?.payload).toEqual({ v: 1, kind: "approval", machineId: "m1", sessionId: "s1", count: 2 });
+    expect(JSON.stringify([seen, t.pushes])).not.toMatch(/high|medium|low|risk|SANGAT-RAHASIA/);
   });
 
   test("tanpa penilaian risiko: tidak ada kolom risk di keputusan", async () => {
