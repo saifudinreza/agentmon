@@ -62,6 +62,8 @@ function toEnvelope(row: typeof events.$inferSelect): Envelope {
     agent: row.agent as Agent,
     type: row.type,
     payload: JSON.parse(row.payload) as unknown,
+    ...(row.approvalId !== null ? { approvalId: row.approvalId } : {}),
+    ...(row.expiresAt !== null ? { expiresAt: row.expiresAt.toISOString() } : {}),
   };
 }
 
@@ -116,6 +118,8 @@ export function createStore(db: Database, options: { now?: () => Date } = {}) {
             type: event.type,
             // Disimpan sebagai teks JSON. Amplop tanpa isi menjadi "null".
             payload: JSON.stringify(event.payload ?? null),
+            approvalId: event.approvalId ?? null,
+            expiresAt: event.expiresAt !== undefined ? new Date(event.expiresAt) : null,
             receivedAt: now(),
           })
           .onConflictDoNothing()

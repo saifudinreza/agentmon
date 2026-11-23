@@ -35,8 +35,8 @@
 // notifikasi izin yang sudah melewati batas waktu izin setiap kali push berikutnya tiba; dan (3) aplikasi membersihkannya
 // saat dibuka (web/src/push/stale.tsx). TTL Web Push BUKAN pembersih: ia hanya mengatur berapa lama layanan push menyimpan
 // pesan yang belum terkirim, dan notifikasi yang sudah tampil tidak hilang karenanya.
-import type { Envelope, PendingApproval, PushPayload } from "@agentmon/shared";
-import { APPROVAL_EVENT_TYPES, APPROVAL_LOOKBACK_MS, computePendingApprovals } from "./approvals";
+import type { Envelope, PushPayload } from "@agentmon/shared";
+import { APPROVAL_EVENT_TYPES, APPROVAL_LOOKBACK_MS, waitingApprovals } from "./approvals";
 import type { Store } from "./db/store";
 import { silentLogger, type Logger } from "./logger";
 import type { PushService } from "./push";
@@ -49,8 +49,6 @@ export type NotifyDecision = {
   machineId: string;
   sessionId: string;
   count?: number;
-  /** Risiko TERTINGGI di antara izin yang menunggu (hanya untuk jenis izin dan bila ada izin yang berisiko dinilai). Bukan isi permintaan. */
-  risk?: "low" | "medium" | "high";
 };
 export type NotifyFilter = (decision: NotifyDecision) => boolean | Promise<boolean>;
 
@@ -58,8 +56,8 @@ type Cancelable = { cancel(): void };
 
 export type NotifierOptions = {
   push: Pick<PushService, "notifyMachine">;
-  /** Permintaan izin yang masih menunggu di satu sesi (dihitung dari riwayat; lihat approvals.ts). */
-  pending: (machineId: string, sessionId: string) => Promise<readonly PendingApproval[]>;
+  /** Permintaan izin yang masih menunggu di satu sesi (dihitung dari AMPLOP riwayat; lihat approvals.ts). Hanya nomor: isi tidak dibaca. */
+  pending: (machineId: string, sessionId: string) => Promise<readonly { approvalId: string }[]>;
   /** Titik penyaring kebijakan. Bawaan: semua dikirim. Gagal menyaring (melempar) berarti TIDAK dikirim. */
   filter?: NotifyFilter;
   logger?: Logger;
@@ -88,7 +86,6 @@ type Slot = { timer?: Cancelable; dirty: boolean; lastSignature?: string; tail: 
 // Batas panjang nomor di isi push (sama dengan skema push). Nomor yang lebih panjang tidak boleh membuang seluruh notifikasi.
 const MAX_PUSH_ID_LENGTH = 200;
 const fits = (id: string) => id.length > 0 && id.length <= MAX_PUSH_ID_LENGTH;
-const RISK_RANK = { high: 0, medium: 1, low: 2 } as const;
 
 const defaultSchedule: NonNullable<NotifierOptions["schedule"]> = (callback, ms) => {
   const timer = setTimeout(callback, ms);
@@ -106,7 +103,7 @@ export function createNotifier(options: NotifierOptions): Notifier {
   const slots = new Map<string, Slot>();
   let stopped = false;
 
-  type Built = { payload: PushPayload; signature?: string; risk?: NotifyDecision["risk"] };
+  type Built = { payload: PushPayload; signature?: string };
 
   // Membangun isi push. HANYA dari nomor dan jumlah: tidak ada tempat untuk isi event masuk ke sini.
   async function build(kind: NotifyKind, machineId: string, sessionId: string, slot: Slot): Promise<Built | undefined> {
@@ -123,12 +120,11 @@ export function createNotifier(options: NotifierOptions): Notifier {
     const signature = waiting.map((p) => p.approvalId).sort().join("\u0000");
     if (signature === slot.lastSignature) return undefined;
     const only = waiting.length === 1 ? waiting[0] : undefined;
-    const ranks = waiting.flatMap((p) => (p.risk ? [RISK_RANK[p.risk.level]] : []));
-    const risk = ranks.length > 0 ? (["high", "medium", "low"] as const)[Math.min(...ranks)] : undefined;
+    // Level risiko TIDAK ikut di notifikasi (keputusan produk di docs/security-e2e.md bagian 5): level adalah informasi tentang isi pekerjaan,
+    // dan relay tidak boleh tahu "ada izin berbahaya jam sekian". Level baru terlihat setelah aplikasi dibuka dan isinya didekripsi di HP.
     return {
-      payload: { v: 1, kind: "approval", machineId, ...session, count: Math.min(waiting.length, 9999), ...(only && fits(only.approvalId) ? { approvalId: only.approvalId } : {}), ...(risk ? { risk } : {}) },
+      payload: { v: 1, kind: "approval", machineId, ...session, count: Math.min(waiting.length, 9999), ...(only && fits(only.approvalId) ? { approvalId: only.approvalId } : {}) },
       signature,
-      ...(risk ? { risk } : {}),
     };
   }
 
@@ -142,7 +138,7 @@ export function createNotifier(options: NotifierOptions): Notifier {
       if (!built) return false;
       let allowed: boolean;
       try {
-        const decision: NotifyDecision = { kind, machineId, sessionId, ...(built.payload.count !== undefined ? { count: built.payload.count } : {}), ...(built.risk ? { risk: built.risk } : {}) };
+        const decision: NotifyDecision = { kind, machineId, sessionId, ...(built.payload.count !== undefined ? { count: built.payload.count } : {}) };
         allowed = (await options.filter?.(decision)) ?? true;
       } catch {
         allowed = false; // penyaring yang rusak berarti diam, bukan membanjiri
@@ -250,6 +246,6 @@ export function pendingLookup(store: Pick<Store, "listRecentByType">, now: () =>
   return async (machineId, sessionId) => {
     const at = now();
     const events = await store.listRecentByType(machineId, [...APPROVAL_EVENT_TYPES], new Date(at.getTime() - APPROVAL_LOOKBACK_MS));
-    return computePendingApprovals(events, at).filter((approval) => approval.sessionId === sessionId);
+    return waitingApprovals(events, at).filter((approval) => approval.sessionId === sessionId);
   };
 }

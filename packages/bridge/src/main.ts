@@ -9,6 +9,8 @@ import { join } from "node:path";
 import type { EventType } from "@agentmon/shared";
 import { agentmonHome, loadOrCreateMachineId, paths } from "./home";
 import { createLogger } from "./logger";
+import { loadSodium } from "@agentmon/shared/crypto";
+import { createDaemonE2e } from "./e2e-daemon";
 import { createRelayClient, type RelayClient } from "./relay-client";
 import { resolveRelayConfig, type ResolvedRelayConfig } from "./relay-config";
 import { createPolicyRuntime } from "./policy/runtime";
@@ -123,10 +125,14 @@ async function main() {
     const relayToken = relayConfig?.token;
     if (relayUrl && relayToken) {
       try {
+        // Enkripsi ujung-ke-ujung (#033): petugas segel selalu dibuat; ia baru aktif begitu ada HP terpercaya di e2e.json (dibaca ulang saat berubah).
+        const machineId = loadOrCreateMachineId(daemon.home);
+        const e2e = createDaemonE2e({ s: await loadSodium(), home: daemon.home, machineId, logger: createLogger(paths(daemon.home).log) });
         relay = createRelayClient({
           url: relayUrl,
           token: relayToken,
-          machineId: loadOrCreateMachineId(daemon.home),
+          machineId,
+          e2e,
           // Keputusan dari HP diserahkan ke approval engine yang sama dengan perintah `approve` dan `deny`.
           decide: (input) => daemon.approvals.decide(input),
           // Perintah lain dari HP (rollback) ditangani rollback; tanpa checkpoint, perintahnya diabaikan.
