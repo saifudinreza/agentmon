@@ -1,0 +1,7 @@
+# Header untuk Cloudflare Pages (docs/security-e2e.md bagian 7). CSP ketat: skrip hanya dari berkas sendiri (WASM libsodium diizinkan lewat
+# 'wasm-unsafe-eval'), tanpa skrip pihak ketiga dan tanpa 'unsafe-inline' untuk skrip. connect-src mengizinkan https/wss karena alamat relay ditentukan
+# pengguna (tiap relay punya alamat sendiri). Gaya inline masih diizinkan karena React menulis atribut style.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https: wss:; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer

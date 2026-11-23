@@ -42,4 +42,4 @@ export {
   type WrapContext,
   type WrappedKey,
 } from "./pairing";
-export { approvalHash, openCommand, sealCommand, signDecision, verifyDecision, type CommandContext, type DecisionFields, type SealedCommand } from "./command";
+export { approvalHash, COMMAND_LABEL, openSigned, REPLY_LABEL, sealSigned, type BoxContext, type Direction, type SignedBox } from "./command";

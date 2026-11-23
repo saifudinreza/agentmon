@@ -18,7 +18,9 @@ export const PAIRINGS_STORAGE_KEY = "agentmon.pairings";
 // Dipancarkan di window setelah pairing berubah, supaya bagian aplikasi lain (sambungan ke relay) membacanya ulang.
 export const PAIRINGS_CHANGED_EVENT = "agentmon:pairings";
 
-const MachineSchema = z.object({ id: z.string().min(1), name: z.string(), pairedAt: z.string() });
+// `e2e: true` = laptop ini dipasangkan SECARA E2E. Penanda ini sengaja disimpan di sini (bukan hanya di brankas IndexedDB): bila brankas hilang atau tidak
+// bisa dibuka, HP tetap TAHU bahwa laptop ini harus terenkripsi, dan menolak event polos (tidak diam-diam turun ke mode polos).
+const MachineSchema = z.object({ id: z.string().min(1), name: z.string(), pairedAt: z.string(), e2e: z.boolean().optional() });
 const PairingSchema = z.object({
   relayUrl: z.string().min(1),
   deviceId: z.string().min(1),
@@ -59,6 +61,11 @@ export function loadPairings(storage: ReadableStorage | undefined): StoredPairin
   }
 }
 
+/** Nomor laptop yang ditandai E2E di semua pairing. */
+export function e2eMachineIds(pairings: readonly StoredPairing[]): Set<string> {
+  return new Set(pairings.flatMap((p) => p.machines.filter((m) => m.e2e === true).map((m) => m.id)));
+}
+
 export function findPairing(pairings: StoredPairing[], relayUrl: string): StoredPairing | undefined {
   const wanted = normalizeRelayUrl(relayUrl);
   return wanted === undefined ? undefined : pairings.find((p) => normalizeRelayUrl(p.relayUrl) === wanted);
@@ -96,6 +103,24 @@ export function savePairing(storage: WritableStorage | undefined, input: SaveInp
     return findPairing(loadPairings(storage), relayUrl);
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Membuang SATU laptop dari pairing sebuah relay (mis. pairing E2E yang gagal), tanpa menyentuh laptop lain di relay yang sama. Bila tidak ada
+ * laptop yang tersisa, token relay ikut dibuang (token tanpa laptop tidak berguna).
+ */
+export function removeMachine(storage: WritableStorage | undefined, relayUrl: string, machineId: string): void {
+  if (!storage) return;
+  try {
+    const all = loadPairings(storage);
+    const existing = findPairing(all, relayUrl);
+    if (!existing) return;
+    const machines = existing.machines.filter((m) => m.id !== machineId);
+    const next = machines.length === 0 ? all.filter((p) => p !== existing) : all.map((p) => (p === existing ? { ...existing, machines } : p));
+    storage.setItem(PAIRINGS_STORAGE_KEY, JSON.stringify({ v: 1, pairings: next }));
+  } catch {
+    // diabaikan
   }
 }
 

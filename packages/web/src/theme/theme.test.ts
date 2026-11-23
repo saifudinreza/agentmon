@@ -90,7 +90,8 @@ describe("applyTheme", () => {
 // dengan resolveTheme untuk semua kombinasi, supaya keduanya tidak menyimpang diam-diam.
 describe("skrip tema di index.html sama dengan resolveTheme", () => {
   const html = readFileSync(join(__dirname, "..", "..", "index.html"), "utf8");
-  const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1] ?? "";
+  // Skrip tema adalah berkas eksternal (public/theme-init.js) supaya CSP ketat tanpa 'unsafe-inline' untuk skrip tetap bisa menjalankannya.
+  const script = readFileSync(join(__dirname, "..", "..", "public", "theme-init.js"), "utf8");
 
   function runInlineScript(saved: string | null, prefersDark: boolean, storageThrows = false) {
     document.head.innerHTML = '<meta name="theme-color" content="#123456">';
@@ -112,8 +113,10 @@ describe("skrip tema di index.html sama dengan resolveTheme", () => {
     };
   }
 
-  test("skripnya ditemukan", () => {
+  test("skripnya ditemukan dan dimuat dari index.html sebagai berkas (bukan inline)", () => {
     expect(script).toContain("agentmon.theme");
+    expect(html).toContain('<script src="/theme-init.js"></script>');
+    expect(html).not.toMatch(/<script>/);
   });
 
   test.each([null, "system", "light", "dark", "rusak", ""])("tersimpan %j", (saved) => {

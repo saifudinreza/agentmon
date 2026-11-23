@@ -4,6 +4,8 @@ import {
   aeadSeal,
   eventAad,
   approvalHash,
+  openSigned,
+  sealSigned,
   canon,
   CryptoError,
   fromB64,
@@ -18,23 +20,18 @@ import {
   laptopSessionKeys,
   loadSodium,
   makePairProof,
-  openCommand,
   openEvent,
   pairingFingerprint,
   PAD_BLOCK,
   phoneSessionKeys,
-  sealCommand,
   sealEvent,
-  signDecision,
   signPairResponse,
   toB64,
   unwrapDataKey,
   utf8,
-  verifyDecision,
   verifyPairProof,
   verifyPairResponse,
   wrapDataKey,
-  type DecisionFields,
   type EventEnvelope,
   type PairRequest,
   type Sodium,
@@ -430,78 +427,77 @@ describe("pairing", () => {
 });
 
 describe("pengodean: kolom tidak ada berbeda dari teks kosong", () => {
-  test("undefined dan teks kosong menghasilkan byte berbeda, dan keputusan dengan hunks/comment kosong tidak sah untuk yang tidak ada", () => {
+  test("undefined berbeda dari teks kosong, dan jenis lain ditolak", () => {
     expect(toHex(canon("x", [undefined]))).not.toBe(toHex(canon("x", [""])));
     expect(() => canon("x", [{} as unknown as string])).toThrow(CryptoError);
     expect(() => canon("x", [null as unknown as string])).toThrow(CryptoError);
-    const phone = generateSignKeyPair(s);
-    const base: DecisionFields = { machineId: "m1", deviceId: "d1", sessionId: "s1", approvalId: "ap-1", eventId: "ev-1", h: new Uint8Array(32), decision: "approve", commandId: "c1" };
-    const signature = signDecision(s, base, phone.privateKey);
-    expect(verifyDecision(s, signature, { ...base, hunks: "" }, phone.publicKey)).toBe(false);
-    expect(verifyDecision(s, signature, { ...base, comment: "" }, phone.publicKey)).toBe(false);
-  });
-
-  test("nilai keputusan di luar approve/deny tidak pernah ditandatangani atau lolos verifikasi", () => {
-    const phone = generateSignKeyPair(s);
-    const fields = { machineId: "m1", deviceId: "d1", sessionId: "s1", approvalId: "ap-1", eventId: "ev-1", h: new Uint8Array(32), decision: "APPROVE" as unknown as "approve", commandId: "c1" };
-    expect(() => signDecision(s, fields, phone.privateKey)).toThrow(CryptoError);
-    expect(verifyDecision(s, new Uint8Array(64), fields, phone.publicKey)).toBe(false);
   });
 });
 
-describe("perintah HP ke laptop", () => {
-  const decisionFor = (h: Uint8Array): DecisionFields => ({ machineId: "m1", deviceId: "d1", sessionId: "s1", approvalId: "ap-1", eventId: "ev-1", h, decision: "approve", comment: "ok", commandId: "cmd-1" });
+describe("perintah HP dan balasan laptop (amplop tertutup + bertanda tangan)", () => {
+  const ctx = (direction: "command" | "reply" = "command") => ({ direction, machineId: "m1", deviceId: "d1" });
+  function pair() {
+    const laptopKx = generateKxKeyPair(s);
+    const phoneKx = generateKxKeyPair(s);
+    return { laptop: laptopSessionKeys(s, laptopKx, phoneKx.publicKey), phone: phoneSessionKeys(s, phoneKx, laptopKx.publicKey), phoneSign: generateSignKeyPair(s), laptopSign: generateSignKeyPair(s) };
+  }
+  const message = utf8(JSON.stringify({ type: "approval.decision", approvalId: "ap-1", decision: "approve" }));
 
-  test("keputusan: sah dengan kunci HP yang tepat; satu kolom berubah, H berubah, atau kunci lain = ditolak", () => {
-    const phone = generateSignKeyPair(s);
-    const h = approvalHash(s, utf8(JSON.stringify({ toolInput: { command: "ls" }, diff: "A" })));
-    const fields = decisionFor(h);
-    const signature = signDecision(s, fields, phone.privateKey);
-    expect(verifyDecision(s, signature, fields, phone.publicKey)).toBe(true);
-    expect(verifyDecision(s, signature, fields, generateSignKeyPair(s).publicKey)).toBe(false);
-    const changes: Partial<DecisionFields>[] = [
-      { machineId: "m2" },
-      { deviceId: "d2" },
-      { sessionId: "s2" },
-      { approvalId: "ap-2" },
-      { eventId: "ev-2" },
-      { decision: "deny" },
-      { hunks: "1,2" },
-      { comment: "lain" },
-      { commandId: "cmd-2" },
-      { h: approvalHash(s, utf8(JSON.stringify({ toolInput: { command: "ls" }, diff: "B" }))) },
-    ];
-    for (const change of changes) expect(verifyDecision(s, signature, { ...fields, ...change }, phone.publicKey), JSON.stringify(Object.keys(change))).toBe(false);
-  });
-
-  test("H mencakup SELURUH payload: diff yang berbeda dengan perintah yang sama menghasilkan H berbeda", () => {
+  test("H mencakup SELURUH payload: diff yang berbeda dengan perintah yang sama menghasilkan H berbeda (32 byte)", () => {
     const a = approvalHash(s, utf8('{"toolInput":{"command":"ls"},"diff":"aman"}'));
     const b = approvalHash(s, utf8('{"toolInput":{"command":"ls"},"diff":"BERBAHAYA"}'));
     expect(a).not.toEqual(b);
     expect(a.length).toBe(32);
   });
 
-  test("H harus tepat 32 byte; verifikasi tidak pernah melempar", () => {
-    const phone = generateSignKeyPair(s);
-    expect(() => signDecision(s, decisionFor(new Uint8Array(31)), phone.privateKey)).toThrow(CryptoError);
-    expect(verifyDecision(s, new Uint8Array(64), decisionFor(new Uint8Array(31)), phone.publicKey)).toBe(false);
-    expect(verifyDecision(s, new Uint8Array(3), decisionFor(new Uint8Array(32)), phone.publicKey)).toBe(false);
+  test("perintah: laptop membuka dengan kunci rx dan kunci tanda tangan HP dari catatannya; isi persis sama", () => {
+    const k = pair();
+    const box = sealSigned(s, k.phone.tx, k.phoneSign.privateKey, ctx(), message);
+    expect(openSigned(s, k.laptop.rx, k.phoneSign.publicKey, ctx(), box)).toEqual(message);
   });
 
-  test("amplop tertutup: laptop membuka dengan kunci yang tepat; perangkat lain, kunci lain, atau data diubah = ditolak", () => {
-    const laptopKx = generateKxKeyPair(s);
-    const phoneKx = generateKxKeyPair(s);
-    const laptop = laptopSessionKeys(s, laptopKx, phoneKx.publicKey);
-    const phone = phoneSessionKeys(s, phoneKx, laptopKx.publicKey);
-    const context = { machineId: "m1", deviceId: "d1" };
-    const sealed = sealCommand(s, phone.tx, context, utf8('{"decision":"approve"}'));
-    expect(openCommand(s, laptop.rx, context, sealed)).toEqual(utf8('{"decision":"approve"}'));
-    expect(() => openCommand(s, laptop.rx, { ...context, deviceId: "d2" }, sealed)).toThrow(CryptoError);
-    expect(() => openCommand(s, laptop.rx, { ...context, machineId: "m2" }, sealed)).toThrow(CryptoError);
-    expect(() => openCommand(s, laptop.tx, context, sealed)).toThrow(CryptoError);
-    expect(() => openCommand(s, generateDataKey(s), context, sealed)).toThrow(CryptoError);
-    const bytes = fromB64(s, sealed.c);
-    bytes[0] = bytes[0]! ^ 1;
-    expect(() => openCommand(s, laptop.rx, context, { ...sealed, c: toB64(s, bytes) })).toThrow(CryptoError);
+  test("balasan: HP membuka dengan kunci rx dan kunci tanda tangan LAPTOP dari QR", () => {
+    const k = pair();
+    const box = sealSigned(s, k.laptop.tx, k.laptopSign.privateKey, ctx("reply"), message);
+    expect(openSigned(s, k.phone.rx, k.laptopSign.publicKey, ctx("reply"), box)).toEqual(message);
+  });
+
+  test("ditolak: perangkat/mesin/arah lain, kunci salah, kunci tanda tangan lain, dan SATU bit di c, n, atau s", () => {
+    const k = pair();
+    const box = sealSigned(s, k.phone.tx, k.phoneSign.privateKey, ctx(), message);
+    const open = (overrides: { key?: Uint8Array; sign?: Uint8Array; context?: ReturnType<typeof ctx>; box?: unknown } = {}) => openSigned(s, overrides.key ?? k.laptop.rx, overrides.sign ?? k.phoneSign.publicKey, overrides.context ?? ctx(), "box" in overrides ? overrides.box : box);
+    expect(() => open({ context: { ...ctx(), deviceId: "d2" } })).toThrow(CryptoError);
+    expect(() => open({ context: { ...ctx(), machineId: "m2" } })).toThrow(CryptoError);
+    expect(() => open({ context: ctx("reply") })).toThrow(CryptoError); // perintah tidak bisa dipakai sebagai balasan
+    expect(() => open({ key: k.laptop.tx })).toThrow(CryptoError);
+    expect(() => open({ key: generateDataKey(s) })).toThrow(CryptoError);
+    expect(() => open({ sign: generateSignKeyPair(s).publicKey })).toThrow(CryptoError);
+    for (const field of ["n", "c", "s"] as const) {
+      const bytes = fromB64(s, box[field]);
+      bytes[0] = bytes[0]! ^ 1;
+      expect(() => open({ box: { ...box, [field]: toB64(s, bytes) } }), field).toThrow(CryptoError);
+    }
+    for (const junk of [null, undefined, 1, "x", [], {}, { n: 1, c: 2, s: 3 }, { ...box, s: undefined }]) expect(() => open({ box: junk })).toThrow(CryptoError);
+  });
+
+  test("pemegang kunci pasangan TANPA kunci tanda tangan tidak bisa memalsukan perintah", () => {
+    const k = pair();
+    const forged = sealSigned(s, k.phone.tx, generateSignKeyPair(s).privateKey, ctx(), message);
+    expect(() => openSigned(s, k.laptop.rx, k.phoneSign.publicKey, ctx(), forged)).toThrow(CryptoError);
+  });
+
+  test("tanda tangan terikat ke plaintext: tanda tangan perintah lain tidak berlaku untuk isi ini", () => {
+    const k = pair();
+    const a = sealSigned(s, k.phone.tx, k.phoneSign.privateKey, ctx(), utf8("A"));
+    const b = sealSigned(s, k.phone.tx, k.phoneSign.privateKey, ctx(), utf8("B"));
+    expect(() => openSigned(s, k.laptop.rx, k.phoneSign.publicKey, ctx(), { ...b, s: a.s })).toThrow(CryptoError);
+  });
+
+  test("nonce selalu baru: dua penutupan isi yang sama menghasilkan nonce dan ciphertext berbeda", () => {
+    const k = pair();
+    const a = sealSigned(s, k.phone.tx, k.phoneSign.privateKey, ctx(), message);
+    const b = sealSigned(s, k.phone.tx, k.phoneSign.privateKey, ctx(), message);
+    expect(a.n).not.toBe(b.n);
+    expect(a.c).not.toBe(b.c);
   });
 });

@@ -19,6 +19,7 @@ export * from "./events"; // amplop dan jenis event
 export * from "./pairing"; // bentuk data dan alamat QR untuk pairing
 export * from "./policy"; // bentuk berkas aturan policy
 export * from "./parse"; // parseEvent() dan hasilnya
+export * from "./pending"; // antrean izin yang menunggu, dihitung dari riwayat event
 export * from "./push"; // langganan dan isi notifikasi Web Push
 export * from "./registration"; // pendaftaran laptop ke relay (oleh pemilik relay)
 export * from "./relay"; // bingkai pesan antara klien dan relay

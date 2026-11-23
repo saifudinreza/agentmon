@@ -1,6 +1,6 @@
 // Pembantu KHUSUS TEST: relay tiruan di sisi data (laptop, sesi, event yang "tersimpan") beserta API yang
 // membacanya. Dipakai test store dan test layar. Tidak dipakai kode aplikasi.
-import type { DeviceMachine, Envelope, ListedDevice, PendingApproval, PushConfigResponse, PushPreferences, PushSubscriptionRequest, SessionSummary } from "@agentmon/shared";
+import type { DeviceMachine, E2eMessage, Envelope, ListedDevice, PendingApproval, PushConfigResponse, PushPreferences, PushSubscriptionRequest, SessionSummary } from "@agentmon/shared";
 import { vi } from "vitest";
 import type { RelayApi } from "./api";
 import { sessionKey } from "./relay-store";
@@ -64,6 +64,11 @@ export function fakeRelay() {
     approvals: vi.fn(async () => {
       if (fail.approvals) throw fail.approvals;
       return [...data.approvals];
+    }),
+    e2eMessages: vi.fn(async () => [] as E2eMessage[]),
+    approvalsWithEvents: vi.fn(async () => {
+      if (fail.approvals) throw fail.approvals;
+      return { approvals: [...data.approvals], events: [] as Envelope[] };
     }),
     pushConfig: vi.fn(async () => {
       if (fail.pushConfig) throw fail.pushConfig;

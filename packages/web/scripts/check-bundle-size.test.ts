@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { afterEach, describe, expect, test } from "vitest";
-import { checkDiffViewerIsLazy, formatReport, initialScripts, INITIAL_JS_LIMIT_BYTES, measureInitialJs } from "./check-bundle-size";
+import { checkCryptoIsLazy, checkDiffViewerIsLazy, CRYPTO_MARKER, formatReport, initialScripts, INITIAL_JS_LIMIT_BYTES, measureInitialJs } from "./check-bundle-size";
 
 let dir: string | undefined;
 afterEach(() => {
@@ -110,6 +110,22 @@ describe("formatReport", () => {
     expect(ok).toContain("OK");
     const bad = formatReport({ files: [], totalGzipBytes: 250_000, limitBytes: 200_000, ok: false });
     expect(bad).toContain("GAGAL");
+  });
+});
+
+describe("checkCryptoIsLazy (libsodium dimuat belakangan, issue #033)", () => {
+  const html = '<script type="module" src="/assets/index-1.js"></script>';
+
+  test("libsodium hanya di berkas lain (lazy): tidak ada masalah", () => {
+    const d = makeDist(html, { "assets/index-1.js": "console.log(1)", "assets/libsodium-wrappers-2.js": `x.${CRYPTO_MARKER}=1` });
+    expect(checkCryptoIsLazy(d, ["/assets/index-1.js"])).toEqual([]);
+  });
+
+  test("libsodium ikut di JS awal: dilaporkan; tidak ditemukan di mana pun: gagal", () => {
+    const inInitial = makeDist(html, { "assets/index-1.js": `x.${CRYPTO_MARKER}=1`, "assets/libsodium-wrappers-2.js": `x.${CRYPTO_MARKER}=1` });
+    expect(checkCryptoIsLazy(inInitial, ["/assets/index-1.js"]).join("\n")).toContain("ikut di JS awal");
+    const nowhere = makeDist(html, { "assets/index-1.js": "console.log(1)" });
+    expect(checkCryptoIsLazy(nowhere, ["/assets/index-1.js"]).join("\n")).toContain("tidak ditemukan");
   });
 });
 

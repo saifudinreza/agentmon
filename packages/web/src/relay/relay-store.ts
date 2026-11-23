@@ -26,6 +26,7 @@ import {
 } from "@agentmon/shared";
 import { approvalFromEvent, approvalKey, mergeApprovals, resolutionFromEvent, type Resolution } from "../approvals/model";
 import { applyEventToSessions, mergeEvents } from "../timeline/events";
+import { gatedApi, type E2eGate } from "../e2e/gate";
 import { RelayApiError, type RelayApi } from "./api";
 import { createDeviceConnection, type ConnectionStatus, type DeviceConnection, type DeviceConnectionOptions } from "./connection";
 
@@ -103,6 +104,11 @@ export type RelayStoreOptions = {
   relayUrl: string;
   token: string;
   api: RelayApi;
+  /**
+   * Gerbang E2E (issue #033). Bila ada, SEMUA yang masuk dari relay (event langsung, riwayat, antrean izin, balasan) diperiksa dan dibuka
+   * lebih dulu, dan semua perintah ke laptop E2E ditutup dan ditandatangani. Laptop yang tidak dipasangkan secara E2E lewat apa adanya.
+   */
+  e2e?: E2eGate;
   /** Hanya untuk test: pengganti pembuat koneksi WebSocket. */
   connect?: (options: DeviceConnectionOptions) => DeviceConnection;
   watchPage?: boolean;
@@ -152,7 +158,8 @@ function applyResolution(state: RelayState, machineId: string, approvalId: strin
 }
 
 export function createRelayStore(options: RelayStoreOptions): RelayStore {
-  const { api } = options;
+  const gate = options.e2e;
+  const api = gate ? gatedApi(options.api, gate) : options.api;
   let state: RelayState = {
     status: "connecting",
     approvals: [],
@@ -260,7 +267,10 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
   };
 
   // ---- Event langsung ----
-  const handleEvent = (event: Envelope) => {
+  const handleEvent = (incoming: Envelope) => {
+    // Gerbang E2E: event dari laptop E2E hanya diterima bila terenkripsi dan bertanda tangan sah; yang gagal dibuang.
+    const event = gate ? gate.open(incoming, true) : incoming;
+    if (!event) return;
     set((s) => {
       const knownMachine = s.machines.some((m) => m.id === event.machineId);
       let next = s;
@@ -293,7 +303,10 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
   // Permintaan umum (request) yang menunggu balasan: nomor perintah -> penyelesai.
   const pendingRequests = new Map<string, { machineId: string; sentAt: number; done: (result: RequestResult) => void }>();
 
-  const handleReply = (machineId: string, body: Record<string, unknown>) => {
+  const handleReply = (machineId: string, received: Record<string, unknown>) => {
+    // Balasan dari laptop E2E harus terenkripsi dan bertanda tangan laptop itu; yang polos atau diubah dibuang.
+    const body = gate ? gate.openReply(machineId, received) : received;
+    if (!body) return;
     const waiting = typeof body.commandId === "string" ? pendingRequests.get(body.commandId) : undefined;
     // Balasan hanya diterima dari laptop yang kita kirimi perintahnya.
     if (waiting && waiting.machineId === machineId) {
@@ -340,6 +353,13 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
       }
       return decisions === s.decisions ? s : { ...s, decisions };
     });
+  };
+
+  // Perintah ke laptop E2E ditutup dan ditandatangani; ke laptop lain apa adanya. undefined = tidak bisa disegel (tidak boleh dikirim).
+  const sealForMachine = (machineId: string, body: Record<string, unknown>): Record<string, unknown> | undefined => {
+    if (!gate || !gate.isSecured(machineId)) return body;
+    const sealed = gate.sealCommand(machineId, body);
+    return sealed.ok ? { ...sealed.body } : undefined;
   };
 
   const connect = () =>
@@ -397,11 +417,14 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
       const trimmed = comment?.trim().slice(0, 2000);
       set((s) => ({ ...s, decisions: { ...s.decisions, [key]: { phase: "sending", decision, commandId } } }));
 
-      const sent = connection?.send({
-        kind: "command",
-        machineId,
-        body: { type: APPROVAL_DECISION_COMMAND, commandId, approvalId, decision, ...(trimmed ? { comment: trimmed } : {}) },
-      });
+      const plain = { type: APPROVAL_DECISION_COMMAND, commandId, approvalId, decision, ...(trimmed ? { comment: trimmed } : {}) };
+      const wire = sealForMachine(machineId, plain);
+      if (!wire) {
+        // Laptop E2E tetapi tidak ada catatan izin ini di HP (belum pernah dilihat/diverifikasi): tidak boleh diputuskan.
+        set((s) => ({ ...s, decisions: { ...s.decisions, [key]: { phase: "failed", decision, commandId, reason: "invalid" } } }));
+        return;
+      }
+      const sent = connection?.send({ kind: "command", machineId, body: wire });
       if (!sent) {
         set((s) => ({ ...s, decisions: { ...s.decisions, [key]: { phase: "failed", decision, commandId, reason: "offline" } } }));
         return;
@@ -433,7 +456,9 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
           resolve(result);
         };
         pendingRequests.set(commandId, { machineId, sentAt: Date.now(), done });
-        const sent = connection?.send({ kind: "command", machineId, body: { ...body, commandId } });
+        const wire = sealForMachine(machineId, { ...body, commandId });
+        if (!wire) return done({ ok: false, reason: "not-allowed" }); // tidak bisa disegel (tidak ada kunci): tidak dikirim polos
+        const sent = connection?.send({ kind: "command", machineId, body: wire });
         if (!sent) return done({ ok: false, reason: "offline" });
         hold.timer = setTimeout(() => done({ ok: false, reason: "unconfirmed" }), timeoutMs);
         timers.add(hold.timer);

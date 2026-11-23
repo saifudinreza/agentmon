@@ -252,13 +252,10 @@ export function mountDeviceApi(app: Hono, options: DeviceApiOptions): void {
     const now = new Date(options.now ? options.now() : Date.now());
     const since = new Date(now.getTime() - APPROVAL_LOOKBACK_MS);
     const machines = await directory.machinesOf(auth.deviceId);
-    const lists = await Promise.all(
-      machines.map(async (machine) =>
-        computePendingApprovals(await store.listRecentByType(machine.id, [...APPROVAL_EVENT_TYPES], since), now),
-      ),
-    );
-    const approvals: PendingApproval[] = lists.flat();
-    return c.json(ApprovalsResponseSchema.parse({ approvals }));
+    const recent = await Promise.all(machines.map((machine) => store.listRecentByType(machine.id, [...APPROVAL_EVENT_TYPES], since)));
+    const approvals: PendingApproval[] = recent.flatMap((events) => computePendingApprovals(events, now));
+    // `?events=1`: sertakan event izin mentah. HP dengan E2E menghitung antrean sendiri dari event ini (relay tidak bisa membaca yang terenkripsi).
+    return c.json(ApprovalsResponseSchema.parse({ approvals, ...(c.req.query("events") === "1" ? { events: recent.flat() } : {}) }));
   });
 
   app.get("/api/machines/:machineId/sessions", async (c) => {

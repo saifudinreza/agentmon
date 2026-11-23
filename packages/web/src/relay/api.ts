@@ -11,6 +11,8 @@
 import {
   ApprovalsResponseSchema,
   DevicesResponseSchema,
+  E2eMessagesResponseSchema,
+  type E2eMessage,
   type ListedDevice,
   EventsResponseSchema,
   MachinesResponseSchema,
@@ -46,6 +48,10 @@ export type RelayApi = {
   machines(): Promise<DeviceMachine[]>;
   /** Permintaan izin yang masih menunggu, dari semua laptop yang dipasangkan. */
   approvals(): Promise<PendingApproval[]>;
+  /** Pesan E2E dari laptop untuk HP ini (tantangan sidik jari, jawaban pairing, kunci baru), yang lebih baru dari `after`. */
+  e2eMessages(machineId: string, after: number): Promise<E2eMessage[]>;
+  /** Antrean izin dari relay beserta event izin MENTAH (polos atau terenkripsi). Dipakai HP dengan E2E, yang menghitung antrean sendiri dari event terbuka. */
+  approvalsWithEvents(): Promise<{ approvals: PendingApproval[]; events: Envelope[] }>;
   /** Perangkat yang berbagi laptop dengan HP ini (termasuk dirinya, ditandai `current`). */
   devices(): Promise<ListedDevice[]>;
   /** Mencabut sebuah perangkat. Berlaku seketika di relay. */
@@ -120,6 +126,12 @@ export function createRelayApi(options: RelayApiOptions): RelayApi {
     revokeDevice: (deviceId) =>
       get(`/api/devices/${encodeURIComponent(deviceId)}`, () => undefined, "DELETE"),
     approvals: () => get("/api/approvals", (json) => ApprovalsResponseSchema.parse(json).approvals),
+    e2eMessages: (machineId, after) => get(`/api/e2e/messages?machineId=${encodeURIComponent(machineId)}&after=${after}`, (json) => E2eMessagesResponseSchema.parse(json).messages),
+    approvalsWithEvents: () =>
+      get("/api/approvals?events=1", (json) => {
+        const parsed = ApprovalsResponseSchema.parse(json);
+        return { approvals: parsed.approvals, events: parsed.events ?? [] };
+      }),
     pushConfig: () => get("/api/push/key", (json) => PushConfigResponseSchema.parse(json)),
     savePushSubscription: (subscription) => get("/api/push/subscription", () => undefined, "PUT", subscription),
     removePushSubscription: () => get("/api/push/subscription", () => undefined, "DELETE"),

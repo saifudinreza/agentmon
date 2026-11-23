@@ -15,7 +15,7 @@
 //     ke perangkat yang sama (bukan perangkat baru). Bila token lama itu sudah dicabut, relay menolak
 //     TANPA menghanguskan kode; token basi dibuang dan penukaran diulang sekali sebagai perangkat baru.
 //   - Kode dan token tidak pernah dicatat ke konsol atau dimasukkan ke pesan galat.
-import { PairRedeemResponseSchema, type PairingLink } from "@agentmon/shared";
+import { PairRedeemResponseSchema, type E2ePairingMaterial, type PairingLink } from "@agentmon/shared";
 import { findPairing, loadPairings, normalizeRelayUrl, removePairing, savePairing, type PairedMachine, type StoredPairing } from "./storage";
 
 export type RedeemOutcome =
@@ -54,7 +54,10 @@ export function isSecureRelayUrl(relayUrl: string): boolean {
   }
 }
 
-export async function redeemPairing(link: PairingLink, name: string, deps: RedeemDeps): Promise<RedeemOutcome> {
+/**
+ * `e2e`: bahan pairing E2E (kunci publik HP dan bukti rahasia QR) yang ikut dikirim ke relay untuk diteruskan ke laptop. Tanpa itu, pairing lama.
+ */
+export async function redeemPairing(link: PairingLink, name: string, deps: RedeemDeps, e2e?: E2ePairingMaterial): Promise<RedeemOutcome> {
   const relayUrl = normalizeRelayUrl(link.relayUrl);
   if (relayUrl === undefined) return { status: "failed" };
   if (!isSecureRelayUrl(relayUrl)) return { status: "insecure-relay" };
@@ -70,7 +73,7 @@ export async function redeemPairing(link: PairingLink, name: string, deps: Redee
       response = await http(`${relayUrl}/pair/redeem`, {
         method: "POST",
         headers: { "content-type": "application/json", ...(token !== undefined ? { authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ code: link.code, name }),
+        body: JSON.stringify({ code: link.code, name, ...(e2e ? { e2e } : {}) }),
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch {
@@ -112,7 +115,9 @@ export async function redeemPairing(link: PairingLink, name: string, deps: Redee
   // berarti relay tidak konsisten; tidak ada yang bisa disimpan.
   if (reply.deviceToken === undefined && !usedExistingToken) return { status: "failed", httpStatus: 200 };
 
-  const machine: PairedMachine = { id: reply.machineId, name: reply.machineName, pairedAt: now().toISOString() };
+  // Pairing E2E: laptop ditandai E2E sejak penukaran, SEBELUM kunci tersimpan. Pairing yang terputus di tengah (tab ditutup) tidak boleh berakhir sebagai
+  // laptop polos: event polosnya ditolak sampai pairing selesai atau diulang.
+  const machine: PairedMachine = { id: reply.machineId, name: reply.machineName, pairedAt: now().toISOString(), ...(e2e ? { e2e: true } : {}) };
   const pairing = savePairing(deps.storage, {
     relayUrl,
     deviceId: reply.deviceId,

@@ -122,6 +122,7 @@ Perintah `pair` butuh pengaturan relay (alamat dan token laptop) dan `AGENTMON_A
 | Endpoint | Siapa | Fungsi |
 |---|---|---|
 | `POST /pair/e2e/messages` | laptop | menitipkan `{deviceId, kind, body}` (kind: `challenge`, `response`, `keys`) untuk HP yang dipasangkan dengannya; `404` untuk HP yang bukan miliknya, tidak ada, atau dicabut; `413` bila lebih dari 16 KiB; pesan terlama dibuang bila lebih dari 200 per HP; tidak pernah menolak yang baru |
+| `GET /api/approvals?events=1` | HP | seperti `/api/approvals`, ditambah `events`: event izin mentah (polos atau terenkripsi) dari riwayat terbaru. HP dengan E2E menghitung antrean sendiri dari event itu setelah memverifikasi dan mendekripsinya (relay tidak bisa membaca yang terenkripsi) |
 | `GET /api/e2e/messages?machineId=&after=` | HP | membaca pesan untuk HP ini dari laptop itu yang lebih baru dari `after` (maksimum 100) |
 
 Relay tidak membaca isi pesan; keasliannya dijaga tanda tangan laptop yang diperiksa HP dengan kunci dari QR. Semua terhapus bersama laptop atau HP-nya.
