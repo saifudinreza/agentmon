@@ -8,5 +8,5 @@ test("libsodium dimuat di Node dan bolak-balik enkripsi event berjalan", async (
   const dataKey = generateDataKey(s);
   const envelope = { v: 1, id: "e", machineId: "m", sessionId: "s", seq: 1, ts: "2026-11-22T00:00:00.000Z", agent: "claude-code", type: "session.started" };
   const payload = sealEvent(s, { dataKey, kid: 1, envelope, plaintext: utf8("halo"), signPrivateKey: sign.privateKey });
-  expect(new TextDecoder().decode(openEvent(s, { payload, envelope, dataKeys: () => dataKey, signPublicKey: sign.publicKey }))).toBe("halo");
+  expect(new TextDecoder().decode(openEvent(s, { expectedMachineId: "m", payload, envelope, dataKeys: () => dataKey, signPublicKey: sign.publicKey }).plaintext)).toBe("halo");
 }, 30_000);
