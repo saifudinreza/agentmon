@@ -14,10 +14,15 @@ let loading: Promise<Sodium> | undefined;
 
 /** Memuat libsodium sekali (lazy) dan menunggunya siap. Pemanggilan berikutnya memakai hasil yang sama. */
 export function loadSodium(): Promise<Sodium> {
-  loading ??= import("libsodium-wrappers").then(async (module) => {
-    const sodium = ((module as unknown as { default?: Sodium }).default ?? module) as Sodium;
-    await sodium.ready;
-    return sodium;
-  });
+  loading ??= import("libsodium-wrappers")
+    .then(async (module) => {
+      const sodium = ((module as unknown as { default?: Sodium }).default ?? module) as Sodium;
+      await sodium.ready;
+      return sodium;
+    })
+    .catch((error: unknown) => {
+      loading = undefined; // gagal memuat (jaringan putus, chunk hilang) tidak boleh terkunci selamanya: boleh dicoba lagi
+      throw error;
+    });
   return loading;
 }

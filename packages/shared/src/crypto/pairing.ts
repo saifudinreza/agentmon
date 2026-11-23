@@ -6,7 +6,7 @@
 // adalah konfirmasi sidik jari oleh orang di depan laptop. Fungsi di sini hanya primitif; urutan protokolnya ada di pemanggil
 // (daemon dan PWA, issue #033 bagian B dan C).
 import { aeadOpen, aeadSeal } from "./event";
-import { canon, CryptoError, fromB64, toB64, type Field } from "./encoding";
+import { canon, CryptoError, fromB64, normalizeDeviceName, toB64, type Field } from "./encoding";
 import type { Sodium } from "./sodium";
 
 export const PAIR_LABEL = "agentmon/pair/v1";
@@ -35,6 +35,8 @@ export type PairRequest = {
 };
 
 function proofInput(request: PairRequest): Uint8Array {
+  // Nama harus sudah dalam bentuk baku (NFC, tanpa karakter kendali/lebar-nol): nama yang tampak sama tetapi berbeda byte tidak lolos.
+  if (normalizeDeviceName(request.deviceName) !== request.deviceName) throw new CryptoError();
   return canon(PAIR_LABEL, [request.code, request.machineId, request.deviceName, request.kxPublicKey, request.signPublicKey]);
 }
 
@@ -52,13 +54,43 @@ export function verifyPairProof(s: Sodium, proof: Uint8Array, request: PairReque
   }
 }
 
+export const CHALLENGE_BYTES = 16;
+
+/** Nilai acak yang LAPTOP pilih SETELAH menerima permintaan HP. Tanpa ini sidik jari bisa digiling (dicari permintaan lain yang angkanya sama). */
+export function generatePairChallenge(s: Sodium): Uint8Array {
+  return s.randombytes_buf(CHALLENGE_BYTES);
+}
+
+type ChallengeBinding = Pick<PairRequest, "code" | "machineId" | "kxPublicKey" | "signPublicKey">;
+
+const challengeInput = (request: ChallengeBinding, challenge: Uint8Array): Uint8Array =>
+  canon("agentmon/pair/chal/v1", [request.code, request.machineId, request.kxPublicKey, request.signPublicKey, challenge]);
+
+/** Laptop menandatangani tantangan, terikat ke permintaan HP yang dijawabnya: relay tidak bisa menukar atau menyisipkan tantangan lain. */
+export function signPairChallenge(s: Sodium, request: ChallengeBinding, challenge: Uint8Array, laptopSignPrivateKey: Uint8Array): Uint8Array {
+  if (challenge.length !== CHALLENGE_BYTES) throw new CryptoError();
+  return s.crypto_sign_detached(challengeInput(request, challenge), laptopSignPrivateKey);
+}
+
+/** HP memverifikasi tantangan dengan kunci tanda tangan laptop dari QR. Tidak pernah melempar. */
+export function verifyPairChallenge(s: Sodium, signature: Uint8Array, request: ChallengeBinding, challenge: Uint8Array, laptopSignPublicKey: Uint8Array): boolean {
+  try {
+    return challenge.length === CHALLENGE_BYTES && s.crypto_sign_verify_detached(signature, challengeInput(request, challenge), laptopSignPublicKey);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Sidik jari 6 digit yang ditampilkan di laptop DAN di HP untuk dibandingkan manusia. Transkrip: kode, mesin, nama, kedua kunci
- * HP, dan kunci tanda tangan laptop (yang HP kenal dari QR). Penyerang yang menukar kunci mengubah transkrip, sehingga angkanya
- * berbeda. Dipotong dari hash 32-bit; 6 digit membatasi peluang tabrakan acak pada 1 dari sejuta per percobaan.
+ * HP, kunci tanda tangan laptop (yang HP kenal dari QR), dan TANTANGAN acak dari laptop yang dipilih setelah permintaan diterima.
+ * Tantangan itulah yang mencegah penggilingan: penyerang tidak bisa menyiapkan permintaan yang angkanya cocok sebelum tahu
+ * tantangannya, dan tantangan terikat ke permintaannya sendiri. Penyerang yang menukar kunci mengubah transkrip, sehingga
+ * angkanya berbeda. Dipotong dari hash 32-bit; 6 digit membatasi peluang tabrakan acak pada 1 dari sejuta per percobaan.
  */
-export function pairingFingerprint(s: Sodium, request: PairRequest, laptopSignPublicKey: Uint8Array): string {
-  const digest = s.crypto_generichash(32, canon("agentmon/pair/fp/v1", [request.code, request.machineId, request.deviceName, request.kxPublicKey, request.signPublicKey, laptopSignPublicKey]), null);
+export function pairingFingerprint(s: Sodium, request: PairRequest, laptopSignPublicKey: Uint8Array, challenge: Uint8Array): string {
+  if (challenge.length !== CHALLENGE_BYTES || normalizeDeviceName(request.deviceName) !== request.deviceName) throw new CryptoError();
+  const digest = s.crypto_generichash(32, canon("agentmon/pair/fp/v2", [request.code, request.machineId, request.deviceName, request.kxPublicKey, request.signPublicKey, laptopSignPublicKey, challenge]), null);
   const value = new DataView(digest.buffer, digest.byteOffset, 4).getUint32(0, false) % 1_000_000;
   return String(value).padStart(6, "0");
 }
@@ -105,6 +137,8 @@ export function unwrapDataKey(s: Sodium, laptopToPhoneKey: Uint8Array, wrapped: 
 // ---- Jawaban laptop pada pairing (ditandatangani) ----
 export type PairResponse = {
   machineId: string;
+  /** Nomor HP ini: ditentukan dan ditandatangani laptop (bukan diterima dari relay), karena dipakai di pembungkus dan perintah. */
+  deviceId: string;
   machineName: string;
   /** Kunci publik X25519 laptop. */
   laptopKxPublicKey: Uint8Array;
@@ -117,7 +151,7 @@ export type PairResponse = {
 };
 
 function responseInput(r: PairResponse): Uint8Array {
-  const fields: Field[] = [r.machineId, r.machineName, r.laptopKxPublicKey, r.code, r.kid, r.phoneKxPublicKey, r.phoneSignPublicKey, r.wrapped.n, r.wrapped.c];
+  const fields: Field[] = [r.machineId, r.deviceId, r.machineName, r.laptopKxPublicKey, r.code, r.kid, r.phoneKxPublicKey, r.phoneSignPublicKey, r.wrapped.n, r.wrapped.c];
   return canon("agentmon/pair/resp/v1", fields);
 }
 

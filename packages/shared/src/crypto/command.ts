@@ -35,7 +35,8 @@ export type DecisionFields = {
 };
 
 function decisionInput(d: DecisionFields): Uint8Array {
-  if (d.h.length !== 32) throw new CryptoError();
+  // Nilai `decision` diperiksa saat dijalankan: "APPROVE" atau teks lain tidak boleh ikut ditandatangani.
+  if (d.h.length !== 32 || (d.decision !== "approve" && d.decision !== "deny")) throw new CryptoError();
   const fields: Field[] = [d.machineId, d.deviceId, d.sessionId, d.approvalId, d.eventId, d.h, d.decision, d.hunks, d.comment, d.commandId];
   return canon(DECISION_LABEL, fields);
 }

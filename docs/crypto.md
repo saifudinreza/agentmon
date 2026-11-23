@@ -25,6 +25,14 @@ Implementasi primitif dari desain di [security-e2e.md](security-e2e.md), di `pac
 
 Catatan: uji "nonce dipakai ulang ditolak" di issue lama keliru konsep (AEAD tidak mendeteksi nonce ganda); yang diuji adalah nonce acak baru tiap enkripsi.
 
+## Perubahan dari tinjauan PR #96
+- **Sidik jari** kini memuat tantangan acak 16 byte dari laptop (`generatePairChallenge`, `signPairChallenge`/`verifyPairChallenge`), dan nama perangkat harus baku (`normalizeDeviceName`). Ini menutup penggilingan sidik jari.
+- `deviceId` ikut ditandatangani di jawaban pairing.
+- `openEvent` wajib diberi `expectedMachineId` dan mengembalikan `{ plaintext, kid }` supaya pemanggil bisa menolak `kid` yang lebih rendah.
+- Pengodean kanonis memberi tiap kolom JENIS (tidak ada, teks, angka, byte): kolom tidak ada berbeda dari teks kosong, dan angka berbeda dari teks. Jenis lain (objek, null, boolean) ditolak. Nilai `decision` diperiksa saat dijalankan.
+- Galat dari callback `dataKeys` menjadi `CryptoError`; `loadSodium` boleh dicoba lagi setelah gagal.
+- **Konvensi API:** fungsi `verify*` MENGEMBALIKAN boolean dan tidak melempar (pemanggil WAJIB memeriksanya); fungsi `open*` dan `unwrap*` MELEMPAR `CryptoError`.
+
 ## Keputusan dan batas
 - **Versi libsodium-wrappers 0.8.4**, dipin persis (desain menyebut seri 0.7.x; 0.8.x memuat ESM yang benar dan lolos uji impor di Node/tsx dan Vite). Dimuat lazy: di PWA menjadi dua chunk terpisah (sekitar 120 kB dan 458 kB tidak terkompresi, WASM tertanam), tidak ikut bundel awal.
 - **CSP PWA** harus memberi `'wasm-unsafe-eval'` (bagian 7 desain); itu dikerjakan di bagian C.

@@ -70,6 +70,20 @@ export type EventEnvelope = {
   expiresAt?: string;
 };
 
+const EnvelopeFieldsSchema = z.object({
+  v: z.int().min(0),
+  id: z.string().min(1),
+  machineId: z.string().min(1),
+  sessionId: z.string().min(1),
+  seq: z.int().min(0),
+  ts: z.string().min(1),
+  agent: z.string().min(1),
+  type: z.string().min(1),
+  // Bila ada, tidak boleh kosong ("kosong" dan "tidak ada" adalah dua hal berbeda).
+  approvalId: z.string().min(1).optional(),
+  expiresAt: z.string().min(1).optional(),
+});
+
 /** Bentuk payload yang disimpan dan diteruskan relay. Semua byte dalam base64 aman-URL. */
 export const SealedPayloadSchema = z.strictObject({
   e: z.literal(PAYLOAD_VERSION),
@@ -84,9 +98,12 @@ export type SealedPayload = z.infer<typeof SealedPayloadSchema>;
  * AAD biner kanonis: label, lalu kolom dalam urutan TETAP (v, id, machineId, sessionId, seq, ts, agent, type, e, kid,
  * approvalId, expiresAt). Kolom asing yang ditambahkan relay tidak ikut, jadi tidak pernah dipakai untuk keputusan keamanan.
  */
-export function eventAad(envelope: EventEnvelope, kid: number): Uint8Array {
-  // Kolom opsional yang ada tidak boleh kosong: kosong berarti "tidak ada", dan keduanya tidak boleh dianggap sama.
-  if (envelope.approvalId === "" || envelope.expiresAt === "") throw new CryptoError();
+export function eventAad(input: EventEnvelope, kid: number): Uint8Array {
+  // Jenis tiap kolom diperiksa saat dijalankan (bukan hanya oleh TypeScript): angka berbentuk teks ("5"), kolom kosong, atau
+  // kolom asing dari relay tidak boleh lolos. Hanya kolom yang dikenal yang dibaca; sisanya dibuang.
+  const parsed = EnvelopeFieldsSchema.safeParse(input);
+  if (!parsed.success) throw new CryptoError();
+  const envelope = parsed.data;
   const fields: Field[] = [envelope.v, envelope.id, envelope.machineId, envelope.sessionId, envelope.seq, envelope.ts, envelope.agent, envelope.type, PAYLOAD_VERSION, kid, envelope.approvalId, envelope.expiresAt];
   return canon(EVENT_LABEL, fields);
 }
@@ -118,6 +135,8 @@ export function sealEvent(s: Sodium, input: SealEventInput): SealedPayload {
 export type OpenEventInput = {
   payload: unknown;
   envelope: EventEnvelope;
+  /** Laptop yang HP ini percayai untuk pesan ini. Event bertanda tangan laptop lain (atau mengaku mesin lain) ditolak. */
+  expectedMachineId: string;
   /** Kunci data yang dikenal HP, per `kid`. `kid` yang tidak ada = ditolak. */
   dataKeys: (kid: number) => Uint8Array | undefined;
   /** Kunci publik tanda tangan laptop yang DIKENAL HP (dari pairing, bukan dari relay). */
@@ -125,10 +144,12 @@ export type OpenEventInput = {
 };
 
 /**
- * Memverifikasi tanda tangan LEBIH DULU, baru mendekripsi. Mengembalikan plaintext, atau melempar `CryptoError` (sama untuk semua
- * penyebab). Pemanggil tidak boleh menampilkan atau menjalankan apa pun dari event yang gagal.
+ * Memverifikasi tanda tangan LEBIH DULU, baru mendekripsi. Mengembalikan plaintext dan `kid` yang dipakai (pemanggil menolak `kid`
+ * yang lebih rendah dari yang terbaru ia terima untuk event baru), atau melempar `CryptoError` (sama untuk semua penyebab,
+ * termasuk galat dari `dataKeys`). Pemanggil tidak boleh menampilkan atau menjalankan apa pun dari event yang gagal.
  */
-export function openEvent(s: Sodium, input: OpenEventInput): Uint8Array {
+export function openEvent(s: Sodium, input: OpenEventInput): { plaintext: Uint8Array; kid: number } {
+  if (input.envelope.machineId !== input.expectedMachineId) throw new CryptoError();
   const parsed = SealedPayloadSchema.safeParse(input.payload);
   if (!parsed.success) throw new CryptoError();
   const { kid } = parsed.data;
@@ -143,9 +164,14 @@ export function openEvent(s: Sodium, input: OpenEventInput): Uint8Array {
     valid = false;
   }
   if (!valid) throw new CryptoError();
-  const key = input.dataKeys(kid);
+  let key: Uint8Array | undefined;
+  try {
+    key = input.dataKeys(kid);
+  } catch {
+    throw new CryptoError(); // galat dari penyimpanan kunci tidak boleh bocor keluar (bukan oracle)
+  }
   if (!key) throw new CryptoError();
-  return aeadOpen(s, key, aad, n, c, PAD_BLOCK);
+  return { plaintext: aeadOpen(s, key, aad, n, c, PAD_BLOCK), kid };
 }
 
 export { bytesEqual, concat };
