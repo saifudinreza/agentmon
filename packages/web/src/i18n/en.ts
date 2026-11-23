@@ -380,4 +380,7 @@ export const en: Record<MessageKey, string> = {
   "pair.error.e2eUnavailable": "Key storage on this phone is unavailable or damaged (e.g. private mode), so encrypted pairing cannot be done. Open AgentMon in a normal window.",
   "e2e.vault.title": "The encryption keys cannot be opened",
   "e2e.vault.body": "AgentMon's key storage on this phone is damaged or unreadable. Nothing was deleted. Reload the page; if it stays the same, clear this site's data and pair your laptop again.",
+  "home.machine.noKeys": "Encrypted pairing with this laptop is unfinished or its keys are missing, so its activity is not shown (unencrypted events are deliberately rejected). Pair again with a new QR code from the laptop.",
+  "home.machine.rejected": "Some events from this laptop were rejected because they could not be verified or the new key has not been received yet.",
+  "e2e.vault.retry": "Reload",
 };

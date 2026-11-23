@@ -6,8 +6,8 @@
 // (relay-store.ts) untuk tiap relay. Sambungan dibuka saat komponen ini dipasang dan ditutup saat
 // dilepas. Bila pairing berubah (pairing baru berhasil), daftar dibaca ulang dan sambungan dibuat ulang.
 import { createContext, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
-import { getE2e } from "../e2e/runtime";
-import { PAIRINGS_CHANGED_EVENT, loadPairings, type StoredPairing } from "../pairing/storage";
+import { getE2e, setE2eMarkers } from "../e2e/runtime";
+import { PAIRINGS_CHANGED_EVENT, PAIRINGS_STORAGE_KEY, e2eMachineIds, loadPairings, type StoredPairing } from "../pairing/storage";
 import { createRelayApi } from "./api";
 import { createRelayStore, type RelayState, type RelayStore } from "./relay-store";
 
@@ -41,13 +41,27 @@ export function RelayProvider({ children, factory = defaultFactory }: { children
   const [version, setVersion] = useState(0);
   useEffect(() => {
     const bump = () => setVersion((v) => v + 1);
+    // Tab lain memasangkan laptop: pairing berubah di localStorage (peristiwa `storage` hanya datang dari tab LAIN). Brankas dibaca ulang dulu supaya
+    // kunci laptop baru itu dikenal sebelum sambungan dibuat ulang.
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== PAIRINGS_STORAGE_KEY) return;
+      void (getE2e()?.keyring.reload() ?? Promise.resolve()).catch(() => undefined).finally(bump);
+    };
     window.addEventListener(PAIRINGS_CHANGED_EVENT, bump);
-    return () => window.removeEventListener(PAIRINGS_CHANGED_EVENT, bump);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener(PAIRINGS_CHANGED_EVENT, bump);
+      window.removeEventListener("storage", onStorage);
+    };
   }, []);
 
   // Store dibuat tanpa membuka jaringan (start dipanggil di efek), sehingga aman bagi React yang
   // menjalankan efek dua kali di mode pengembangan.
-  const entries = useMemo(() => readPairings().map((pairing) => ({ pairing, store: factory(pairing) })), [version, factory]);
+  const entries = useMemo(() => {
+    const pairings = readPairings();
+    setE2eMarkers(e2eMachineIds(pairings)); // sebelum toko dibuat: gerbang harus tahu laptop mana yang wajib terenkripsi
+    return pairings.map((pairing) => ({ pairing, store: factory(pairing) }));
+  }, [version, factory]);
 
   useEffect(() => {
     for (const entry of entries) entry.store.start();

@@ -10,6 +10,9 @@ export function VaultBroken() {
       <p role="alert" className="text-muted">
         {t("e2e.vault.body")}
       </p>
+      <button type="button" onClick={() => window.location.reload()} className="mt-2 min-h-11 rounded-lg bg-accent px-4 font-semibold text-on-accent">
+        {t("e2e.vault.retry")}
+      </button>
     </main>
   );
 }

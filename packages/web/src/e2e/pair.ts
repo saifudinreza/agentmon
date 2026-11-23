@@ -27,7 +27,7 @@ import {
 } from "@agentmon/shared/crypto";
 import { createRelayApi, RelayApiError, type RelayApi } from "../relay/api";
 import { redeemPairing, type RedeemDeps, type RedeemOutcome } from "../pairing/redeem";
-import { removeMachine } from "../pairing/storage";
+import { findPairing, loadPairings, removeMachine, savePairing } from "../pairing/storage";
 import type { Keyring } from "./keyring";
 
 export type E2ePairPhase = { step: "redeeming" } | { step: "waiting" } | { step: "confirm"; fingerprint: string };
@@ -83,7 +83,15 @@ export async function pairE2e(link: PairingLink, name: string, deps: E2ePairDeps
   }
   const machineId = link.machineId;
 
-  const phone = await keyring.ensurePhone();
+  let phone;
+  try {
+    phone = await keyring.ensurePhone();
+  } catch {
+    return { status: "e2e-unavailable" }; // penyimpanan kunci tidak bisa ditulis: tidak ada yang dikirim ke relay
+  }
+  // Pairing yang SUDAH berfungsi dengan laptop ini (pasang ulang): dipulihkan bila pairing baru gagal, bukan ikut dihapus.
+  const before = findPairing(loadPairings(deps.storage), link.relayUrl);
+  const previousMachine = before?.machines.find((m) => m.id === machineId);
   const request: PairRequest = { code: link.code, machineId, deviceName, kxPublicKey: phone.kx.publicKey, signPublicKey: phone.sign.publicKey };
   const proof = makePairProof(s, request, secret);
 
@@ -92,8 +100,16 @@ export async function pairE2e(link: PairingLink, name: string, deps: E2ePairDeps
   if (redeemed.status !== "success") return redeemed;
 
   const { pairing } = redeemed;
-  // Yang dibuang adalah laptop yang BENAR-BENAR tersimpan oleh penukaran tadi (nomor dari relay), yang bisa berbeda dari nomor di QR.
-  const drop = () => removeMachine(deps.storage as Storage | undefined, pairing.relayUrl, redeemed.machine.id);
+  // Yang dibatalkan adalah laptop yang BENAR-BENAR tersimpan oleh penukaran tadi (nomor dari relay), yang bisa berbeda dari nomor di QR. Bila sebelumnya
+  // sudah ada pairing yang berfungsi dengan laptop itu (pasang ulang), keadaan lamanya dipulihkan, bukan dihapus.
+  const drop = () => {
+    const storage = deps.storage as Storage | undefined;
+    if (previousMachine && before && before.deviceId === pairing.deviceId && redeemed.machine.id === previousMachine.id) {
+      savePairing(storage, { relayUrl: pairing.relayUrl, deviceId: before.deviceId, machine: previousMachine });
+      return;
+    }
+    removeMachine(storage, pairing.relayUrl, redeemed.machine.id);
+  };
   // Relay harus memberi nomor laptop yang sama dengan yang ada di QR (nomor itu sudah ikut di dalam bukti).
   if (redeemed.machine.id !== machineId) {
     drop();
@@ -110,6 +126,42 @@ export async function pairE2e(link: PairingLink, name: string, deps: E2ePairDeps
   let after = 0;
   let challengeSeen = false;
   let reachedRelay = false;
+  // Jawaban yang tiba SEBELUM tantangan terverifikasi tidak dibuang: disimpan lalu diperiksa begitu sidik jari sudah ditampilkan.
+  const early: Array<{ id: number; kind: string; body: Record<string, unknown> }> = [];
+
+  // Memproses satu jawaban laptop. "done" = selesai berhasil, "storage" = penyimpanan kunci gagal, "skip" = tidak sah (diabaikan).
+  const tryResponse = async (body: unknown): Promise<"done" | "storage" | "skip"> => {
+    const parsed = E2eResponseBodySchema.safeParse(body);
+    // Nomor HP ini HARUS yang ditentukan laptop dan ikut ditandatangani; yang lain tidak diterima.
+    if (!parsed.success || parsed.data.deviceId !== pairing.deviceId) return "skip";
+    let laptopKx: Uint8Array;
+    let dataKey: Uint8Array;
+    try {
+      laptopKx = fromB64(s, parsed.data.laptopKx);
+      const full = {
+        machineId,
+        deviceId: parsed.data.deviceId,
+        machineName: parsed.data.machineName,
+        laptopKxPublicKey: laptopKx,
+        code: link.code,
+        kid: parsed.data.kid,
+        phoneKxPublicKey: phone.kx.publicKey,
+        phoneSignPublicKey: phone.sign.publicKey,
+        wrapped: parsed.data.wrapped,
+      };
+      if (!verifyPairResponse(s, fromB64(s, parsed.data.sig), full, laptopSign)) return "skip";
+      const session = phoneSessionKeys(s, phone.kx, laptopKx);
+      dataKey = unwrapDataKey(s, session.rx, parsed.data.wrapped, { machineId, deviceId: parsed.data.deviceId, kid: parsed.data.kid });
+    } catch {
+      return "skip";
+    }
+    try {
+      await keyring.saveMachine({ machineId, relayUrl: pairing.relayUrl, deviceId: parsed.data.deviceId, laptopSignPublicKey: laptopSign, laptopKxPublicKey: laptopKx, kid: parsed.data.kid, dataKey });
+    } catch {
+      return "storage"; // laptop SUDAH memercayai HP ini tetapi kuncinya tidak bisa disimpan di sini
+    }
+    return "done";
+  };
   while (now().getTime() < deadline) {
     let messages;
     try {
@@ -142,30 +194,25 @@ export async function pairE2e(link: PairingLink, name: string, deps: E2ePairDeps
         } catch {
           continue;
         }
-      } else if (message.kind === "response" && challengeSeen) {
-        const body = E2eResponseBodySchema.safeParse(message.body);
-        // Nomor HP ini HARUS yang ditentukan laptop dan ikut ditandatangani; yang lain tidak diterima.
-        if (!body.success || body.data.deviceId !== pairing.deviceId) continue;
-        try {
-          const laptopKx = fromB64(s, body.data.laptopKx);
-          const full = {
-            machineId,
-            deviceId: body.data.deviceId,
-            machineName: body.data.machineName,
-            laptopKxPublicKey: laptopKx,
-            code: link.code,
-            kid: body.data.kid,
-            phoneKxPublicKey: phone.kx.publicKey,
-            phoneSignPublicKey: phone.sign.publicKey,
-            wrapped: body.data.wrapped,
-          };
-          if (!verifyPairResponse(s, fromB64(s, body.data.sig), full, laptopSign)) continue;
-          const session = phoneSessionKeys(s, phone.kx, laptopKx);
-          const dataKey = unwrapDataKey(s, session.rx, body.data.wrapped, { machineId, deviceId: body.data.deviceId, kid: body.data.kid });
-          await keyring.saveMachine({ machineId, relayUrl: pairing.relayUrl, deviceId: body.data.deviceId, laptopSignPublicKey: laptopSign, laptopKxPublicKey: laptopKx, kid: body.data.kid, dataKey });
-          return redeemed;
-        } catch {
+        // Jawaban yang sudah tiba lebih dulu diperiksa sekarang (sidik jari sudah tampil).
+        for (const buffered of early.splice(0)) {
+          const result = await tryResponse(buffered.body);
+          if (result === "done") return redeemed;
+          if (result === "storage") {
+            drop();
+            return { status: "e2e-unavailable" };
+          }
+        }
+      } else if (message.kind === "response") {
+        if (!challengeSeen) {
+          if (early.length < 8) early.push(message);
           continue;
+        }
+        const result = await tryResponse(message.body);
+        if (result === "done") return redeemed;
+        if (result === "storage") {
+          drop();
+          return { status: "e2e-unavailable" };
         }
       }
     }

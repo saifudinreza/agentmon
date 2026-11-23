@@ -3,7 +3,8 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import { App } from "./App";
-import { initE2eIfPresent } from "./e2e/runtime";
+import { initE2eIfPresent, setE2eMarkers } from "./e2e/runtime";
+import { e2eMachineIds, loadPairings } from "./pairing/storage";
 import { VaultBroken } from "./e2e/VaultBroken";
 import { I18nProvider } from "./i18n/react";
 import "./styles.css";
@@ -16,7 +17,10 @@ if (!root) throw new Error("Elemen #root tidak ditemukan di index.html");
 async function boot(container: HTMLElement) {
   let broken = false;
   try {
-    await initE2eIfPresent();
+    // Laptop yang ditandai E2E di penyimpanan pairing: gerbang harus hidup (dan brankas bisa dibuka) SEBELUM layar digambar.
+    const marked = e2eMachineIds(loadPairings(window.localStorage));
+    setE2eMarkers(marked);
+    await initE2eIfPresent(undefined, { required: marked.size > 0 });
   } catch {
     broken = true;
   }

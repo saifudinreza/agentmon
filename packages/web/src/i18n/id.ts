@@ -386,6 +386,9 @@ export const id = {
   "pair.error.e2eUnavailable": "Penyimpanan kunci di HP ini tidak tersedia atau rusak (mis. mode privat), jadi pairing terenkripsi tidak bisa dilakukan. Buka AgentMon di jendela biasa.",
   "e2e.vault.title": "Kunci enkripsi tidak bisa dibuka",
   "e2e.vault.body": "Penyimpanan kunci AgentMon di HP ini rusak atau tidak bisa dibaca. Tidak ada yang dihapus. Muat ulang halaman; bila tetap sama, hapus data situs ini lalu pasangkan ulang laptop Anda.",
+  "home.machine.noKeys": "Pairing terenkripsi dengan laptop ini belum selesai atau kuncinya hilang, jadi aktivitasnya tidak ditampilkan (event tanpa enkripsi sengaja ditolak). Pasangkan ulang dengan QR baru dari laptop.",
+  "home.machine.rejected": "Sebagian event dari laptop ini ditolak karena tidak bisa diverifikasi atau kunci barunya belum diterima.",
+  "e2e.vault.retry": "Muat ulang",
 } as const;
 
 export type MessageKey = keyof typeof id;

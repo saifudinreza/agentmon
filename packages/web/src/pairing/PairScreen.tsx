@@ -109,7 +109,9 @@ export function PairScreen({ focusHeading = false, runE2e = defaultRunE2e }: { f
     const onHashChange = () => {
       const next = parsePairingUrl(window.location.href);
       stripFragment();
-      if (!next) return;
+      // Pairing sedang berjalan (terutama E2E, yang menunggu laptop): tautan baru tidak boleh menimpa layarnya (sidik jari tautan lama akan tampil di
+      // bawah tautan baru). Selesaikan atau batalkan dulu, lalu pindai lagi.
+      if (!next || inFlight.current) return;
       announce.current = true;
       setLink(next);
       setPhase({ name: "confirm" });
@@ -278,7 +280,7 @@ export function PairScreen({ focusHeading = false, runE2e = defaultRunE2e }: { f
     const step = phase.step;
     return (
       <Card>
-        <Heading key="e2e" focus={announce.current} className="text-xl font-semibold">
+        <Heading key={`e2e-${step.step}`} focus={announce.current} className="text-xl font-semibold">
           {step.step === "confirm" ? t("pair.e2e.confirm.title") : t("pair.e2e.waiting.title")}
         </Heading>
         {step.step === "confirm" ? (
@@ -286,9 +288,9 @@ export function PairScreen({ focusHeading = false, runE2e = defaultRunE2e }: { f
             <p role="status" className="mt-2 text-muted">
               {t("pair.e2e.confirm.body")}
             </p>
-            <p aria-label={t("pair.e2e.fingerprint.label")} className="mt-4 text-5xl font-semibold tracking-widest tabular-nums">
-              {`${step.fingerprint.slice(0, 3)} ${step.fingerprint.slice(3)}`}
-            </p>
+            <div role="group" aria-label={t("pair.e2e.fingerprint.label")} className="mt-4">
+              <p className="text-5xl font-semibold tracking-widest tabular-nums">{`${step.fingerprint.slice(0, 3)} ${step.fingerprint.slice(3)}`}</p>
+            </div>
             <p className="mt-3 rounded-lg bg-warn-bg px-3 py-2 text-sm text-warn-fg">{t("pair.e2e.confirm.warning")}</p>
           </>
         ) : (

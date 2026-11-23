@@ -51,6 +51,6 @@ Catatan: uji "nonce dipakai ulang ditolak" di issue lama keliru konsep (AEAD tid
 
 ## Keputusan dan batas
 - **Versi libsodium-wrappers 0.8.4**, dipin persis (desain menyebut seri 0.7.x; 0.8.x memuat ESM yang benar dan lolos uji impor di Node/tsx dan Vite). Dimuat lazy: di PWA menjadi dua chunk terpisah (sekitar 120 kB dan 458 kB tidak terkompresi, WASM tertanam), tidak ikut bundel awal.
-- **CSP PWA** harus memberi `'wasm-unsafe-eval'` (bagian 7 desain); itu dikerjakan di bagian C.
+- **CSP PWA** (`web/public/_headers`) memberi `'wasm-unsafe-eval'` dan tanpa `'unsafe-inline'` untuk skrip (bagian 7 desain). Karena itu skrip tema tidak lagi inline di `index.html` melainkan `public/theme-init.js` (dimuat sinkron); tes build menjaga agar tidak ada skrip inline. libsodium tidak di-precache; `sw-sodium.ts` menyimpannya saat dipakai pertama supaya pengguna E2E tetap bisa membuka aplikasi offline.
 - **jsdom** memakai kelas `Uint8Array` yang berbeda dari Node sehingga libsodium menolak masukannya ("buffer must be a Uint8Array"); tes yang memanggil kripto memakai `// @vitest-environment node`. Browser sungguhan tidak terpengaruh.
 - Tidak ada keadaan di sini: pemeriksaan `kid` yang lebih rendah, celah `seq`, `id` ganda, dan penyimpanan anti-replay adalah tanggung jawab pemanggil (bagian D dan issue #034).

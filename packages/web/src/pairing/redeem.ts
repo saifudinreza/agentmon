@@ -115,7 +115,9 @@ export async function redeemPairing(link: PairingLink, name: string, deps: Redee
   // berarti relay tidak konsisten; tidak ada yang bisa disimpan.
   if (reply.deviceToken === undefined && !usedExistingToken) return { status: "failed", httpStatus: 200 };
 
-  const machine: PairedMachine = { id: reply.machineId, name: reply.machineName, pairedAt: now().toISOString() };
+  // Pairing E2E: laptop ditandai E2E sejak penukaran, SEBELUM kunci tersimpan. Pairing yang terputus di tengah (tab ditutup) tidak boleh berakhir sebagai
+  // laptop polos: event polosnya ditolak sampai pairing selesai atau diulang.
+  const machine: PairedMachine = { id: reply.machineId, name: reply.machineName, pairedAt: now().toISOString(), ...(e2e ? { e2e: true } : {}) };
   const pairing = savePairing(deps.storage, {
     relayUrl,
     deviceId: reply.deviceId,

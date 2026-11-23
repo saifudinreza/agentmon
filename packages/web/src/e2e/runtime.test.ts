@@ -4,13 +4,16 @@ import { generateDataKey, generateKxKeyPair, generateSignKeyPair, loadSodium, ty
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { indexedDbBackend, KeyringError, memoryBackend, openKeyring } from "./keyring";
-import { ensureE2e, getE2e, initE2eIfPresent, resetE2eForTests } from "./runtime";
+import { e2eStatus, ensureE2e, getE2e, initE2eIfPresent, resetE2eForTests, setE2eMarkers } from "./runtime";
 
 let s: Sodium;
 beforeAll(async () => {
   s = await loadSodium();
 }, 30_000);
-afterEach(() => resetE2eForTests());
+afterEach(() => {
+  resetE2eForTests();
+  setE2eMarkers(new Set());
+});
 
 async function withMachine(backend: ReturnType<typeof memoryBackend>) {
   const keyring = await openKeyring(s, backend);
@@ -124,6 +127,30 @@ describe("saklar runtime", () => {
     const backend = memoryBackend("{rusak");
     await expect(initE2eIfPresent(backend)).rejects.toBeInstanceOf(KeyringError);
     expect(backend.value()).toBe("{rusak");
+  });
+
+  test("ada laptop ditandai E2E (required): gerbang WAJIB hidup walau brankas kosong atau dibersihkan peramban; event polos darinya ditolak", async () => {
+    setE2eMarkers(new Set(["m1"]));
+    const live = await initE2eIfPresent(memoryBackend(), { required: true });
+    expect(live).toBeDefined();
+    expect(e2eStatus("m1")).toBe("no-keys");
+    expect(e2eStatus("lain")).toBe("none");
+    const plain = { v: 1, id: crypto.randomUUID(), machineId: "m1", sessionId: "s", seq: 0, ts: "2026-11-24T10:00:00.000Z", agent: "claude-code", type: "session.started", payload: { cwd: "/" } };
+    expect(live!.gate.open(plain as never, true)).toBeUndefined();
+  });
+
+  test("ada laptop ditandai E2E tetapi IndexedDB tidak tersedia: galat dilempar (HP tidak diam-diam berjalan tanpa gerbang); tanpa penanda, tidak masalah", async () => {
+    const unavailable = { read: async () => { throw new Error("SecurityError"); }, write: async () => undefined };
+    await expect(initE2eIfPresent(unavailable, { required: true })).rejects.toBeInstanceOf(KeyringError);
+    expect(await initE2eIfPresent(unavailable)).toBeUndefined();
+  });
+
+  test("laptop dengan kunci di brankas berstatus ok", async () => {
+    const backend = memoryBackend();
+    await withMachine(backend);
+    setE2eMarkers(new Set(["m1"]));
+    await initE2eIfPresent(backend, { required: true });
+    expect(e2eStatus("m1")).toBe("ok");
   });
 
   test("galat KeyringError dari backend (isi tidak bisa dibuka) tidak ditelan: dilempar, bukan dianggap belum ada E2E", async () => {

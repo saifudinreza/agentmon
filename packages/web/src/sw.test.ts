@@ -33,6 +33,7 @@ beforeAll(async () => {
       matchAll: async () => clientsState.windows,
       openWindow: async (url: string) => void opened.push(url),
     },
+    caches: { open: async () => ({ match: async () => new Response("dari-cache"), put: async () => undefined, keys: async () => [], delete: async () => true }) },
     registration: { showNotification: async (title: string, options: Record<string, unknown>) => void shown.push({ title, options }), getNotifications: async () => [] },
     skipWaiting: async () => void (clientsState.skipped += 1),
     addEventListener: (type: string, listener: Listener) => void listeners.set(type, listener),
@@ -55,8 +56,17 @@ function fire(type: string, extra: Record<string, unknown> = {}) {
 }
 
 describe("sw.ts: perangkaian", () => {
-  test("mendengarkan keempat peristiwa", () => {
-    expect([...listeners.keys()].sort()).toEqual(["activate", "install", "notificationclick", "push"]);
+  test("mendengarkan kelima peristiwa (fetch hanya untuk chunk libsodium)", () => {
+    expect([...listeners.keys()].sort()).toEqual(["activate", "fetch", "install", "notificationclick", "push"]);
+  });
+
+  test("fetch: chunk libsodium dijawab dari cache service worker; permintaan lain dibiarkan lewat", () => {
+    const answers: unknown[] = [];
+    const request = (url: string) => ({ request: { url, method: "GET" }, respondWith: (promise: unknown) => void answers.push(promise) });
+    listeners.get("fetch")?.(request("https://agentmon.contoh.com/assets/index-1.js"));
+    expect(answers).toHaveLength(0);
+    listeners.get("fetch")?.(request("https://agentmon.contoh.com/assets/libsodium-wrappers-1.js"));
+    expect(answers).toHaveLength(1);
   });
 
   test("berkas aplikasi disimpan dari daftar yang disisipkan build, dan navigasi dijawab kerangka aplikasi", () => {

@@ -32,6 +32,10 @@ export type E2eGate = {
   isSecured(machineId: string): boolean;
   /** True bila ada laptop yang dipasangkan secara E2E (antrean izin harus dihitung dari event terbuka). */
   anySecured(): boolean;
+  /** True bila kunci untuk laptop ini ada di brankas (berbeda dari `isSecured`, yang juga benar bila laptop hanya DITANDAI E2E tetapi kuncinya hilang). */
+  hasKeys(machineId: string): boolean;
+  /** True bila ada laptop yang ditandai E2E di penyimpanan pairing (dengan atau tanpa kunci). */
+  anyMarked(): boolean;
   /** Membuka satu event. `live` = datang lewat sambungan langsung (kid lama ditolak). undefined = ditolak. */
   open(envelope: Envelope, live: boolean): Envelope | undefined;
   openAll(envelopes: readonly Envelope[], live: boolean): Envelope[];
@@ -48,7 +52,7 @@ const MAX_REMEMBERED = 1000;
 
 type Remembered = { sessionId: string; eventId: string; h: Uint8Array };
 
-export function createGate(s: Sodium, keyring: Keyring): E2eGate {
+export function createGate(s: Sodium, keyring: Keyring, marked: (machineId: string) => boolean = () => false, markedAny: () => boolean = () => false): E2eGate {
   const stats: GateStats = { rejected: 0, plaintextRejected: 0 };
   // Izin yang pernah dilihat HP: kunci = laptop + nomor izin. Dibatasi supaya sesi panjang tidak memenuhi memori.
   const remembered = new Map<string, Remembered>();
@@ -66,7 +70,14 @@ export function createGate(s: Sodium, keyring: Keyring): E2eGate {
 
   function open(envelope: Envelope, live: boolean): Envelope | undefined {
     const machine = keyring.machine(envelope.machineId);
-    if (!machine) return envelope; // pairing lama: apa adanya
+    if (!machine) {
+      // Laptop yang ditandai E2E (di penyimpanan pairing) tetapi kuncinya tidak ada (pairing terputus, brankas dibersihkan): DITOLAK, bukan diteruskan polos.
+      if (marked(envelope.machineId)) {
+        stats.plaintextRejected += 1;
+        return undefined;
+      }
+      return envelope; // pairing lama: apa adanya
+    }
     if (!SealedPayloadSchema.safeParse(envelope.payload).success) {
       stats.plaintextRejected += 1;
       return undefined;
@@ -126,8 +137,10 @@ export function createGate(s: Sodium, keyring: Keyring): E2eGate {
   });
 
   return {
-    isSecured: (machineId) => keyring.secured(machineId),
+    isSecured: (machineId) => keyring.secured(machineId) || marked(machineId),
     anySecured: () => keyring.anySecured(),
+    hasKeys: (machineId) => keyring.secured(machineId),
+    anyMarked: () => markedAny(),
     open,
     openAll,
     sealCommand(machineId, body) {
@@ -144,7 +157,10 @@ export function createGate(s: Sodium, keyring: Keyring): E2eGate {
     },
     openReply(machineId, body) {
       const machine = keyring.machine(machineId);
-      if (!machine) return typeof body === "object" && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : undefined;
+      if (!machine) {
+        if (marked(machineId)) return undefined; // laptop E2E tanpa kunci: balasan polos tidak diterima
+        return typeof body === "object" && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : undefined;
+      }
       try {
         const plaintext = openSigned(s, machine.rx, machine.laptopSignPublicKey, { direction: "reply", machineId, deviceId: machine.deviceId }, body);
         const parsed: unknown = JSON.parse(new TextDecoder().decode(plaintext));
@@ -155,9 +171,9 @@ export function createGate(s: Sodium, keyring: Keyring): E2eGate {
       }
     },
     pendingApprovals(relayApproved, rawEvents, now) {
-      const secured = rawEvents.filter((e) => keyring.secured(e.machineId));
+      const secured = rawEvents.filter((e) => keyring.secured(e.machineId) || marked(e.machineId));
       const computed = computePendingApprovals(openAll(secured, false), now);
-      return [...relayApproved.filter((a) => !keyring.secured(a.machineId)), ...computed];
+      return [...relayApproved.filter((a) => !keyring.secured(a.machineId) && !marked(a.machineId)), ...computed];
     },
     stats: () => ({ ...stats }),
   };
@@ -184,7 +200,7 @@ export function gatedApi(api: RelayApi, gate: E2eGate, now: () => Date = () => n
       return all;
     },
     approvals: async () => {
-      if (!gate.anySecured()) return api.approvals();
+      if (!gate.anySecured() && !gate.anyMarked()) return api.approvals();
       const raw = await api.approvalsWithEvents();
       return gate.pendingApprovals(raw.approvals, raw.events, now());
     },

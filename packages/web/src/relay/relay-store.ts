@@ -457,7 +457,7 @@ export function createRelayStore(options: RelayStoreOptions): RelayStore {
         };
         pendingRequests.set(commandId, { machineId, sentAt: Date.now(), done });
         const wire = sealForMachine(machineId, { ...body, commandId });
-        if (!wire) return done({ ok: false, reason: "invalid" as never });
+        if (!wire) return done({ ok: false, reason: "not-allowed" }); // tidak bisa disegel (tidak ada kunci): tidak dikirim polos
         const sent = connection?.send({ kind: "command", machineId, body: wire });
         if (!sent) return done({ ok: false, reason: "offline" });
         hold.timer = setTimeout(() => done({ ok: false, reason: "unconfirmed" }), timeoutMs);

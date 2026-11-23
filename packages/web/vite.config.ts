@@ -31,6 +31,9 @@ export default defineConfig({
         // Semua berkas hasil build disimpan di HP saat pertama dibuka (precache), sehingga
         // kerangka aplikasi terbuka walau tanpa jaringan.
         globPatterns: ["**/*.{js,css,html,png,svg,webmanifest}"],
+        // libsodium (±430 kB) dimuat belakangan dan hanya dibutuhkan pengguna E2E: tidak ikut di-precache untuk semua orang. sw.ts menyimpannya saat
+        // dipakai pertama kali, sehingga pengguna E2E tetap bisa membuka aplikasi tanpa jaringan sesudahnya.
+        globIgnores: ["**/libsodium-*.js"],
       },
     }),
   ],

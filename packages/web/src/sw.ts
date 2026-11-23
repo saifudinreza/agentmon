@@ -13,6 +13,7 @@
 import { cleanupOutdatedCaches, createHandlerBoundToURL, precacheAndRoute } from "workbox-precaching";
 import { NavigationRoute, registerRoute } from "workbox-routing";
 import { handlePush, openNotificationTarget, type ClientsLike, type ShownNotification } from "./push/sw-logic";
+import { handleSodiumFetch, type CacheStorageLike } from "./sw-sodium";
 
 // Tipe seperlunya, ditulis sendiri: tipe lengkap service worker memakai pustaka "webworker" yang bentrok dengan "DOM"
 // yang dipakai seluruh aplikasi.
@@ -22,9 +23,11 @@ type SwScope = {
   location: { origin: string };
   navigator: { language: string };
   clients: ClientsLike & { claim(): Promise<void> };
+  caches: CacheStorageLike;
   registration: { showNotification(title: string, options: object): Promise<void>; getNotifications(): Promise<ShownNotification[]> };
   skipWaiting(): Promise<void>;
   addEventListener(type: "install", listener: () => void): void;
+  addEventListener(type: "fetch", listener: (event: { request: { url: string; method: string }; respondWith(response: Promise<Response>): void }) => void): void;
   addEventListener(type: "activate", listener: (event: Waitable) => void): void;
   addEventListener(type: "push", listener: (event: Waitable & { data: { text(): string } | null }) => void): void;
   addEventListener(type: "notificationclick", listener: (event: Waitable & { notification: { close(): void; data: unknown } }) => void): void;
@@ -38,6 +41,12 @@ self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim(
 cleanupOutdatedCaches();
 precacheAndRoute(self.__WB_MANIFEST);
 registerRoute(new NavigationRoute(createHandlerBoundToURL("/index.html")));
+
+// libsodium tidak di-precache (hanya pengguna E2E yang butuh): disimpan saat dipakai pertama supaya aplikasi E2E tetap terbuka offline.
+self.addEventListener("fetch", (event) => {
+  const response = handleSodiumFetch(event.request, self.location.origin, self.caches, (url) => fetch(url));
+  if (response) event.respondWith(response);
+});
 
 self.addEventListener("push", (event) => {
   let raw: string | undefined;

@@ -76,7 +76,7 @@ describe("tautan E2E", () => {
     act(() => step({ step: "waiting" }));
     expect(screen.getByText(/Lihat terminal di laptop Anda/)).toBeTruthy();
     act(() => step({ step: "confirm", fingerprint: "483291" }));
-    expect(screen.getByLabelText("Sidik jari pairing").textContent).toBe("483 291");
+    expect(screen.getByRole("group", { name: "Sidik jari pairing" }).textContent).toBe("483 291");
     expect(screen.getByText(/JANGAN dilanjutkan/)).toBeTruthy();
     expect(screen.getByText(/harus SAMA PERSIS/)).toBeTruthy();
     act(() => finish(success()));

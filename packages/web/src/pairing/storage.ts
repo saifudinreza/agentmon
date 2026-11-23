@@ -18,7 +18,9 @@ export const PAIRINGS_STORAGE_KEY = "agentmon.pairings";
 // Dipancarkan di window setelah pairing berubah, supaya bagian aplikasi lain (sambungan ke relay) membacanya ulang.
 export const PAIRINGS_CHANGED_EVENT = "agentmon:pairings";
 
-const MachineSchema = z.object({ id: z.string().min(1), name: z.string(), pairedAt: z.string() });
+// `e2e: true` = laptop ini dipasangkan SECARA E2E. Penanda ini sengaja disimpan di sini (bukan hanya di brankas IndexedDB): bila brankas hilang atau tidak
+// bisa dibuka, HP tetap TAHU bahwa laptop ini harus terenkripsi, dan menolak event polos (tidak diam-diam turun ke mode polos).
+const MachineSchema = z.object({ id: z.string().min(1), name: z.string(), pairedAt: z.string(), e2e: z.boolean().optional() });
 const PairingSchema = z.object({
   relayUrl: z.string().min(1),
   deviceId: z.string().min(1),
@@ -57,6 +59,11 @@ export function loadPairings(storage: ReadableStorage | undefined): StoredPairin
   } catch {
     return [];
   }
+}
+
+/** Nomor laptop yang ditandai E2E di semua pairing. */
+export function e2eMachineIds(pairings: readonly StoredPairing[]): Set<string> {
+  return new Set(pairings.flatMap((p) => p.machines.filter((m) => m.e2e === true).map((m) => m.id)));
 }
 
 export function findPairing(pairings: StoredPairing[], relayUrl: string): StoredPairing | undefined {

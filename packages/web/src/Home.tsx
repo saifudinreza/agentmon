@@ -7,6 +7,7 @@ import { ApprovalScreen } from "./approvals/ApprovalScreen";
 import { DevicesScreen } from "./devices/DevicesScreen";
 import { useI18n } from "./i18n/react";
 import { Onboarding } from "./onboarding/Onboarding";
+import { e2eStatus, getE2e } from "./e2e/runtime";
 import { PairScreen } from "./pairing/PairScreen";
 import { RollbackScreen } from "./rollback/RollbackScreen";
 import { setPendingLink } from "./pairing/pending";
@@ -70,6 +71,16 @@ function RelaySection({ entry }: { entry: RelayEntry }) {
               <p className="text-sm text-muted">{state.machinesLoaded ? (machine.online ? t("machine.online") : t("machine.offline")) : ""}</p>
             </div>
             <p className="text-xs text-muted">{t("home.machine.via", { host })}</p>
+            {e2eStatus(machine.id) === "no-keys" && (
+              <p role="alert" className="mt-2 rounded-lg bg-warn-bg px-3 py-2 text-sm text-warn-fg">
+                {t("home.machine.noKeys")}
+              </p>
+            )}
+            {e2eStatus(machine.id) === "ok" && (getE2e()?.gate.stats().rejected ?? 0) + (getE2e()?.gate.stats().plaintextRejected ?? 0) > 0 && (
+              <p role="status" className="mt-2 text-xs text-muted">
+                {t("home.machine.rejected")}
+              </p>
+            )}
 
             {sessions === undefined ? (
               <p className="mt-3 text-sm text-muted">{t("sessions.loading")}</p>

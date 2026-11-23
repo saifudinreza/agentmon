@@ -26,7 +26,7 @@ import {
 import type { Envelope, PairingLink, PendingApproval } from "@agentmon/shared";
 import { beforeAll, describe, expect, test } from "vitest";
 import { RelayApiError, type RelayApi } from "../relay/api";
-import { loadPairings } from "../pairing/storage";
+import { e2eMachineIds, loadPairings, savePairing } from "../pairing/storage";
 import { createGate, gatedApi } from "./gate";
 import { KeyringError, memoryBackend, openKeyring, type Keyring } from "./keyring";
 import { pairE2e, type E2ePairPhase } from "./pair";
@@ -233,6 +233,93 @@ describe("gerbang: event masuk", () => {
   });
 });
 
+describe("gerbang: laptop yang DITANDAI E2E tetapi kuncinya tidak ada (pairing terputus, brankas dibersihkan)", () => {
+  test("event polos DITOLAK (tidak turun diam-diam ke mode polos); balasan polos ditolak; keputusan tidak dikirim", async () => {
+    const keyring = await openKeyring(s, memoryBackend());
+    const gate = createGate(s, keyring, (id) => id === "m1", () => true);
+    const plain = { v: 1, id: crypto.randomUUID(), machineId: "m1", sessionId: "s", seq: 0, ts: NOW, agent: "claude-code", type: "session.started", payload: { cwd: "/" } } as Envelope;
+    expect(gate.open(plain, true)).toBeUndefined();
+    expect(gate.isSecured("m1")).toBe(true);
+    expect(gate.hasKeys("m1")).toBe(false);
+    expect(gate.openReply("m1", { type: "approval.result" })).toBeUndefined();
+    expect(gate.sealCommand("m1", { type: "approval.decision", approvalId: "x" })).toEqual({ ok: false, reason: "no-keys" });
+    // laptop lain yang tidak ditandai tetap lewat
+    expect(gate.open({ ...plain, machineId: "lama" }, true)).toBeDefined();
+  });
+
+  test("antrean izin: laptop bertanda tanpa kunci tidak menyumbang apa pun (antrean polos dari relay untuknya pun diabaikan)", async () => {
+    const keyring = await openKeyring(s, memoryBackend());
+    const gate = createGate(s, keyring, (id) => id === "m1", () => true);
+    const relayList: PendingApproval[] = [
+      { machineId: "m1", sessionId: "s", approvalId: "ap-palsu", toolName: "x", toolInput: {}, requestedAt: NOW, expiresAt: IN_5_MIN },
+      { machineId: "lama", sessionId: "s", approvalId: "ap-lama", toolName: "x", toolInput: {}, requestedAt: NOW, expiresAt: IN_5_MIN },
+    ];
+    expect(gate.pendingApprovals(relayList, [], new Date(NOW)).map((a) => a.approvalId)).toEqual(["ap-lama"]);
+  });
+});
+
+describe("brankas dua tab (baca-ubah-tulis)", () => {
+  test("tab lama yang menulis belakangan TIDAK menghapus laptop yang dipasangkan tab lain dan TIDAK mengganti identitas HP", async () => {
+    const backend = memoryBackend();
+    const tabA = await openKeyring(s, backend);
+    const tabB = await openKeyring(s, backend);
+    const phoneA = await tabA.ensurePhone();
+    const laptop1 = makeLaptop("m1");
+    await tabA.saveMachine({ machineId: "m1", relayUrl: "https://r", deviceId: "hp-1", laptopSignPublicKey: laptop1.sign.publicKey, laptopKxPublicKey: laptop1.kx.publicKey, kid: 1, dataKey: laptop1.dataKey });
+    // tab B belum tahu apa-apa (memori basi), lalu memasangkan laptop kedua
+    const phoneB = await tabB.ensurePhone();
+    expect(toB64(s, phoneB.sign.publicKey)).toBe(toB64(s, phoneA.sign.publicKey)); // identitas tab A dipakai, bukan dibuat ulang
+    const laptop2 = makeLaptop("m2");
+    await tabB.saveMachine({ machineId: "m2", relayUrl: "https://r", deviceId: "hp-1", laptopSignPublicKey: laptop2.sign.publicKey, laptopKxPublicKey: laptop2.kx.publicKey, kid: 1, dataKey: laptop2.dataKey });
+    const reopened = await openKeyring(s, backend);
+    expect(reopened.secured("m1")).toBe(true); // tidak terhapus oleh tab B
+    expect(reopened.secured("m2")).toBe(true);
+    // tab A menulis lagi (memorinya basi untuk m2): m2 tetap ada
+    await tabA.addDataKey("m1", 2, generateDataKey(s));
+    expect((await openKeyring(s, backend)).secured("m2")).toBe(true);
+  });
+
+  test("reload() mengambil laptop yang dipasangkan tab lain", async () => {
+    const backend = memoryBackend();
+    const tabA = await openKeyring(s, backend);
+    const tabB = await openKeyring(s, backend);
+    await tabA.ensurePhone();
+    const laptop = makeLaptop("m1");
+    await tabA.saveMachine({ machineId: "m1", relayUrl: "https://r", deviceId: "hp-1", laptopSignPublicKey: laptop.sign.publicKey, laptopKxPublicKey: laptop.kx.publicKey, kid: 1, dataKey: laptop.dataKey });
+    expect(tabB.secured("m1")).toBe(false);
+    await tabB.reload();
+    expect(tabB.secured("m1")).toBe(true);
+  });
+
+  test("penulisan DISERIALKAN oleh kunci: dua penyimpanan bersamaan tidak saling menimpa", async () => {
+    const backend = memoryBackend();
+    const queue: Array<() => void> = [];
+    let busy = false;
+    const lock = async <T,>(fn: () => Promise<T>): Promise<T> => {
+      while (busy) await new Promise<void>((resolve) => queue.push(resolve));
+      busy = true;
+      try {
+        return await fn();
+      } finally {
+        busy = false;
+        queue.shift()?.();
+      }
+    };
+    const a = await openKeyring(s, backend, lock);
+    const b = await openKeyring(s, backend, lock);
+    await a.ensurePhone();
+    await b.reload();
+    const l1 = makeLaptop("m1");
+    const l2 = makeLaptop("m2");
+    await Promise.all([
+      a.saveMachine({ machineId: "m1", relayUrl: "https://r", deviceId: "hp-1", laptopSignPublicKey: l1.sign.publicKey, laptopKxPublicKey: l1.kx.publicKey, kid: 1, dataKey: l1.dataKey }),
+      b.saveMachine({ machineId: "m2", relayUrl: "https://r", deviceId: "hp-1", laptopSignPublicKey: l2.sign.publicKey, laptopKxPublicKey: l2.kx.publicKey, kid: 1, dataKey: l2.dataKey }),
+    ]);
+    const final = await openKeyring(s, backend);
+    expect(final.secured("m1") && final.secured("m2")).toBe(true);
+  });
+});
+
 describe("gerbang: perintah keluar dan balasan masuk", () => {
   test("keputusan: disegel dengan sessionId, eventId, dan H atas SELURUH payload yang dilihat HP; laptop membukanya dengan kunci rx dan kunci HP dari catatannya", async () => {
     const laptop = makeLaptop();
@@ -363,7 +450,7 @@ function memoryStorage(): Storage {
 }
 
 /** Relay tiruan untuk satu pairing + laptop yang menjawab sesuai skenario. */
-function pairScenario(options: { laptop?: ReturnType<typeof makeLaptop>; relayMachineId?: string; respond?: boolean; corruptResponse?: "sig" | "device" | "none"; respondBeforeChallenge?: boolean; pollError?: RelayApiError; code?: number; tamperChallenge?: boolean; signedForDevice?: string } = {}) {
+function pairScenario(options: { laptop?: ReturnType<typeof makeLaptop>; relayMachineId?: string; respond?: boolean; corruptResponse?: "sig" | "device" | "none"; respondBeforeChallenge?: boolean; challengeLater?: boolean; pollError?: RelayApiError; code?: number; tamperChallenge?: boolean; signedForDevice?: string } = {}) {
   const laptop = options.laptop ?? makeLaptop();
   const secret = s.randombytes_buf(32);
   const link: PairingLink = { code: "kode-sekali-pakai-0123456789abcdef", relayUrl: "https://relay.contoh.com", secret: toB64(s, secret), laptopKey: toB64(s, laptop.sign.publicKey), machineId: laptop.machineId };
@@ -372,6 +459,7 @@ function pairScenario(options: { laptop?: ReturnType<typeof makeLaptop>; relayMa
   const phases: E2ePairPhase[] = [];
   let redeemBody: { code: string; name: string; e2e?: { kx: string; sign: string; proof: string } } | undefined;
   let polls = 0;
+  const later: Messages = [];
   let request: PairRequest | undefined;
   let laptopFingerprint: string | undefined;
 
@@ -398,7 +486,11 @@ function pairScenario(options: { laptop?: ReturnType<typeof makeLaptop>; relayMa
     const body = { deviceId: options.corruptResponse === "device" ? "hp-LAIN" : signedFor, machineName: "Laptop Dono", laptopKx: toB64(s, laptop.kx.publicKey), kid: 1, wrapped, sig: toB64(s, signature) };
     const challenge = { id: 1, kind: "challenge" as const, body: { r: toB64(s, options.tamperChallenge ? s.randombytes_buf(16) : r), sig: toB64(s, sig) } };
     const answer = { id: 2, kind: "response" as const, body };
-    messages.push(...(options.respondBeforeChallenge ? [answer] : [challenge, answer]));
+    if (options.challengeLater) {
+      // nomor pesan mengikuti urutan tiba di relay: jawaban lebih dulu (1), tantangan menyusul (2)
+      messages.push({ ...answer, id: 1 });
+      later.push({ ...challenge, id: 2 });
+    } else messages.push(...(options.respondBeforeChallenge ? [answer] : [challenge, answer]));
   };
 
   const makeApi = () => ({
@@ -406,12 +498,13 @@ function pairScenario(options: { laptop?: ReturnType<typeof makeLaptop>; relayMa
       polls += 1;
       if (options.pollError) throw options.pollError;
       laptopActs();
+      if (later.length > 0 && polls >= 2) messages.push(...later.splice(0));
       return messages.filter((m) => m.id > after);
     },
   });
 
   const run = async (keyring: Keyring, name = "iPhone Dono") =>
-    pairE2e(link, name, { s, keyring, storage, fetch: fetchFake, makeApi, sleep: async () => undefined, waitMs: 50, pollMs: 1, now: (() => { let t = 0; return () => new Date(t++ * 10); })() }, (p) => phases.push(p));
+    pairE2e(link, name, { s, keyring, storage, fetch: fetchFake, makeApi, sleep: async () => undefined, waitMs: 300, pollMs: 1, now: (() => { let t = 0; return () => new Date(t++ * 10); })() }, (p) => phases.push(p));
 
   return { run, link, storage, phases, laptop, polls: () => polls, redeemBody: () => redeemBody, laptopFingerprint: () => laptopFingerprint };
 }
@@ -463,6 +556,51 @@ describe("pairing E2E di HP", () => {
     expect((await t.run(keyring)).status).toBe("e2e-timeout");
     expect(keyring.secured("m1")).toBe(false);
     expect(loadPairings(t.storage)).toEqual([]);
+  });
+
+  test("jawaban yang tiba LEBIH DULU dari tantangan tidak hilang: diperiksa begitu sidik jari tampil, lalu pairing selesai", async () => {
+    const t = pairScenario({ challengeLater: true });
+    const keyring = await fresh();
+    expect((await t.run(keyring)).status).toBe("success");
+    expect(t.phases.map((p) => p.step)).toEqual(["redeeming", "waiting", "confirm"]);
+    expect(keyring.secured("m1")).toBe(true);
+  });
+
+  test("laptop ditandai E2E sejak penukaran (sebelum kunci tersimpan), dan penanda hilang bila pairing dibatalkan", async () => {
+    const t = pairScenario({ respond: false });
+    const keyring = await fresh();
+    let markedDuring = false;
+    const original = t.storage.setItem.bind(t.storage);
+    t.storage.setItem = (k, v) => {
+      original(k, v);
+      if (e2eMachineIds(loadPairings(t.storage)).has("m1")) markedDuring = true;
+    };
+    expect((await t.run(keyring)).status).toBe("e2e-timeout");
+    expect(markedDuring).toBe(true);
+    expect(e2eMachineIds(loadPairings(t.storage)).size).toBe(0);
+  });
+
+  test("pairing ULANG yang gagal memulihkan pairing lama yang berfungsi (tidak ikut dihapus beserta token relay)", async () => {
+    const t = pairScenario({ respond: false });
+    const keyring = await fresh();
+    const old = { id: "m1", name: "Laptop Lama", pairedAt: "2026-11-01T00:00:00.000Z" };
+    savePairing(t.storage, { relayUrl: "https://relay.contoh.com", deviceId: "hp-1", deviceToken: "t".repeat(64), machine: old });
+    expect((await t.run(keyring)).status).toBe("e2e-timeout");
+    const [pairing] = loadPairings(t.storage);
+    expect(pairing?.machines).toEqual([old]);
+    expect(pairing?.deviceToken).toBe("t".repeat(64));
+  });
+
+  test("brankas tidak bisa ditulis saat pairing: hasil e2e-unavailable (bukan menunggu sampai habis), dan laptop dibuang dari pairing HP", async () => {
+    const t = pairScenario();
+    const backend = memoryBackend();
+    const keyring = await openKeyring(s, backend);
+    await keyring.ensurePhone();
+    const failing = { ...keyring, saveMachine: async () => { throw new Error("penyimpanan penuh"); } } as unknown as Keyring;
+    expect((await t.run(failing)).status).toBe("e2e-unavailable");
+    expect(loadPairings(t.storage)).toEqual([]);
+    const noPhone = await openKeyring(s, { read: async () => undefined, write: async () => { throw new Error("penuh"); } });
+    expect((await pairScenario().run(noPhone)).status).toBe("e2e-unavailable");
   });
 
   test("relay memberi nomor laptop yang berbeda dari QR: ditolak (e2e-invalid) dan dibuang", async () => {

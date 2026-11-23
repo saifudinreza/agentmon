@@ -127,6 +127,23 @@ describe("hasil build", () => {
     expect(report.totalGzipBytes).toBeGreaterThan(10_000); // memang ada React di dalamnya, bukan build kosong
   });
 
+  test("CSP ketat dikirim lewat _headers: skrip hanya dari berkas sendiri (WASM libsodium diizinkan), tanpa unsafe-inline untuk skrip; tidak ada skrip inline di index.html", () => {
+    const headers = read("_headers");
+    const csp = /Content-Security-Policy: (.+)/.exec(headers)?.[1] ?? "";
+    const directive = (name: string) => new RegExp(`${name} ([^;]*)`).exec(csp)?.[1] ?? "";
+    expect(directive("script-src")).toBe("'self' 'wasm-unsafe-eval'");
+    expect(directive("script-src")).not.toContain("unsafe-inline");
+    expect(directive("script-src")).not.toMatch(/(^|\s)'unsafe-eval'/); // hanya wasm-unsafe-eval
+    expect(directive("object-src")).toBe("'none'");
+    expect(directive("frame-ancestors")).toBe("'none'");
+    expect(directive("default-src")).toBe("'self'");
+    expect(read("index.html")).not.toMatch(/<script(?![^>]*src=)[^>]*>[^<]/); // tidak ada skrip inline
+  });
+
+  test("libsodium tidak di-precache untuk semua pengguna (disimpan saat dipakai, lihat sw-sodium.ts)", () => {
+    expect(readReadable("sw.js")).not.toMatch(/libsodium-wrappers/);
+  });
+
   test("libsodium dimuat belakangan: TIDAK ada di JS awal, tetapi ada di salah satu berkas lain hasil build (issue #033)", () => {
     const report = measureInitialJs(out);
     expect(checkCryptoIsLazy(out, report.files.map((f) => f.file))).toEqual([]);
